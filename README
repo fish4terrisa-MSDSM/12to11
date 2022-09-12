@@ -1,0 +1,72 @@
+This is a tool for running Wayland applications on an X server,
+preferably with a compositing manager running.
+
+It is not yet complete.  What is not yet implemented includes support
+for the primary selection, touchscreens, input methods, device
+switching in dmabuf feedback, and the viewporter protocol extension.
+
+There are also problems with output reporting in subsurfaces.
+
+It is not portable to systems other than recent versions of GNU/Linux
+running the X.Org server 1.20 or later, and has not been tested on
+window (and compositing) managers other than GNOME Shell.
+
+It will not work very well unless the compositing manager supports the
+EWMH frame synchronization protocol.
+
+Building and running this tool requires the following X protocol
+extensions:
+
+  Nonrectangular Window Shape Extension, version 1.1 or later
+  MIT Shared Memory Extension, version 1.2 or later
+  X Resize, Rotate and Reflect Extension, version 1.3 or later
+    (this will soon be 1.4, once support for multiple GPU
+     systems is fully implemented)
+  X Synchronization Extension, version 1.0 or later
+  X Rendering Extension, version 1.2 or later
+  X Input Extension, version 2.3 or later
+  Direct Rendering Interface 3, version 1.2 or later
+  X Fixes Extension, version 1 or later
+
+In addition, it requires Xlib to be built with the XCB transport, and
+the XCB bindings for MIT-SHM and DRI3 to be available.
+
+The following Wayland protocols are implemented to a more-or-less
+complete degree:
+
+  'wl_output',                                  version:  2
+  'wl_compositor',                              version:  5
+  'wl_shm',                                     version:  1
+  'xdg_wm_base',                                version:  5
+  'wl_subcompositor',                           version:  1
+  'wl_seat',                                    version:  7
+  'wl_data_device_manager',                     version:  3
+  'zwp_linux_dmabuf_v1',                        version:  4
+
+With the main caveat being that zwp_linux_dmabuf_v1 has no real
+support for multiple-provider setups (help wanted).
+
+Primary selections and window decorations are also not supported, even
+though they fit in nicely with X window management.
+
+It would also be nice to have pinch gesture support in wl_pointer.
+
+This directory is organized as follows:
+
+  Imakefile     - the top level Makefile template
+  libraries.def - files for libraries that don't provide Imakefiles
+  *.xml         - Wayland protocol definition source
+  *.c, *.h      - C source code
+
+Building the source code is simple, provided that you have the
+necessary libwayland-server library, wayland-scanner, pixman, XCB, and
+X extension libraries installed:
+
+  xmkmf # to generate the Makefile
+  make  # to build the binary
+
+Running the binary should be simple as well:
+
+  ./12to11
+
+Wayland programs will then run as regular X windows.

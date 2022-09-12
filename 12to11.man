@@ -1,0 +1,15 @@
+.TH OCLOCK
+.SH NAME
+12to11 - Wayland to X protocol translator
+.SH SYNOPSIS
+.B 12to11
+.SH DESCRIPTION
+.I 12to11
+starts a Wayland compositor on the next available socket;
+Wayland programs will then be displayed through the X server.
+.SH OPTIONS
+None.
+.SH "SEE ALSO"
+X(1), Xorg(1)
+.SH AUTHOR
+Various contributors.

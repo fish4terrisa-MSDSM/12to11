@@ -1,0 +1,5122 @@
+/* Wayland compositor running on top of an X server.
+
+Copyright (C) 2022 to various contributors.
+
+This file is part of 12to11.
+
+12to11 is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+12to11 is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+for more details.
+
+You should have received a copy of the GNU General Public License
+along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
+
+#include <sys/stat.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <math.h>
+
+#include <errno.h>
+
+#include "compositor.h"
+
+#include <X11/extensions/shape.h>
+
+#include <X11/XKBlib.h>
+
+#include <X11/extensions/XKBfile.h>
+#include <X11/extensions/XKM.h>
+
+#include <X11/extensions/XInput2.h>
+#include <linux/input-event-codes.h>
+
+#include "xdg-shell.h"
+
+/* X11 event opcode, event base, and error base for the input
+   extension.  */
+
+int xi2_opcode, xi_first_event, xi_first_error;
+
+/* The version of the input extension in use.  */
+
+static int xi2_major, xi2_minor;
+
+/* The current keymap file descriptor.  */
+
+static int keymap_fd;
+
+/* XKB event type.  */
+
+static int xkb_event_type;
+
+/* Keymap currently in use.  */
+
+static XkbDescPtr xkb_desc;
+
+/* Assocation between device IDs and seat objects.  This includes both
+   keyboard and and pointer devices.  */
+
+static XLAssocTable *seats;
+
+/* Association between device IDs and "source device info" objects.
+   This includes both pointer and keyboard devices.  */
+static XLAssocTable *devices;
+
+/* List of all seats that are not inert.  */
+
+XLList *live_seats;
+
+enum
+  {
+    IsInert	      = 1,
+    IsWindowMenuShown = (1 << 2),
+    IsDragging	      = (1 << 3),
+    IsDropped	      = (1 << 4),
+  };
+
+enum
+  {
+    StateIsRaw = 1,
+  };
+
+enum
+  {
+    AnyVerticalAxis   = 1,
+    AnyHorizontalAxis = (1 << 1),
+  };
+
+typedef struct _Seat Seat;
+typedef struct _SeatClientInfo SeatClientInfo;
+typedef struct _Pointer Pointer;
+typedef struct _Keyboard Keyboard;
+typedef struct _SeatCursor SeatCursor;
+typedef struct _ResizeDoneCallback ResizeDoneCallback;
+typedef struct _ScrollValuator ScrollValuator;
+typedef struct _DestroyListener DestroyListener;
+typedef struct _DeviceInfo DeviceInfo;
+typedef struct _ModifierChangeCallback ModifierChangeCallback;
+
+typedef enum _ResizeEdge ResizeEdge;
+typedef enum _WhatEdge WhatEdge;
+typedef enum _Direction Direction;
+
+enum _ResizeEdge
+  {
+    NoneEdge	    = 65535,
+    TopLeftEdge	    = 0,
+    TopEdge	    = 1,
+    TopRightEdge    = 2,
+    RightEdge	    = 3,
+    BottomRightEdge = 4,
+    BottomEdge	    = 5,
+    BottomLeftEdge  = 6,
+    LeftEdge	    = 7,
+    MoveEdge	    = 8,
+  };
+
+enum _WhatEdge
+  {
+    APointerEdge,
+    AKeyboardEdge,
+  };
+
+enum _Direction
+  {
+    Vertical,
+    Horizontal,
+  };
+
+enum
+  {
+    ResizeAxisTop    = 1,
+    ResizeAxisLeft   = (1 << 1),
+    ResizeAxisRight  = (1 << 2),
+    ResizeAxisBottom = (1 << 3),
+    ResizeAxisMove   = (1 << 16),
+  };
+
+enum
+  {
+    DeviceCanFingerScroll = 1,
+    DeviceCanEdgeScroll	  = 2,
+  };
+
+/* Array indiced by ResizeEdge containing axes along which the edge
+   resizes.  */
+
+static int resize_edges[] =
+  {
+    ResizeAxisTop | ResizeAxisLeft,
+    ResizeAxisTop,
+    ResizeAxisTop | ResizeAxisRight,
+    ResizeAxisRight,
+    ResizeAxisRight | ResizeAxisBottom,
+    ResizeAxisBottom,
+    ResizeAxisBottom | ResizeAxisLeft,
+    ResizeAxisLeft,
+    ResizeAxisMove,
+  };
+
+struct _DestroyListener
+{
+  /* Function called when seat is destroyed.  */
+  void (*destroy) (void *);
+
+  /* Data for that function.  */
+  void *data;
+
+  /* Next and last destroy listeners in this list.  */
+  DestroyListener *next, *last;
+};
+
+struct _SeatCursor
+{
+  /* The parent role.  Note that there is no wl_resource associated
+     with it.  */
+  Role role;
+
+  /* The current cursor.  */
+  Cursor cursor;
+
+  /* The seat this cursor is for.  */
+  Seat *seat;
+
+  /* The hotspot of the cursor.  */
+  int hotspot_x, hotspot_y;
+
+  /* The subcompositor for this cursor.  */
+  Subcompositor *subcompositor;
+
+  /* The frame callback for this cursor.  */
+  void *cursor_frame_key;
+
+  /* Whether or not this cursor is currently keeping the cursor clock
+     active.  */
+  Bool holding_cursor_clock;
+};
+
+struct _ResizeDoneCallback
+{
+  /* Function called when a resize operation finishes.  */
+  void (*done) (void *, void *);
+
+  /* Data for this callback.  */
+  void *data;
+
+  /* The next and last callbacks in this list.  */
+  ResizeDoneCallback *next, *last;
+};
+
+struct _ScrollValuator
+{
+  /* The next scroll valuator in this list.  */
+  ScrollValuator *next;
+
+  /* The direction of this valuator.  */
+  Direction direction;
+
+  /* The current value of this valuator.  */
+  double value;
+
+  /* The increment of this valuator.  */
+  double increment;
+
+  /* The number of this valuator.  */
+  int number;
+
+  /* The serial of the last event to have updated this valuator.  */
+  unsigned long enter_serial;
+};
+
+struct _Pointer
+{
+  /* The seat this pointer object refers to.  */
+  Seat *seat;
+
+  /* The struct wl_resource associated with this pointer.  */
+  struct wl_resource *resource;
+
+  /* The next and last pointer devices attached to the seat client
+     info.  */
+  Pointer *next, *last;
+
+  /* The seat client info associated with this pointer resource.  */
+  SeatClientInfo *info;
+
+  /* Some state.  */
+  int state;
+};
+
+struct _Keyboard
+{
+  /* The keyboard this pointer object refers to.  */
+  Seat *seat;
+
+  /* The struct wl_resource associated with this keyboard.  */
+  struct wl_resource *resource;
+
+  /* The seat client info associated with this keyboard resource.  */
+  SeatClientInfo *info;
+
+  /* The next and last keyboard attached to the seat client info and
+     the seat.  */
+  Keyboard *next, *next1, *last, *last1;
+};
+
+struct _SeatClientInfo
+{
+  /* Number of references to this seat client information.  */
+  int refcount;
+
+  /* The next and last structures in the client info chain.  */
+  SeatClientInfo *next, *last;
+
+  /* List of pointer objects on this seat for this client.  */
+  Pointer pointers;
+
+  /* List of keyboard objects on this seat for this client.  */
+  Keyboard keyboards;
+
+  /* The client corresponding to this object.  */
+  struct wl_client *client;
+
+  /* The serial of the last enter event sent.  */
+  uint32_t last_enter_serial;
+};
+
+struct _ModifierChangeCallback
+{
+  /* Callback run when modifiers change.  */
+  void (*changed) (unsigned int, void *);
+
+  /* Data for the callback.  */
+  void *data;
+
+  /* Next and last callbacks in this list.  */
+  ModifierChangeCallback *next, *last;
+};
+
+struct _Seat
+{
+  /* XI device ID of the master keyboard device.  */
+  int master_keyboard;
+
+  /* XI device ID of the master pointer device.  */
+  int master_pointer;
+
+  /* wl_global associated with this seat.  */
+  struct wl_global *global;
+
+  /* Number of references to this seat.  */
+  int refcount;
+
+  /* Some flags associated with this seat.  */
+  int flags;
+
+  /* The currently focused surface.  */
+  Surface *focus_surface;
+
+  /* The destroy callback attached to that surface.  */
+  DestroyCallback *focus_destroy_callback;
+
+  /* The last surface seen.  */
+  Surface *last_seen_surface;
+
+  /* The destroy callback attached to that surface.  */
+  DestroyCallback *last_seen_surface_callback;
+
+  /* The surface on which the last pointer click was made.  */
+  Surface *last_button_press_surface;
+
+  /* The destroy callback attached to that surface.  */
+  DestroyCallback *last_button_press_surface_callback;
+
+  /* The surface that the pointer focus should be unlocked to once the
+     mouse pointer is removed.  */
+  Surface *pointer_unlock_surface;
+
+  /* The destroy callback attached to that surface.  */
+  DestroyCallback *pointer_unlock_surface_callback;
+
+  /* Unmap callback used for cancelling the grab.  */
+  UnmapCallback *grab_unmap_callback;
+
+  /* How many times the grab is held on this seat.  */
+  int grab_held;
+
+  /* Array of keys currently held down.  */
+  struct wl_array keys;
+
+  /* Modifier masks.  */
+  unsigned int base, locked, latched;
+
+  /* Current base, locked and latched group.  Normalized by the X
+     server.  */
+  int base_group, locked_group, latched_group;
+
+  /* Current effective group.  Also normalized.  */
+  int effective_group;
+
+  /* Bitmask of whether or not a key was pressed.  Length of the
+     mask is the max_keycode >> 3 + 1.  */
+  unsigned char *key_pressed;
+
+  /* The current cursor attached to this seat.  */
+  SeatCursor *cursor;
+
+  /* The serial of the last button event sent.  */
+  uint32_t last_button_serial;
+
+  /* The serial of the last button press event sent.  GTK 4 sends this
+     even when grabbing a popup in response to a button release
+     event.  */
+  uint32_t last_button_press_serial;
+
+  /* The last serial used to obtain a grab.  */
+  uint32_t last_grab_serial;
+
+  /* The last edge used to obtain a grab.  */
+  WhatEdge last_grab_edge;
+
+  /* The last timestamp used to obtain a grab.  */
+  Time last_grab_time;
+
+  /* The button of the last button event sent, and the root_x and
+     root_y of the last button or motion event.  */
+  int last_button, its_root_x, its_root_y;
+
+  /* When it was sent.  */
+  Time its_press_time;
+
+  /* The serial of the last key event sent.  */
+  uint32_t last_keyboard_serial;
+
+  /* The time of the last key event sent.  */
+  Time its_depress_time;
+
+  /* Whether or not a resize is in progress.  */
+  Bool resize_in_progress;
+
+  /* Callbacks run after a resize completes.  */
+  ResizeDoneCallback resize_callbacks;
+
+  /* List of scroll valuators on this seat.  */
+  ScrollValuator *valuators;
+
+  /* Serial of the last crossing event.  */
+  unsigned long last_crossing_serial;
+
+  /* List of destroy listeners.  */
+  DestroyListener destroy_listeners;
+
+  /* Surface currently being resized, if any.  */
+  Surface *resize_surface;
+
+  /* Unmap callback for that surface.  */
+  UnmapCallback *resize_surface_callback;
+
+  /* Where that resize started.  */
+  int resize_start_root_x, resize_start_root_y;
+
+  /* Where the pointer was last seen.  */
+  int resize_last_root_x, resize_last_root_y;
+
+  /* The dimensions of the surface when it was first seen.  */
+  int resize_width, resize_height;
+
+  /* The axises.  */
+  int resize_axis_flags;
+
+  /* The button for the resize.  */
+  int resize_button;
+
+  /* The time used to obtain the resize grab.  */
+  Time resize_time;
+
+  /* The attached data device, if any.  */
+  DataDevice *data_device;
+
+  /* List of seat client information.  */
+  SeatClientInfo client_info;
+
+  /* List of all attached keyboards.  */
+  Keyboard keyboards;
+
+  /* The root_x and root_y of the last motion or crossing event.  */
+  double last_motion_x, last_motion_y;
+
+  /* The grab surface.  While it exists, events for different clients
+     will be reported relative to it.  */
+  Surface *grab_surface;
+
+  /* The unmap callback.  */
+  UnmapCallback *grab_surface_callback;
+
+  /* The data source for drag-and-drop.  */
+  DataSource *data_source;
+
+  /* The destroy callback for the data source.  */
+  void *data_source_destroy_callback;
+
+  /* The surface on which this drag operation started.  */
+  Surface *drag_start_surface;
+
+  /* The UnmapCallback for that surface.  */
+  UnmapCallback *drag_start_unmap_callback;
+
+  /* The last surface to be entered during drag-and-drop.  */
+  Surface *drag_last_surface;
+
+  /* The destroy callback for that surface.  */
+  DestroyCallback *drag_last_surface_destroy_callback;
+
+  /* The time the active grab was acquired.  */
+  Time drag_grab_time;
+
+  /* The icon surface.  */
+  IconSurface *icon_surface;
+
+  /* The drag-and-drop grab window.  This is a 1x1 InputOnly window
+     with an empty input region at 0, 0, used to differentiate between
+     events delivered to a surface during drag and drop, and events
+     delivered due to the grab.  */
+  Window grab_window;
+
+  /* List of all modifier change callbacks attached to this seat.  */
+  ModifierChangeCallback modifier_callbacks;
+};
+
+struct _DeviceInfo
+{
+  /* Some flags associated with this device.  */
+  int flags;
+};
+
+#define SetMask(ptr, event)						\
+  (((unsigned char *) (ptr))[(event) >> 3] |= (1 << ((event) & 7)))
+#define ClearMask(ptr, event)						\
+  (((unsigned char *) (ptr))[(event) >> 3] &= ~(1 << ((event) & 7)))
+#define MaskIsSet(ptr, event)						\
+  (((unsigned char *) (ptr))[(event) >> 3] &   (1 << ((event) & 7)))
+#define MaskLen(event)							\
+  (((event) >> 3) + 1)
+
+#define CursorFromRole(role)	((SeatCursor *) (role))
+
+/* Subcompositor targets used inside cursor subframes.  */
+static Picture cursor_subframe_picture;
+
+/* Its associated pixmap.  */
+static Pixmap cursor_subframe_pixmap;
+
+
+
+static Bool
+QueryPointer (Seat *seat, Window relative_to, double *x, double *y)
+{
+  XIButtonState buttons;
+  XIModifierState modifiers;
+  XIGroupState group;
+  double root_x, root_y, win_x, win_y;
+  Window root, child;
+  Bool same_screen;
+
+  buttons.mask = NULL;
+  same_screen = False;
+
+  /* First, initialize default values in case the pointer is on a
+     different screen.  */
+  *x = 0;
+  *y = 0;
+
+  if (XIQueryPointer (compositor.display, seat->master_pointer,
+		      relative_to, &root, &child, &root_x, &root_y,
+		      &win_x, &win_y, &buttons, &modifiers,
+		      &group))
+    {
+      *x = win_x;
+      *y = win_y;
+      same_screen = True;
+    }
+
+  /* buttons.mask must be freed manually, even if the pointer is on a
+     different screen.  */
+  if (buttons.mask)
+    XFree (buttons.mask);
+
+  return same_screen;
+}
+
+static void
+FinalizeSeatClientInfo (Seat *seat)
+{
+  SeatClientInfo *info, *last;
+
+  info = seat->client_info.next;
+
+  while (info != &seat->client_info)
+    {
+      last = info;
+      info = info->next;
+
+      /* Mark this as invalid, so it won't be unchained later on.  */
+      last->last = NULL;
+      last->next = NULL;
+    }
+}
+
+static SeatClientInfo *
+GetSeatClientInfo (Seat *seat, struct wl_client *client)
+{
+  SeatClientInfo *info;
+
+  info = seat->client_info.next;
+
+  while (info != &seat->client_info)
+    {
+      if (info->client == client)
+	return info;
+
+      info = info->next;
+    }
+
+  return NULL;
+}
+
+static SeatClientInfo *
+CreateSeatClientInfo (Seat *seat, struct wl_client *client)
+{
+  SeatClientInfo *info;
+
+  /* See if client has already created something on the seat.  */
+  info = GetSeatClientInfo (seat, client);
+
+  /* Otherwise, create it ourselves.  */
+  if (!info)
+    {
+      info = XLCalloc (1, sizeof *info);
+      info->next = seat->client_info.next;
+      info->last = &seat->client_info;
+      seat->client_info.next->last = info;
+      seat->client_info.next = info;
+
+      info->client = client;
+      info->pointers.next = &info->pointers;
+      info->pointers.last = &info->pointers;
+      info->keyboards.next = &info->keyboards;
+      info->keyboards.last = &info->keyboards;
+    }
+
+  /* Increase the reference count of info.  */
+  info->refcount++;
+
+  /* Return info.  */
+  return info;
+}
+
+static void
+ReleaseSeatClientInfo (SeatClientInfo *info)
+{
+  if (--info->refcount)
+    return;
+
+  /* Assert that there are no more keyboards or pointers attached.  */
+  XLAssert (info->keyboards.next == &info->keyboards);
+  XLAssert (info->pointers.next == &info->pointers);
+
+  /* Unlink the client info structure if it is still linked.  */
+  if (info->next)
+    {
+      info->next->last = info->last;
+      info->last->next = info->next;
+    }
+
+  /* Free the client info.  */
+  XLFree (info);
+}
+
+static void
+RetainSeat (Seat *seat)
+{
+  seat->refcount++;
+}
+
+static void
+UpdateCursorOutput (SeatCursor *cursor, int root_x, int root_y)
+{
+  int hotspot_x, hotspot_y;
+
+  /* Scale the hotspot coordinates up by the scale.  */
+  hotspot_x = cursor->hotspot_x * global_scale_factor;
+  hotspot_y = cursor->hotspot_y * global_scale_factor;
+
+  /* We use a rectangle 1 pixel wide and tall, originating from the
+     hotspot of the pointer.  */
+  XLUpdateSurfaceOutputs (cursor->role.surface, root_x + hotspot_x,
+			  root_y + hotspot_y, 1, 1);
+}
+
+static Window
+CursorWindow (SeatCursor *cursor)
+{
+  /* When dragging, use the surface on which the active grab is
+     set.  */
+  if (cursor->seat->flags & IsDragging)
+    return cursor->seat->grab_window;
+
+  /* The cursor should be cleared along with
+     seat->last_seen_surface.  */
+  XLAssert (cursor->seat->last_seen_surface != NULL);
+
+  return XLWindowFromSurface (cursor->seat->last_seen_surface);
+}
+
+static void
+HandleCursorFrame (void *data, struct timespec time)
+{
+  SeatCursor *cursor;
+
+  cursor = data;
+
+  if (cursor->role.surface)
+    XLSurfaceRunFrameCallbacks (cursor->role.surface, time);
+}
+
+static void
+StartCursorClock (SeatCursor *cursor)
+{
+  if (cursor->holding_cursor_clock)
+    return;
+
+  cursor->cursor_frame_key
+    = XLAddCursorClockCallback (HandleCursorFrame,
+				cursor);
+  cursor->holding_cursor_clock = True;
+}
+
+static void
+EndCursorClock (SeatCursor *cursor)
+{
+  if (!cursor->holding_cursor_clock)
+    return;
+
+  XLStopCursorClockCallback (cursor->cursor_frame_key);
+  cursor->holding_cursor_clock = False;
+}
+
+static void
+FreeCursor (SeatCursor *cursor)
+{
+  Window window;
+
+  if (cursor->role.surface)
+    XLSurfaceReleaseRole (cursor->role.surface,
+			  &cursor->role);
+
+  /* Now any attached views should have been released, so free the
+     subcompositor.  */
+  SubcompositorFree (cursor->subcompositor);
+
+  cursor->seat->cursor = NULL;
+
+  window = CursorWindow (cursor);
+
+  if (cursor->cursor != None)
+    XFreeCursor (compositor.display, cursor->cursor);
+
+  if (!(cursor->seat->flags & IsInert) && window)
+    XIDefineCursor (compositor.display,
+		    cursor->seat->master_pointer,
+		    window, InitDefaultCursor ());
+
+  /* Maybe release the cursor clock if it was active for this
+     cursor.  */
+  EndCursorClock (cursor);
+  XLFree (cursor);
+}
+
+static void
+FreeValuators (Seat *seat)
+{
+  ScrollValuator *last, *tem;
+
+  tem = seat->valuators;
+
+  while (tem)
+    {
+      last = tem;
+      tem = tem->next;
+
+      XLFree (last);
+    }
+
+  seat->valuators = NULL;
+}
+
+static void
+FreeDestroyListeners (Seat *seat)
+{
+  DestroyListener *listener, *last;
+
+  listener = seat->destroy_listeners.next;
+
+  while (listener != &seat->destroy_listeners)
+    {
+      last = listener;
+      listener = listener->next;
+
+      XLFree (last);
+    }
+}
+
+static void
+FreeModifierCallbacks (Seat *seat)
+{
+  ModifierChangeCallback *callback, *last;
+
+  callback = seat->modifier_callbacks.next;
+
+  while (callback != &seat->modifier_callbacks)
+    {
+      last = callback;
+      callback = callback->next;
+
+      XLFree (last);
+    }
+}
+
+static void
+ReleaseSeat (Seat *seat)
+{
+  if (--seat->refcount)
+    return;
+
+  if (seat->icon_surface)
+    XLReleaseIconSurface (seat->icon_surface);
+
+  if (seat->focus_destroy_callback)
+    XLSurfaceCancelRunOnFree (seat->focus_destroy_callback);
+
+  if (seat->last_seen_surface_callback)
+    XLSurfaceCancelRunOnFree (seat->last_seen_surface_callback);
+
+  if (seat->pointer_unlock_surface_callback)
+    XLSurfaceCancelRunOnFree (seat->pointer_unlock_surface_callback);
+
+  if (seat->last_button_press_surface_callback)
+    XLSurfaceCancelRunOnFree (seat->last_button_press_surface_callback);
+
+  if (seat->drag_last_surface_destroy_callback)
+    XLSurfaceCancelRunOnFree (seat->drag_last_surface_destroy_callback);
+
+  if (seat->grab_surface_callback)
+    XLSurfaceCancelUnmapCallback (seat->grab_surface_callback);
+
+  if (seat->grab_unmap_callback)
+    XLSurfaceCancelUnmapCallback (seat->grab_unmap_callback);
+
+  if (seat->resize_surface_callback)
+    XLSurfaceCancelUnmapCallback (seat->resize_surface_callback);
+
+  if (seat->drag_start_unmap_callback)
+    XLSurfaceCancelUnmapCallback (seat->drag_start_unmap_callback);
+
+  if (seat->data_source_destroy_callback)
+    XLDataSourceCancelDestroyCallback (seat->data_source_destroy_callback);
+
+  if (seat->grab_window != None)
+    XDestroyWindow (compositor.display, seat->grab_window);
+
+  wl_array_release (&seat->keys);
+
+  if (seat->cursor)
+    FreeCursor (seat->cursor);
+
+  if (seat->data_device)
+    {
+      XLDataDeviceClearSeat (seat->data_device);
+      XLReleaseDataDevice (seat->data_device);
+    }
+
+  FinalizeSeatClientInfo (seat);
+  FreeValuators (seat);
+  FreeDestroyListeners (seat);
+  FreeModifierCallbacks (seat);
+
+  XLFree (seat->key_pressed);
+  XLFree (seat);
+}
+
+static Picture
+PictureForCursor (Drawable drawable)
+{
+  XRenderPictureAttributes attrs;
+  Picture picture;
+
+  /* This is only required to pacfy -Wmaybe-uninitialized, since
+     valuemask is 0.  */
+  memset (&attrs, 0, sizeof attrs);
+
+  picture = XRenderCreatePicture (compositor.display, drawable,
+				  compositor.argb_format, 0,
+				  &attrs);
+  return picture;
+}
+
+static void
+ComputeHotspot (SeatCursor *cursor, int min_x, int min_y,
+		int *x, int *y)
+{
+  int dx, dy;
+  int hotspot_x, hotspot_y;
+
+  /* Scale the hotspot coordinates up by the scale.  */
+  hotspot_x = cursor->hotspot_x * global_scale_factor;
+  hotspot_y = cursor->hotspot_y * global_scale_factor;
+
+  /* Apply the surface offsets to the hotspot as well.  */
+  dx = dy = 0;
+
+  if (cursor->role.surface)
+    {
+      dx = (cursor->role.surface->current_state.x
+	    * global_scale_factor);
+      dy = (cursor->role.surface->current_state.y
+	    * global_scale_factor);
+    }
+
+  *x = min_x + hotspot_x - dx;
+  *y = min_y + hotspot_y - dy;
+}
+
+static void
+ApplyCursor (SeatCursor *cursor, Picture picture,
+	     int min_x, int min_y)
+{
+  Window window;
+  int x, y;
+
+  if (cursor->cursor)
+    XFreeCursor (compositor.display, cursor->cursor);
+
+  ComputeHotspot (cursor, min_x, min_y, &x, &y);
+  cursor->cursor = XRenderCreateCursor (compositor.display,
+					picture, MAX (0, x),
+					MAX (0, y));
+  window = CursorWindow (cursor);
+
+  if (!(cursor->seat->flags & IsInert) && window != None)
+    XIDefineCursor (compositor.display,
+		    cursor->seat->master_pointer,
+		    window, cursor->cursor);
+}
+
+static void
+UpdateCursorFromSubcompositor (SeatCursor *cursor)
+{
+  static XRenderColor empty;
+  Picture picture;
+  Pixmap pixmap;
+  int min_x, min_y, max_x, max_y, width, height, x, y;
+  Bool need_clear;
+
+  /* First, compute the bounds of the subcompositor.  */
+  SubcompositorBounds (cursor->subcompositor,
+		       &min_x, &min_y, &max_x, &max_y);
+
+  /* Then, its width and height.  */
+  width = max_x - min_x + 1;
+  height = max_y - min_y + 1;
+
+  /* If the cursor hotspot extends outside width and height, extend
+     the picture.  */
+  ComputeHotspot (cursor, min_x, min_y, &x, &y);
+
+  if (x < 0 || y < 0 || x >= width || y >= height)
+    {
+      if (x >= width)
+	width = x;
+      if (y >= height)
+	height = y;
+
+      if (x < 0)
+	width += -x;
+      if (y < 0)
+	height += -y;
+
+      need_clear = True;
+    }
+  else
+    need_clear = False;
+
+  /* This is unbelivably the only way to dynamically update the cursor
+     under X.  Rather inefficient with animated cursors.  */
+  pixmap = XCreatePixmap (compositor.display,
+			  DefaultRootWindow (compositor.display),
+			  width, height, compositor.n_planes);
+  picture = PictureForCursor (pixmap);
+
+  /* If the bounds extend beyond the subcompositor, clear the
+     picture.  */
+  if (need_clear)
+    XRenderFillRectangle (compositor.display, PictOpClear,
+			  picture, &empty, 0, 0, width, height);
+
+  /* Garbage the subcompositor, since cursor contents are not
+     preserved.  */
+  SubcompositorGarbage (cursor->subcompositor);
+
+  /* Set the right transform if the hotspot is negative.  */
+  SubcompositorSetProjectiveTransform (cursor->subcompositor,
+				       MAX (0, -x), MAX (0, -x));
+
+  SubcompositorSetTarget (cursor->subcompositor, picture);
+  SubcompositorUpdate (cursor->subcompositor);
+  SubcompositorSetTarget (cursor->subcompositor, None);
+
+  ApplyCursor (cursor, picture, min_x, min_y);
+
+  XRenderFreePicture (compositor.display, picture);
+  XFreePixmap (compositor.display, pixmap);
+}
+
+static void
+UpdateCursor (SeatCursor *cursor, int x, int y)
+{
+  cursor->hotspot_x = x;
+  cursor->hotspot_y = y;
+
+  UpdateCursorFromSubcompositor (cursor);
+}
+
+static void
+ApplyEmptyCursor (SeatCursor *cursor)
+{
+  Window window;
+
+  if (cursor->cursor)
+    XFreeCursor (compositor.display, cursor->cursor);
+
+  cursor->cursor = None;
+  window = CursorWindow (cursor);
+
+  if (window != None)
+    XIDefineCursor (compositor.display,
+		    cursor->seat->master_pointer,
+		    window, InitDefaultCursor ());
+}
+
+static void
+Commit (Surface *surface, Role *role)
+{
+  SeatCursor *cursor;
+
+  cursor = CursorFromRole (role);
+
+  if (SubcompositorIsEmpty (cursor->subcompositor))
+    {
+      ApplyEmptyCursor (cursor);
+      return;
+    }
+
+  UpdateCursorFromSubcompositor (cursor);
+
+  /* If the surface now has frame callbacks, start the cursor frame
+     clock.  */
+
+  if (surface->current_state.frame_callbacks.next
+      != &surface->current_state.frame_callbacks)
+    StartCursorClock (cursor);
+}
+
+static void
+Teardown (Surface *surface, Role *role)
+{
+  role->surface = NULL;
+
+  ViewUnparent (surface->view);
+  ViewUnparent (surface->under);
+
+  ViewSetSubcompositor (surface->view, NULL);
+  ViewSetSubcompositor (surface->under, NULL);
+}
+
+static Bool
+Setup (Surface *surface, Role *role)
+{
+  SeatCursor *cursor;
+
+  cursor = CursorFromRole (role);
+  role->surface = surface;
+
+  /* First, attach the subcompositor.  */
+  ViewSetSubcompositor (surface->under, cursor->subcompositor);
+  ViewSetSubcompositor (surface->view, cursor->subcompositor);
+
+  /* Then, insert the view.  */
+  SubcompositorInsert (cursor->subcompositor, surface->under);
+  SubcompositorInsert (cursor->subcompositor, surface->view);
+
+  return True;
+}
+
+static void
+ReleaseBuffer (Surface *surface, Role *role, ExtBuffer *buffer)
+{
+  /* Cursors are generally committed only once, so syncing here is
+     OK in terms of efficiency.  */
+  XSync (compositor.display, False);
+  XLReleaseBuffer (buffer);
+}
+
+static Bool
+Subframe (Surface *surface, Role *role)
+{
+  static XRenderColor empty;
+  Picture picture;
+  Pixmap pixmap;
+  int min_x, min_y, max_x, max_y, width, height, x, y;
+  Bool need_clear;
+  SeatCursor *cursor;
+
+  cursor = CursorFromRole (role);
+
+  if (SubcompositorIsEmpty (cursor->subcompositor))
+    /* The subcompositor is empty.  Don't set up the cursor
+       pixmap.  */
+    return False;
+
+  /* First, compute the bounds of the subcompositor.  */
+  SubcompositorBounds (cursor->subcompositor,
+		       &min_x, &min_y, &max_x, &max_y);
+
+  /* Then, its width and height.  */
+  width = max_x - min_x + 1;
+  height = max_y - min_y + 1;
+
+  /* If the cursor hotspot extends outside width and height, extend
+     the picture.  */
+  ComputeHotspot (cursor, min_x, min_y, &x, &y);
+
+  if (x < 0 || y < 0 || x >= width || y >= height)
+    {
+      if (x >= width)
+	width = x;
+      if (y >= width)
+	height = y;
+
+      if (x < 0)
+	width += -x;
+      if (y < 0)
+	height += -y;
+
+      need_clear = True;
+    }
+  else
+    need_clear = False;
+
+  /* This is unbelivably the only way to dynamically update the cursor
+     under X.  Rather inefficient with animated cursors.  */
+  pixmap = XCreatePixmap (compositor.display,
+			  DefaultRootWindow (compositor.display),
+			  width, height, compositor.n_planes);
+  picture = PictureForCursor (pixmap);
+
+  /* If the bounds extend beyond the subcompositor, clear the
+     picture.  */
+  if (need_clear)
+    XRenderFillRectangle (compositor.display, PictOpClear,
+			  picture, &empty, 0, 0, width, height);
+
+  /* Garbage the subcompositor, since cursor contents are not
+     preserved.  */
+  SubcompositorGarbage (cursor->subcompositor);
+
+  /* Set the right transform if the hotspot is negative.  */
+  SubcompositorSetProjectiveTransform (cursor->subcompositor,
+				       MAX (0, -x), MAX (0, -x));
+  SubcompositorSetTarget (cursor->subcompositor, picture);
+
+  /* Set the subframe picture to the picture in question.  */
+  cursor_subframe_picture = picture;
+
+  /* Return True to let the drawing proceed.  */
+  return True;
+}
+
+static void
+EndSubframe (Surface *surface, Role *role)
+{
+  SeatCursor *cursor;
+  int min_x, min_y, max_x, max_y;
+
+  cursor = CursorFromRole (role);
+
+  if (cursor_subframe_picture)
+    {
+      /* First, compute the bounds of the subcompositor.  */
+      SubcompositorBounds (cursor->subcompositor,
+			   &min_x, &min_y, &max_x, &max_y);
+
+      /* Apply the cursor.  */
+      ApplyCursor (cursor, cursor_subframe_picture, min_x, min_y);
+
+      /* Then, free the temporary target.  */
+      XRenderFreePicture (compositor.display,
+			  cursor_subframe_picture);
+
+      /* Finally, clear the target.  */
+      SubcompositorSetTarget (cursor->subcompositor, None);
+    }
+  else
+    ApplyEmptyCursor (cursor);
+
+  if (cursor_subframe_pixmap)
+    XFreePixmap (compositor.display,
+		 cursor_subframe_pixmap);
+}
+
+static void
+MakeCurrentCursor (Seat *seat, Surface *surface, int x, int y)
+{
+  SeatCursor *role;
+  Window window;
+
+  window = XLWindowFromSurface (seat->last_seen_surface);
+
+  if (window == None || (seat->flags & IsInert))
+    return;
+
+  role = XLCalloc (1, sizeof *role);
+  XIDefineCursor (compositor.display,
+		  seat->master_pointer,
+		  window,
+		  InitDefaultCursor ());
+
+  role->hotspot_x = x;
+  role->hotspot_y = y;
+  role->seat = seat;
+
+  ApplyEmptyCursor (role);
+
+  /* Set up role callbacks.  */
+
+  role->role.funcs.commit = Commit;
+  role->role.funcs.teardown = Teardown;
+  role->role.funcs.setup = Setup;
+  role->role.funcs.release_buffer = ReleaseBuffer;
+  role->role.funcs.subframe = Subframe;
+  role->role.funcs.end_subframe = EndSubframe;
+
+  /* Set up the subcompositor.  */
+
+  role->subcompositor = MakeSubcompositor ();
+
+  if (!XLSurfaceAttachRole (surface, &role->role))
+    abort ();
+
+  seat->cursor = role;
+
+  /* Tell the cursor surface what output(s) it is in.  */
+
+  UpdateCursorOutput (role, seat->last_motion_x,
+		      seat->last_motion_y);
+
+  /* If something was committed, update the cursor now.  */
+
+  if (!SubcompositorIsEmpty (role->subcompositor))
+    UpdateCursorFromSubcompositor (role);
+}
+
+static void
+SetCursor (struct wl_client *client, struct wl_resource *resource,
+	   uint32_t serial, struct wl_resource *surface_resource,
+	   int32_t hotspot_x, int32_t hotspot_y)
+{
+  Surface *surface, *seen;
+  Pointer *pointer;
+  Seat *seat;
+
+  pointer = wl_resource_get_user_data (resource);
+  seat = pointer->seat;
+  seen = seat->last_seen_surface;
+
+  if (serial < pointer->info->last_enter_serial)
+    return;
+
+  if (!surface_resource)
+    {
+      if (!seen || (wl_resource_get_client (seen->resource)
+		    != client))
+	return;
+
+      if (seat->cursor)
+	FreeCursor (seat->cursor);
+
+      return;
+    }
+
+  surface = wl_resource_get_user_data (surface_resource);
+
+  /* Do nothing at all if the last seen surface isn't owned by client
+     and we are not updating the current pointer surface.  */
+
+  if (!seat->cursor
+      || surface->role != &seat->cursor->role)
+    {
+      if (!seen || (wl_resource_get_client (seen->resource)
+		    != client))
+	return;
+    }
+
+  /* If surface already has another role, raise an error.  */
+
+  if (surface->role_type != AnythingType
+      && surface->role_type != CursorType)
+    {
+      wl_resource_post_error (resource, WL_POINTER_ERROR_ROLE,
+			      "surface already has or had a different role");
+      return;
+    }
+
+  if (surface->role && !seat->cursor
+      && surface->role != &seat->cursor->role)
+    {
+      wl_resource_post_error (resource, WL_POINTER_ERROR_ROLE,
+			      "surface already has a cursor role"
+			      " on another seat");
+      return;
+    }
+
+  if (surface->role)
+    {
+      UpdateCursor (CursorFromRole (surface->role),
+		    hotspot_x, hotspot_y);
+      return;
+    }
+
+  /* Free any cursor that already exists.  */
+  if (seat->cursor)
+    FreeCursor (seat->cursor);
+
+  MakeCurrentCursor (seat, surface, hotspot_x, hotspot_y);
+}
+
+static void
+ReleasePointer (struct wl_client *client, struct wl_resource *resource)
+{
+  wl_resource_destroy (resource);
+}
+
+static void
+ReleaseKeyboard (struct wl_client *client, struct wl_resource *resource)
+{
+  wl_resource_destroy (resource);
+}
+
+static const struct wl_pointer_interface wl_pointer_impl =
+  {
+    .set_cursor = SetCursor,
+    .release = ReleasePointer,
+  };
+
+static const struct wl_keyboard_interface wl_keyboard_impl =
+  {
+    .release = ReleaseKeyboard,
+  };
+
+static void
+HandlePointerResourceDestroy (struct wl_resource *resource)
+{
+  Pointer *pointer;
+
+  pointer = wl_resource_get_user_data (resource);
+  pointer->last->next = pointer->next;
+  pointer->next->last = pointer->last;
+
+  ReleaseSeatClientInfo (pointer->info);
+  ReleaseSeat (pointer->seat);
+
+  XLFree (pointer);
+}
+
+static void
+HandleKeyboardResourceDestroy (struct wl_resource *resource)
+{
+  Keyboard *keyboard;
+
+  keyboard = wl_resource_get_user_data (resource);
+  keyboard->last->next = keyboard->next;
+  keyboard->next->last = keyboard->last;
+  keyboard->last1->next1 = keyboard->next1;
+  keyboard->next1->last1 = keyboard->last1;
+
+  ReleaseSeatClientInfo (keyboard->info);
+  ReleaseSeat (keyboard->seat);
+
+  XLFree (keyboard);
+}
+
+static void
+GetPointer (struct wl_client *client, struct wl_resource *resource,
+	    uint32_t id)
+{
+  Seat *seat;
+  SeatClientInfo *info;
+  Pointer *pointer;
+  struct wl_resource *pointer_resource;
+
+  pointer_resource
+    = wl_resource_create (client, &wl_pointer_interface,
+			  wl_resource_get_version (resource),
+			  id);
+
+  if (!pointer_resource)
+    {
+      wl_resource_post_no_memory (resource);
+      return;
+    }
+
+  pointer = XLSafeMalloc (sizeof *pointer);
+
+  if (!pointer)
+    {
+      wl_resource_post_no_memory (resource);
+      wl_resource_destroy (pointer_resource);
+
+      return;
+    }
+
+  seat = wl_resource_get_user_data (resource);
+  RetainSeat (seat);
+
+  memset (pointer, 0, sizeof *pointer);
+
+  info = CreateSeatClientInfo (seat, client);
+  pointer->resource = pointer_resource;
+  pointer->seat = seat;
+  pointer->info = info;
+  pointer->next = info->pointers.next;
+  pointer->last = &info->pointers;
+
+  /* This flag means the pointer object has just been created, and
+     button presses should send a corresponding entry event.  */
+  pointer->state |= StateIsRaw;
+
+  info->pointers.next->last = pointer;
+  info->pointers.next = pointer;
+
+  wl_resource_set_implementation (pointer_resource, &wl_pointer_impl,
+				  pointer, HandlePointerResourceDestroy);
+}
+
+static void
+SendRepeatKeys (struct wl_resource *resource)
+{
+  if (wl_resource_get_version (resource) < 4)
+    return;
+
+  wl_keyboard_send_repeat_info (resource,
+				1000 / xkb_desc->ctrls->repeat_interval,
+				xkb_desc->ctrls->repeat_delay);
+}
+
+static void
+UpdateSingleKeyboard (Keyboard *keyboard)
+{
+  struct stat statb;
+
+  if (fstat (keymap_fd, &statb) < 0)
+    {
+      perror ("fstat");
+      exit (0);
+    }
+
+  wl_keyboard_send_keymap (keyboard->resource,
+			   WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1,
+			   keymap_fd, statb.st_size);
+
+  SendRepeatKeys (keyboard->resource);
+}
+
+static void
+GetKeyboard (struct wl_client *client, struct wl_resource *resource,
+	     uint32_t id)
+{
+  SeatClientInfo *info;
+  Seat *seat;
+  Keyboard *keyboard;
+  struct wl_resource *keyboard_resource;
+
+  keyboard_resource
+    = wl_resource_create (client, &wl_keyboard_interface,
+			  wl_resource_get_version (resource),
+			  id);
+
+  if (!keyboard_resource)
+    {
+      wl_resource_post_no_memory (resource);
+      return;
+    }
+
+  keyboard = XLSafeMalloc (sizeof *keyboard);
+
+  if (!keyboard)
+    {
+      wl_resource_post_no_memory (resource);
+      wl_resource_destroy (keyboard_resource);
+
+      return;
+    }
+
+  seat = wl_resource_get_user_data (resource);
+  RetainSeat (seat);
+
+  memset (keyboard, 0, sizeof *keyboard);
+
+  info = CreateSeatClientInfo (seat, client);
+  keyboard->resource = keyboard_resource;
+
+  /* First, link the keyboard onto the seat client info.  */
+  keyboard->info = info;
+  keyboard->next = info->keyboards.next;
+  keyboard->last = &info->keyboards;
+  info->keyboards.next->last = keyboard;
+  info->keyboards.next = keyboard;
+
+  /* Then, the seat.  */
+  keyboard->seat = seat;
+  keyboard->next1 = seat->keyboards.next1;
+  keyboard->last1 = &seat->keyboards;
+  seat->keyboards.next1->last1 = keyboard;
+  seat->keyboards.next1 = keyboard;
+
+  wl_resource_set_implementation (keyboard_resource, &wl_keyboard_impl,
+				  keyboard, HandleKeyboardResourceDestroy);
+
+  UpdateSingleKeyboard (keyboard);
+
+  /* Update the keyboard's focus surface too.  */
+
+  if (seat->focus_surface
+      && (wl_resource_get_client (seat->focus_surface->resource)
+	  == client))
+    wl_keyboard_send_enter (keyboard_resource,
+			    wl_display_next_serial (compositor.wl_display),
+			    seat->focus_surface->resource, &seat->keys);
+}
+
+static void
+GetTouch (struct wl_client *client, struct wl_resource *resource,
+	  uint32_t id)
+{
+  wl_resource_post_error (resource, WL_SEAT_ERROR_MISSING_CAPABILITY,
+			  "touch support not yet implemented");
+}
+
+static void
+Release (struct wl_client *client, struct wl_resource *resource)
+{
+  wl_resource_destroy (resource);
+}
+
+static const struct wl_seat_interface wl_seat_impl =
+  {
+    .get_pointer = GetPointer,
+    .get_keyboard = GetKeyboard,
+    .get_touch = GetTouch,
+    .release = Release,
+  };
+
+static void
+HandleResourceDestroy (struct wl_resource *resource)
+{
+  Seat *seat;
+
+  seat = wl_resource_get_user_data (resource);
+  ReleaseSeat (seat);
+}
+
+static void
+HandleBind (struct wl_client *client, void *data,
+	    uint32_t version, uint32_t id)
+{
+  struct wl_resource *resource;
+  char *name;
+  ptrdiff_t length;
+  Seat *seat;
+
+  seat = data;
+  resource = wl_resource_create (client, &wl_seat_interface,
+				 version, id);
+
+  if (!resource)
+    {
+      wl_client_post_no_memory (client);
+      return;
+    }
+
+  wl_resource_set_implementation (resource, &wl_seat_impl, data,
+				  HandleResourceDestroy);
+
+  wl_seat_send_capabilities (resource, (WL_SEAT_CAPABILITY_POINTER
+					| WL_SEAT_CAPABILITY_KEYBOARD));
+
+  length = snprintf (NULL, 0, "X11 master device %d %d",
+		     seat->master_pointer, seat->master_keyboard);
+  name = alloca (length + 1);
+  snprintf (name, length + 1, "X11 master device %d %d",
+	    seat->master_pointer, seat->master_keyboard);
+
+  if (wl_resource_get_version (resource) > 2)
+    wl_seat_send_name (resource, name);
+
+  RetainSeat (data);
+}
+
+static void
+AddValuator (Seat *seat, XIScrollClassInfo *info)
+{
+  ScrollValuator *valuator;
+
+  valuator = XLCalloc (1, sizeof *valuator);
+  valuator->next = seat->valuators;
+  valuator->increment = info->increment;
+  valuator->number = info->number;
+
+  if (info->scroll_type == XIScrollTypeHorizontal)
+    valuator->direction = Horizontal;
+  else
+    valuator->direction = Vertical;
+
+  seat->valuators = valuator;
+}
+
+static void
+UpdateValuators (Seat *seat, XIDeviceInfo *device)
+{
+  int i;
+
+  /* First, free any existing valuators.  */
+  FreeValuators (seat);
+
+  /* Next, add each valuator.  */
+  for (i = 0; i < device->num_classes; ++i)
+    {
+      if (device->classes[i]->type == XIScrollClass)
+	AddValuator (seat, (XIScrollClassInfo *) device->classes[i]);
+    }
+}
+
+static void
+MakeSeatForDevicePair (int master_keyboard, int master_pointer,
+		       XIDeviceInfo *pointer_info)
+{
+  Seat *seat;
+  XkbStateRec state;
+
+  seat = XLCalloc (1, sizeof *seat);
+  seat->master_keyboard = master_keyboard;
+  seat->master_pointer = master_pointer;
+  seat->global = wl_global_create (compositor.wl_display,
+				   &wl_seat_interface, 7,
+				   seat, HandleBind);
+  seat->client_info.next = &seat->client_info;
+  seat->client_info.last = &seat->client_info;
+
+  seat->keyboards.next1 = &seat->keyboards;
+  seat->keyboards.last1 = &seat->keyboards;
+
+  seat->resize_callbacks.next = &seat->resize_callbacks;
+  seat->resize_callbacks.last = &seat->resize_callbacks;
+
+  seat->destroy_listeners.next = &seat->destroy_listeners;
+  seat->destroy_listeners.last = &seat->destroy_listeners;
+
+  seat->modifier_callbacks.next = &seat->modifier_callbacks;
+  seat->modifier_callbacks.last = &seat->modifier_callbacks;
+
+  wl_array_init (&seat->keys);
+
+  XLMakeAssoc (seats, master_keyboard, seat);
+  XLMakeAssoc (seats, master_pointer, seat);
+
+  live_seats = XLListPrepend (live_seats, seat);
+
+  /* Now update the seat state from the X server.  */
+  XkbGetState (compositor.display, XkbUseCoreKbd, &state);
+
+  seat->base = state.base_mods;
+  seat->locked = state.locked_mods;
+  seat->latched = state.latched_mods;
+  seat->base_group = state.base_group;
+  seat->locked_group = state.locked_group;
+  seat->latched_group = state.latched_group;
+  seat->effective_group = state.group;
+
+  UpdateValuators (seat, pointer_info);
+  RetainSeat (seat);
+}
+
+static void
+UpdateScrollMethods (DeviceInfo *info, int deviceid)
+{
+  unsigned char *data;
+  Status rc;
+  Atom actual_type;
+  int actual_format;
+  unsigned long nitems, bytes_after;
+
+  data = NULL;
+
+  /* This only works with the libinput driver.  */
+  rc = XIGetProperty (compositor.display, deviceid,
+		      libinput_Scroll_Methods_Available,
+		      0, 3, False, XIAnyPropertyType,
+		      &actual_type, &actual_format,
+		      &nitems, &bytes_after, &data);
+
+  /* If there aren't enough items in the data, or the format is wrong,
+     return.  */
+  if (rc != Success || nitems < 3 || actual_format != 8 || !data)
+    {
+      if (data)
+	XFree (data);
+
+      return;
+    }
+
+  /* First, clear all flags that this function sets.  */
+  info->flags &= ~DeviceCanFingerScroll;
+  info->flags &= ~DeviceCanEdgeScroll;
+
+  if (data[0])
+    info->flags |= DeviceCanFingerScroll;
+
+  if (data[1])
+    info->flags |= DeviceCanEdgeScroll;
+
+  if (data)
+    XFree (data);
+}
+
+static void
+RecordDeviceInformation (XIDeviceInfo *deviceinfo)
+{
+  DeviceInfo *info;
+
+  info = XLLookUpAssoc (devices, deviceinfo->deviceid);
+
+  /* If info doesn't exist, allocate it now.  */
+  if (!info)
+    {
+      info = XLMalloc (sizeof *info);
+      XLMakeAssoc (devices, deviceinfo->deviceid, info);
+    }
+
+  /* Now clear info->flags, and determine what the device can do.  */
+  info->flags = 0;
+
+  /* Initialize scrolling attributes pertinent to pointer devices.  */
+  if (deviceinfo->use == XISlavePointer)
+    {
+      /* Catch errors in case the device disappears.  */
+      CatchXErrors ();
+
+      /* Obtain the "libinput Scroll Methods Enabled" property and use it
+	 to compute what scroll methods are available.  This naturally
+	 only works with the libinput driver.  */
+      UpdateScrollMethods (info, deviceinfo->deviceid);
+
+      /* Uncatch errors.  */
+      UncatchXErrors (NULL);
+    }
+}
+
+static void
+SetupInitialDevices (void)
+{
+  XIDeviceInfo *deviceinfo;
+  int ndevices, i;
+
+  deviceinfo = XIQueryDevice (compositor.display,
+			      XIAllDevices, &ndevices);
+
+  if (!deviceinfo)
+    return;
+
+  for (i = 0; i < ndevices; ++i)
+    {
+      if (deviceinfo[i].use == XIMasterPointer)
+	MakeSeatForDevicePair (deviceinfo[i].attachment,
+			       deviceinfo[i].deviceid,
+			       &deviceinfo[i]);
+
+      RecordDeviceInformation (&deviceinfo[i]);
+    }
+
+  XIFreeDeviceInfo (deviceinfo);
+}
+
+static void
+RunResizeDoneCallbacks (Seat *seat)
+{
+  ResizeDoneCallback *callback, *last;
+
+  callback = seat->resize_callbacks.next;
+
+  while (callback != &seat->resize_callbacks)
+    {
+      last = callback;
+      callback = callback->next;
+
+      last->done (last, last->data);
+      XLFree (last);
+    }
+
+  /* Empty the list since all elements are free again.  */
+  seat->resize_callbacks.next = &seat->resize_callbacks;
+  seat->resize_callbacks.last = &seat->resize_callbacks;
+}
+
+static void
+CancelResizeOperation (Seat *seat, Time time)
+{
+  /* Stop the resize operation.  */
+  XLSurfaceCancelUnmapCallback (seat->resize_surface_callback);
+  seat->resize_surface = NULL;
+
+  /* Run resize completion callbacks.  */
+  RunResizeDoneCallbacks (seat);
+
+  /* Ungrab the pointer.  */
+  XIUngrabDevice (compositor.display, seat->master_pointer,
+		  time);
+}
+
+static Bool
+InterceptButtonEventForResize (Seat *seat, XIDeviceEvent *xev)
+{
+  if (xev->type == XI_ButtonPress)
+    return True;
+
+  /* If the button starting the resize has been released, cancel the
+     resize operation.  */
+  if (xev->detail == seat->resize_button)
+    CancelResizeOperation (seat, xev->time);
+
+  return True;
+}
+
+/* Forward declaration.  */
+
+static Bool HandleValuatorMotion (Seat *, Surface *, double, double,
+				  XIDeviceEvent *);
+
+#define MoveLeft(flags, i)	((flags) & ResizeAxisLeft ? (i) : 0)
+#define MoveTop(flags, i)	((flags) & ResizeAxisTop  ? (i) : 0)
+
+static void
+HandleMovement (Seat *seat, int west, int north)
+{
+  XLSurfaceMoveBy (seat->resize_surface, west, north);
+}
+
+static Bool
+InterceptMotionEventForResize (Seat *seat, XIDeviceEvent *xev)
+{
+  int root_x, root_y, diff_x, diff_y, abs_diff_x, abs_diff_y;
+
+  root_x = lrint (xev->root_x);
+  root_y = lrint (xev->root_y);
+
+  /* Handle valuator motion anyway.  Otherwise, the values could get
+     out of date.  */
+  HandleValuatorMotion (seat, NULL, xev->event_x, xev->event_y, xev);
+
+  if (root_x == seat->resize_last_root_x
+      && root_y == seat->resize_last_root_y)
+    /* No motion really happened.  */
+    return True;
+
+  /* If this is a move and not a resize, simply move the surface's
+     window.  */
+  if (seat->resize_axis_flags & ResizeAxisMove)
+    {
+      HandleMovement (seat, seat->resize_last_root_x - root_x,
+		      seat->resize_last_root_y - root_y);
+
+      seat->resize_last_root_x = root_x;
+      seat->resize_last_root_y = root_y;
+      return True;
+    }
+
+  /* Compute the amount by which to move the window.  The movement is
+     towards the geographical north and west.  */
+  diff_x = seat->resize_last_root_x - root_x;
+  diff_y = seat->resize_last_root_y - root_y;
+
+  abs_diff_x = 0;
+  abs_diff_y = 0;
+
+  if (seat->resize_axis_flags & ResizeAxisLeft)
+    /* diff_x will move the surface leftwards.  This is by how
+       much to extend the window the other way as well.  */
+    abs_diff_x = seat->resize_start_root_x - root_x;
+
+  if (seat->resize_axis_flags & ResizeAxisTop)
+    /* Likewise for diff_y.  */
+    abs_diff_y = seat->resize_start_root_y - root_y;
+
+  if (seat->resize_axis_flags & ResizeAxisRight)
+    /* diff_x is computed differently here, since root_x grows in the
+       correct resize direction.  */
+    abs_diff_x = root_x - seat->resize_start_root_x;
+
+  if (seat->resize_axis_flags & ResizeAxisBottom)
+    /* The same applies for the direction of root_y.  */
+    abs_diff_y = root_y - seat->resize_start_root_y;
+
+  if (!abs_diff_x && !abs_diff_y)
+    /* No resizing has to take place.  */
+    return True;
+
+  seat->resize_last_root_x = root_x;
+  seat->resize_last_root_y = root_y;
+
+  /* Now, post a new configure event.  Upon ack, also move the window
+     leftwards and topwards by diff_x and diff_y, should the resize
+     direction go that way.  */
+  XLSurfacePostResize (seat->resize_surface,
+		       MoveLeft (seat->resize_axis_flags, diff_x),
+		       MoveTop (seat->resize_axis_flags, diff_y),
+		       seat->resize_width + abs_diff_x,
+		       seat->resize_height + abs_diff_y);
+
+  return True;
+}
+
+static Bool
+InterceptResizeEvent (Seat *seat, XIDeviceEvent *xev)
+{
+  if (!seat->resize_surface)
+    return False;
+
+  switch (xev->evtype)
+    {
+    case XI_ButtonRelease:
+      return InterceptButtonEventForResize (seat, xev);
+
+    case XI_Motion:
+      return InterceptMotionEventForResize (seat, xev);
+    }
+
+  return True;
+}
+
+static void
+RunDestroyListeners (Seat *seat)
+{
+  DestroyListener *listeners;
+
+  listeners = seat->destroy_listeners.next;
+
+  while (listeners != &seat->destroy_listeners)
+    {
+      listeners->destroy (listeners->data);
+      listeners = listeners->next;
+    }
+}
+
+static void
+NoticeDeviceDisabled (int deviceid)
+{
+  Seat *seat;
+  DeviceInfo *info;
+
+  /* First, see if there is any deviceinfo related to the disabled
+     device.  If there is, free it.  */
+  info = XLLookUpAssoc (devices, deviceid);
+
+  if (info)
+    {
+      XLDeleteAssoc (devices, deviceid);
+      XLFree (info);
+    }
+
+  /* It doesn't matter if this is the keyboard or pointer, since
+     paired master devices are always destroyed together.  */
+
+  seat = XLLookUpAssoc (seats, deviceid);
+
+  if (seat)
+    {
+      /* The device has been disabled, mark the seat inert and
+	 dereference it.  The seat is still referred to by the
+	 global.  */
+
+      seat->flags |= IsInert;
+
+      /* Run destroy handlers.  */
+
+      RunDestroyListeners (seat);
+
+      /* Since the seat is now inert, remove it from the assoc
+	 table and destroy the global.  */
+
+      XLDeleteAssoc (seats, seat->master_keyboard);
+      XLDeleteAssoc (seats, seat->master_pointer);
+
+      /* Also remove it from the list of live seats.  */
+
+      live_seats = XLListRemove (live_seats, seat);
+
+      /* Run and remove all resize completion callbacks.  */
+
+      RunResizeDoneCallbacks (seat);
+
+      /* Finally, destroy the global.  */
+
+      wl_global_destroy (seat->global);
+
+      /* And release the seat.  */
+
+      ReleaseSeat (seat);
+    }
+}
+
+static void
+NoticeDeviceEnabled (int deviceid)
+{
+  XIDeviceInfo *info;
+  int ndevices;
+
+  CatchXErrors ();
+  info = XIQueryDevice (compositor.display, deviceid,
+			&ndevices);
+  UncatchXErrors (NULL);
+
+  if (info && info->use == XIMasterPointer)
+    /* ndevices doesn't have to checked here.  */
+    MakeSeatForDevicePair (info->attachment, deviceid, info);
+
+  if (info)
+    {
+      /* Update device information for this device.  */
+      RecordDeviceInformation (info);
+
+      /* And free the device.  */
+      XIFreeDeviceInfo (info);
+    }
+}
+
+static void
+NoticeSlaveAttached (int deviceid)
+{
+  XIDeviceInfo *info;
+  int ndevices;
+
+  CatchXErrors ();
+  info = XIQueryDevice (compositor.display, deviceid,
+			&ndevices);
+  UncatchXErrors (NULL);
+
+  /* A slave device was attached.  Take this opportunity to update its
+     device information.  */
+
+  if (info)
+    {
+      /* Update device information for this device.  */
+      RecordDeviceInformation (info);
+
+      /* And free the device.  */
+      XIFreeDeviceInfo (info);
+    }
+}
+
+static void
+HandleHierarchyEvent (XIHierarchyEvent *event)
+{
+  int i;
+
+  for (i = 0; i < event->num_info; ++i)
+    {
+      if (event->info[i].flags & XIDeviceDisabled)
+	NoticeDeviceDisabled (event->info[i].deviceid);
+      else if (event->info[i].flags & XIDeviceEnabled)
+	NoticeDeviceEnabled (event->info[i].deviceid);
+      else if (event->info[i].flags & XISlaveAttached)
+	NoticeSlaveAttached (event->info[i].deviceid);
+    }
+}
+
+#define KeyIsPressed(seat, keycode)					\
+  (MaskIsSet ((seat)->key_pressed,					\
+	      (keycode) - xkb_desc->min_key_code))
+#define KeySetPressed(seat, keycode, pressed)				\
+  (!pressed								\
+   ? ClearMask ((seat)->key_pressed,					\
+		(keycode) - xkb_desc->min_key_code)			\
+   : SetMask ((seat)->key_pressed,					\
+	      (keycode) - xkb_desc->min_key_code))			\
+
+#define WaylandKeycode(keycode) ((keycode) - 8)
+
+static void
+InsertKeyIntoSeat (Seat *seat, int32_t keycode)
+{
+  int32_t *data;
+
+  data = wl_array_add (&seat->keys, sizeof *data);
+
+  if (data)
+    *data = keycode;
+}
+
+static void
+ArrayRemove (struct wl_array *array, void *item, size_t size)
+{
+  size_t bytes;
+  char *arith;
+
+  arith = item;
+
+  bytes = array->size - (arith + size
+			 - (char *) array->data);
+  if (bytes > 0)
+    memmove (item, arith + size, bytes);
+  array->size -= size;
+}
+
+static void
+RemoveKeyFromSeat (Seat *seat, int32_t keycode)
+{
+  int32_t *data;
+
+  wl_array_for_each (data, &seat->keys)
+    {
+      if (*data == keycode)
+	{
+	  ArrayRemove (&seat->keys, data, sizeof *data);
+	  break;
+	}
+    }
+}
+
+static SeatClientInfo *
+ClientInfoForResource (Seat *seat, struct wl_resource *resource)
+{
+  return GetSeatClientInfo (seat, wl_resource_get_client (resource));
+}
+
+static void
+SendKeyboardKey (Seat *seat, Surface *focus, Time time,
+		 uint32_t key, uint32_t state)
+{
+  Keyboard *keyboard;
+  SeatClientInfo *info;
+  uint32_t serial;
+
+  serial = wl_display_next_serial (compositor.wl_display);
+  seat->last_keyboard_serial = serial;
+
+  info = ClientInfoForResource (seat, focus->resource);
+
+  if (!info)
+    return;
+
+  keyboard = info->keyboards.next;
+
+  for (; keyboard != &info->keyboards; keyboard = keyboard->next)
+    wl_keyboard_send_key (keyboard->resource, serial, time,
+			  key, state);
+}
+
+static void
+HandleKeyPressed (Seat *seat, KeyCode keycode, Time time)
+{
+  if (KeyIsPressed (seat, keycode))
+    return;
+
+  KeySetPressed (seat, keycode, True);
+  InsertKeyIntoSeat (seat, WaylandKeycode (keycode));
+}
+
+static void
+HandleKeyReleased (Seat *seat, KeyCode keycode, Time time)
+{
+  if (!KeyIsPressed (seat, keycode))
+    return;
+
+  KeySetPressed (seat, keycode, False);
+  RemoveKeyFromSeat (seat, WaylandKeycode (keycode));
+}
+
+static void
+HandleRawKey (XIRawEvent *event)
+{
+  Seat *seat;
+
+  /* We select for raw events from the X server in order to track the
+     keys that are currently pressed.  In order to respect grabs, key
+     press and release events are only reported in response to
+     regular device events.  */
+
+  seat = XLLookUpAssoc (seats, event->deviceid);
+
+  if (!seat)
+    return;
+
+  if (event->detail < xkb_desc->min_key_code
+      || event->detail > xkb_desc->max_key_code)
+    return;
+
+  if (event->evtype == XI_RawKeyPress)
+    HandleKeyPressed (seat, event->detail, event->time);
+  else
+    HandleKeyReleased (seat, event->detail, event->time);
+
+  /* This is used for tracking grabs.  */
+  seat->its_depress_time = event->time;
+}
+
+static void
+HandleResizeComplete (Seat *seat)
+{
+  Surface *surface;
+  XEvent msg;
+
+  surface = seat->last_button_press_surface;
+
+  if (!surface || !XLWindowFromSurface (surface))
+    goto finish;
+
+  /* We might have gotten the button release before the window manager
+     set the grab.  Cancel the resize operation in that case.  */
+
+  memset (&msg, 0, sizeof msg);
+  msg.xclient.type = ClientMessage;
+  msg.xclient.window = XLWindowFromSurface (surface);
+  msg.xclient.format = 32;
+  msg.xclient.message_type = _NET_WM_MOVERESIZE;
+  msg.xclient.data.l[0] = seat->its_root_x;
+  msg.xclient.data.l[1] = seat->its_root_y;
+  msg.xclient.data.l[2] = 11; /* _NET_WM_MOVERESIZE_CANCEL.  */
+  msg.xclient.data.l[3] = seat->last_button;
+  msg.xclient.data.l[4] = 1; /* Source indication.  */
+
+  XSendEvent (compositor.display,
+	      DefaultRootWindow (compositor.display),
+	      False,
+	      SubstructureRedirectMask | SubstructureNotifyMask,
+	      &msg);
+
+ finish:
+
+  /* Now say that resize operations have stopped.  */
+  seat->resize_in_progress = False;
+
+  /* And run callbacks.  */
+  RunResizeDoneCallbacks (seat);
+}
+
+/* Forward declarations.  */
+
+static int GetXButton (int);
+static void TransformToView (View *, double, double, double *, double *);
+static void SendButton (Seat *, Surface *, Time, uint32_t, uint32_t,
+			double, double);
+
+static void
+HandleRawButton (XIRawEvent *event)
+{
+  Seat *seat;
+  int button;
+  double win_x, win_y;
+  double dispatch_x, dispatch_y;
+  Window window;
+
+  seat = XLLookUpAssoc (seats, event->deviceid);
+
+  if (!seat)
+    return;
+
+  if (seat->resize_in_progress
+      || seat->flags & IsWindowMenuShown)
+    {
+      if (seat->last_seen_surface)
+	{
+	  window = XLWindowFromSurface (seat->last_seen_surface);
+
+	  if (window == None)
+	    goto complete;
+
+	  button = GetXButton (event->detail);
+
+	  if (button < 0)
+	    goto complete;
+
+	  /* When a RawButtonPress is received while resizing is still
+	     in progress, release the button on the current surface.
+
+	     Since leave and entry events generated by grabs are
+	     ignored, the client will not get leave events correctly
+	     while Metacity is resizing a frame.  This results in
+	     programs such as GTK tracking the button state
+	     incorrectly if the pointer never leaves the surface
+	     during a resize operation.
+
+	     Something similar applies to the window menu.
+
+	     (It would be good to avoid this sync by fetching the
+	     actual modifier values from the raw event.)  */
+
+	  if (QueryPointer (seat, window, &win_x, &win_y))
+	    {
+	      /* Otherwise, the pointer is on a different screen!  */
+
+	      TransformToView (seat->last_seen_surface->view,
+			       win_x, win_y, &dispatch_x, &dispatch_y);
+	      SendButton (seat, seat->last_seen_surface, event->time,
+			  button, WL_POINTER_BUTTON_STATE_RELEASED,
+			  dispatch_x, dispatch_y);
+	    }
+	}
+
+    complete:
+
+      if (event->detail == seat->last_button
+	  && seat->resize_in_progress)
+	HandleResizeComplete (seat);
+    }
+}
+
+static void
+HandleDeviceChanged (XIDeviceChangedEvent *event)
+{
+  Seat *seat;
+  XIDeviceInfo *info;
+  int ndevices;
+
+  seat = XLLookUpAssoc (seats, event->deviceid);
+
+  if (!seat || event->deviceid != seat->master_pointer)
+    return;
+
+  /* Now, update scroll valuators from the new device info.  */
+
+  CatchXErrors ();
+  info = XIQueryDevice (compositor.display, event->deviceid,
+			&ndevices);
+  UncatchXErrors (NULL);
+
+  if (!info)
+    /* The device was disabled, return now.  */
+    return;
+
+  UpdateValuators (seat, info);
+  XIFreeDeviceInfo (info);
+}
+
+static void
+HandlePropertyChanged (XIPropertyEvent *event)
+{
+  DeviceInfo *info;
+
+  info = XLLookUpAssoc (devices, event->deviceid);
+
+  if (!info)
+    return;
+
+  if (event->property == libinput_Scroll_Methods_Available)
+    /* Update scroll methods for the device whose property
+       changed.  */
+    UpdateScrollMethods (info, event->deviceid);
+}
+
+static Seat *
+FindSeatByDragWindow (Window window)
+{
+  Seat *seat;
+  XLList *tem;
+
+  for (tem = live_seats; tem; tem = tem->next)
+    {
+      seat = tem->data;
+
+      if (seat->grab_window == window)
+	return seat;
+    }
+
+  return NULL;
+}
+
+static Bool
+HandleDragMotionEvent (XIDeviceEvent *xev)
+{
+  Seat *seat;
+
+  seat = FindSeatByDragWindow (xev->event);
+
+  if (!seat)
+    return False;
+
+  /* When an event is received for the drag window, it means the event
+     is outside any surface.  Dispatch it to the external drag and
+     drop code.  */
+
+  /* Move the drag-and-drop icon window.  */
+  if (seat->icon_surface)
+    XLMoveIconSurface (seat->icon_surface, xev->root_x,
+		       xev->root_y);
+
+  /* Update information used for resize tracking.  */
+  seat->its_root_x = xev->root_x;
+  seat->its_root_y = xev->root_y;
+
+  /* Dispatch the drag motion to external programs.  */
+  if (seat->data_source)
+    XLDoDragMotion (seat, xev->root_x, xev->root_y);
+
+  return True;
+}
+
+/* Forward declaration.  */
+
+static void DragButton (Seat *, XIDeviceEvent *);
+
+static Bool
+HandleDragButtonEvent (XIDeviceEvent *xev)
+{
+  Seat *seat;
+
+  seat = FindSeatByDragWindow (xev->event);
+
+  if (!seat)
+    return False;
+
+  DragButton (seat, xev);
+  return True;
+}
+
+static Bool
+HandleOneGenericEvent (XGenericEventCookie *xcookie)
+{
+  switch (xcookie->evtype)
+    {
+    case XI_HierarchyChanged:
+      HandleHierarchyEvent (xcookie->data);
+      return True;
+
+    case XI_DeviceChanged:
+      HandleDeviceChanged (xcookie->data);
+      return True;
+
+    case XI_PropertyEvent:
+      HandlePropertyChanged (xcookie->data);
+      return True;
+
+    case XI_RawKeyPress:
+    case XI_RawKeyRelease:
+      HandleRawKey (xcookie->data);
+      return True;
+
+    case XI_RawButtonRelease:
+      HandleRawButton (xcookie->data);
+      return True;
+
+    case XI_Motion:
+      return HandleDragMotionEvent (xcookie->data);
+
+    case XI_ButtonPress:
+    case XI_ButtonRelease:
+      return HandleDragButtonEvent (xcookie->data);
+    }
+
+  return False;
+}
+
+static void
+SelectDeviceEvents (void)
+{
+  XIEventMask mask;
+  ptrdiff_t length;
+
+  length = XIMaskLen (XI_LASTEVENT);
+  mask.mask = alloca (length);
+  mask.mask_len = length;
+  mask.deviceid = XIAllDevices;
+
+  memset (mask.mask, 0, length);
+
+  XISetMask (mask.mask, XI_PropertyEvent);
+  XISetMask (mask.mask, XI_HierarchyChanged);
+  XISetMask (mask.mask, XI_DeviceChanged);
+
+  XISelectEvents (compositor.display,
+		  DefaultRootWindow (compositor.display),
+		  &mask, 1);
+
+  memset (mask.mask, 0, length);
+
+  mask.deviceid = XIAllMasterDevices;
+
+  XISetMask (mask.mask, XI_RawKeyPress);
+  XISetMask (mask.mask, XI_RawKeyRelease);
+  XISetMask (mask.mask, XI_RawButtonRelease);
+
+  XISelectEvents (compositor.display,
+		  DefaultRootWindow (compositor.display),
+		  &mask, 1);
+}
+
+static void
+ClearFocusSurface (void *data)
+{
+  Seat *seat;
+
+  seat = data;
+
+  seat->focus_surface = NULL;
+  seat->focus_destroy_callback = NULL;
+}
+
+static void
+SendKeyboardLeave (Seat *seat, Surface *focus)
+{
+  Keyboard *keyboard;
+  uint32_t serial;
+  SeatClientInfo *info;
+
+  serial = wl_display_next_serial (compositor.wl_display);
+  info = ClientInfoForResource (seat, focus->resource);
+
+  if (!info)
+    return;
+
+  keyboard = info->keyboards.next;
+
+  for (; keyboard != &info->keyboards; keyboard = keyboard->next)
+    wl_keyboard_send_leave (keyboard->resource,
+			    serial, focus->resource);
+}
+
+static void
+UpdateSingleModifiers (Seat *seat, Keyboard *keyboard, uint32_t serial)
+{
+  wl_keyboard_send_modifiers (keyboard->resource, serial,
+			      seat->base, seat->latched,
+			      seat->locked,
+			      seat->effective_group);
+}
+
+static void
+SendKeyboardEnter (Seat *seat, Surface *enter)
+{
+  Keyboard *keyboard;
+  uint32_t serial;
+  SeatClientInfo *info;
+
+  serial = wl_display_next_serial (compositor.wl_display);
+  info = ClientInfoForResource (seat, enter->resource);
+
+  if (!info)
+    return;
+
+  keyboard = info->keyboards.next;
+
+  for (; keyboard != &info->keyboards; keyboard = keyboard->next)
+    {
+      wl_keyboard_send_enter (keyboard->resource, serial,
+			      enter->resource, &seat->keys);
+      UpdateSingleModifiers (seat, keyboard, serial);
+    }
+}
+
+static void
+SendKeyboardModifiers (Seat *seat, Surface *focus)
+{
+  Keyboard *keyboard;
+  uint32_t serial;
+  SeatClientInfo *info;
+
+  serial = wl_display_next_serial (compositor.wl_display);
+  info = ClientInfoForResource (seat, focus->resource);
+
+  if (!info)
+    return;
+
+  keyboard = info->keyboards.next;
+
+  for (; keyboard != &info->keyboards; keyboard = keyboard->next)
+    UpdateSingleModifiers (seat, keyboard, serial);
+}
+
+static void
+SendUpdatedModifiers (Seat *seat)
+{
+  ModifierChangeCallback *callback;
+
+  for (callback = seat->modifier_callbacks.next;
+       callback != &seat->modifier_callbacks;
+       callback = callback->next)
+    /* Send the effective modifiers.  */
+    callback->changed (seat->base | seat->locked | seat->latched,
+		       callback->data);
+
+  /* If drag and drop is in progress, update the data source
+     actions.  */
+  if (seat->flags & IsDragging && seat->data_source
+      /* Don't do this during external drag and drop.  */
+      && seat->drag_last_surface)
+    XLDataSourceUpdateDeviceActions (seat->data_source);
+
+  if (seat->focus_surface)
+    SendKeyboardModifiers (seat, seat->focus_surface);
+}
+
+static void
+UpdateModifiersForSeats (unsigned int base, unsigned int locked,
+			 unsigned int latched, int base_group,
+			 int locked_group, int latched_group,
+			 int effective_group)
+{
+  Seat *seat;
+  XLList *tem;
+
+  for (tem = live_seats; tem; tem = tem->next)
+    {
+      seat = tem->data;
+
+      seat->base = base;
+      seat->locked = locked;
+      seat->latched = latched;
+      seat->base_group = base_group;
+      seat->locked_group = locked_group;
+      seat->latched_group = latched_group;
+      seat->effective_group = effective_group;
+
+      SendUpdatedModifiers (seat);
+    }
+}
+
+static void
+SetFocusSurface (Seat *seat, Surface *focus)
+{
+  if (focus == seat->focus_surface)
+    return;
+
+  if (seat->focus_surface)
+    {
+      SendKeyboardLeave (seat, seat->focus_surface);
+
+      XLSurfaceCancelRunOnFree (seat->focus_destroy_callback);
+      seat->focus_destroy_callback = NULL;
+      seat->focus_surface = NULL;
+    }
+
+  if (!focus)
+    return;
+
+  seat->focus_surface = focus;
+  seat->focus_destroy_callback
+    = XLSurfaceRunOnFree (focus, ClearFocusSurface, seat);
+
+  SendKeyboardEnter (seat, focus);
+
+  if (seat->data_device)
+    XLDataDeviceHandleFocusChange (seat->data_device);
+}
+
+static void
+DispatchFocusIn (Surface *surface, XIFocusInEvent *event)
+{
+  Seat *seat;
+
+  seat = XLLookUpAssoc (seats, event->deviceid);
+
+  if (!seat)
+    return;
+
+  SetFocusSurface (seat, surface);
+}
+
+static void
+DispatchFocusOut (Surface *surface, XIFocusOutEvent *event)
+{
+  Seat *seat;
+
+  seat = XLLookUpAssoc (seats, event->deviceid);
+
+  if (!seat)
+    return;
+
+  if (seat->focus_surface == surface)
+    SetFocusSurface (seat, NULL);
+}
+
+static Surface *
+FindSurfaceUnder (Subcompositor *subcompositor, double x, double y)
+{
+  int x_off, y_off;
+  View *view;
+
+  view = SubcompositorLookupView (subcompositor, lrint (x),
+				  lrint (y), &x_off, &y_off);
+
+  if (view)
+    return ViewGetData (view);
+
+  return NULL;
+}
+
+/* Forward declaration.  */
+
+static void CancelDrag (Seat *, Window, double, double);
+
+static void
+DragLeave (Seat *seat)
+{
+  if (seat->drag_last_surface)
+    {
+      if (seat->flags & IsDragging)
+	XLDataDeviceSendLeave (seat, seat->drag_last_surface,
+			       seat->data_source);
+      else
+	/* If nothing is being dragged anymore, avoid sending flags to
+	   the source after drop or cancel.  */
+	XLDataDeviceSendLeave (seat, seat->drag_last_surface,
+			       NULL);
+
+      XLSurfaceCancelRunOnFree (seat->drag_last_surface_destroy_callback);
+
+      seat->drag_last_surface_destroy_callback = NULL;
+      seat->drag_last_surface = NULL;
+    }
+}
+
+static void
+HandleDragLastSurfaceDestroy (void *data)
+{
+  Seat *seat;
+
+  seat = data;
+
+  /* Unfortunately there's no way to send a leave message to the
+     client, as the surface's resource no longer exists.  Oh well.  */
+
+  seat->drag_last_surface = NULL;
+  seat->drag_last_surface_destroy_callback = NULL;
+}
+
+static void
+DragEnter (Seat *seat, Surface *surface, double x, double y)
+{
+  if (seat->drag_last_surface)
+    DragLeave (seat);
+
+  /* If no data source is specified, only send motion events to
+     surfaces created by the same client.  */
+  if (!seat->data_source
+      && (wl_resource_get_client (seat->drag_start_surface->resource)
+	  != wl_resource_get_client (surface->resource)))
+    return;
+
+  seat->drag_last_surface = surface;
+  seat->drag_last_surface_destroy_callback
+    = XLSurfaceRunOnFree (surface, HandleDragLastSurfaceDestroy,
+			  seat);
+
+  XLDataDeviceSendEnter (seat, surface, x, y, seat->data_source);
+}
+
+static void
+DragMotion (Seat *seat, Surface *surface, double x, double y,
+	    Time time)
+{
+  if (!seat->drag_last_surface)
+    return;
+
+  if (surface != seat->drag_last_surface)
+    return;
+
+  XLDataDeviceSendMotion (seat, surface, x, y, time);
+}
+
+static int
+MaskPopCount (XIButtonState *mask)
+{
+  int population, i;
+
+  population = 0;
+
+  for (i = 0; i < mask->mask_len; ++i)
+    population += __builtin_popcount (mask->mask[i]);
+
+  return population;
+}
+
+static void
+DragButton (Seat *seat, XIDeviceEvent *xev)
+{
+  if (xev->evtype != XI_ButtonRelease)
+    return;
+
+  /* If a button release event is received with only 1 button
+     remaining, then the drag is complete; send the drop.  */
+  if (MaskPopCount (&xev->buttons) == 1)
+    {
+      /* Drop on any external drag and drop that may be in
+	 progress.  */
+      if (seat->data_source && XLDoDragDrop (seat))
+	XLDataSourceSendDropPerformed (seat->data_source);
+      else
+	{
+	  if (seat->drag_last_surface)
+	    {
+	      if (!seat->data_source
+		  || XLDataSourceCanDrop (seat->data_source))
+		{
+		  XLDataDeviceSendDrop (seat, seat->drag_last_surface);
+		  XLDataSourceSendDropPerformed (seat->data_source);
+		}
+	      else
+		/* Otherwise, the data source is not eligible for
+		   dropping; simply send cancel.  */
+		XLDataSourceSendDropCancelled (seat->data_source);
+	    }
+	  else if (seat->data_source)
+	    XLDataSourceSendDropCancelled (seat->data_source);
+	}
+
+      /* This means that CancelDrag will not send the drop cancelled
+	 event to the data source again.  */
+      seat->flags |= IsDropped;
+
+      CancelDrag (seat, xev->event, xev->event_x,
+		  xev->event_y);
+    }
+}
+
+static void
+SendMotion (Seat *seat, Surface *surface, double x, double y,
+	    Time time)
+{
+  Pointer *pointer;
+  uint32_t serial;
+  SeatClientInfo *info;
+
+  serial = wl_display_next_serial (compositor.wl_display);
+  info = ClientInfoForResource (seat, surface->resource);
+
+  if (!info)
+    return;
+
+  pointer = info->pointers.next;
+
+  for (; pointer != &info->pointers; pointer = pointer->next)
+    {
+      if (pointer->state & StateIsRaw)
+	{
+	  wl_pointer_send_enter (pointer->resource, serial,
+				 surface->resource,
+				 wl_fixed_from_double (x),
+				 wl_fixed_from_double (y));
+	  pointer->info->last_enter_serial = serial;
+	}
+
+      wl_pointer_send_motion (pointer->resource, time,
+			      wl_fixed_from_double (x),
+			      wl_fixed_from_double (y));
+
+      if (wl_resource_get_version (pointer->resource) >= 5)
+	wl_pointer_send_frame (pointer->resource);
+
+      pointer->state &= ~StateIsRaw;
+    }
+}
+
+static void
+SendLeave (Seat *seat, Surface *surface)
+{
+  Pointer *pointer;
+  uint32_t serial;
+  SeatClientInfo *info;
+
+  serial = wl_display_next_serial (compositor.wl_display);
+  info = ClientInfoForResource (seat, surface->resource);
+
+  if (!info)
+    return;
+
+  pointer = info->pointers.next;
+
+  for (; pointer != &info->pointers; pointer = pointer->next)
+    {
+      wl_pointer_send_leave (pointer->resource, serial,
+			     surface->resource);
+
+      /* Apparently this is necessary on both leave and enter
+	 events.  */
+      if (wl_resource_get_version (pointer->resource) >= 5)
+	wl_pointer_send_frame (pointer->resource);
+    }
+}
+
+static Bool
+SendEnter (Seat *seat, Surface *surface, double x, double y)
+{
+  Pointer *pointer;
+  uint32_t serial;
+  Bool sent;
+  SeatClientInfo *info;
+
+  serial = wl_display_next_serial (compositor.wl_display);
+  sent = False;
+  info = ClientInfoForResource (seat, surface->resource);
+
+  if (!info)
+    return False;
+
+  pointer = info->pointers.next;
+
+  if (pointer != &info->pointers)
+    /* If no pointer devices have been created, don't set the
+       serial.  */
+    info->last_enter_serial = serial;
+
+  for (; pointer != &info->pointers; pointer = pointer->next)
+    {
+      pointer->state &= ~StateIsRaw;
+
+      wl_pointer_send_enter (pointer->resource, serial,
+			     surface->resource,
+			     wl_fixed_from_double (x),
+			     wl_fixed_from_double (y));
+
+      /* Apparently this is necessary on both leave and enter
+	 events.  */
+      if (wl_resource_get_version (pointer->resource) >= 5)
+	wl_pointer_send_frame (pointer->resource);
+
+      sent = True;
+    }
+
+  return sent;
+}
+
+static void
+SendButton (Seat *seat, Surface *surface, Time time,
+	    uint32_t button, uint32_t state, double x,
+	    double y)
+{
+  Pointer *pointer;
+  uint32_t serial;
+  SeatClientInfo *info;
+
+  serial = wl_display_next_serial (compositor.wl_display);
+
+  /* This is later used to track the seat for resize operations.  */
+  seat->last_button_serial = serial;
+
+  if (state == WL_POINTER_BUTTON_STATE_PRESSED)
+    /* This is used for popup grabs.  */
+    seat->last_button_press_serial = serial;
+
+  info = ClientInfoForResource (seat, surface->resource);
+
+  if (!info)
+    return;
+
+  pointer = info->pointers.next;
+
+  for (; pointer != &info->pointers; pointer = pointer->next)
+    {
+      if (pointer->state & StateIsRaw)
+	{
+	  wl_pointer_send_enter (pointer->resource, serial,
+				 surface->resource,
+				 wl_fixed_from_double (x),
+				 wl_fixed_from_double (y));
+	  pointer->info->last_enter_serial = serial;
+	}
+
+      wl_pointer_send_button (pointer->resource,
+			      serial, time, button, state);
+
+      if (wl_resource_get_version (pointer->resource) >= 5)
+	wl_pointer_send_frame (pointer->resource);
+
+      pointer->state &= ~StateIsRaw;
+    }
+}
+
+static void
+ClearPointerUnlockSurface (void *data)
+{
+  Seat *seat;
+
+  seat = data;
+
+  seat->pointer_unlock_surface = NULL;
+  seat->pointer_unlock_surface_callback = NULL;
+}
+
+static void
+ClearGrabSurface (void *data)
+{
+  Seat *seat;
+
+  seat = data;
+
+  /* Cancel the unmap callback.  */
+  XLSurfaceCancelUnmapCallback (seat->grab_surface_callback);
+
+  seat->grab_surface = NULL;
+  seat->grab_surface_callback = NULL;
+}
+
+static void
+SwapGrabSurface (Seat *seat, Surface *surface)
+{
+  if (seat->grab_surface == surface)
+    return;
+
+  if (seat->grab_surface)
+    {
+      XLSurfaceCancelUnmapCallback (seat->grab_surface_callback);
+      seat->grab_surface = NULL;
+      seat->grab_surface_callback = NULL;
+    }
+
+  if (surface)
+    {
+      seat->grab_surface = surface;
+      seat->grab_surface_callback
+	= XLSurfaceRunAtUnmap (surface, ClearGrabSurface, seat);
+    }
+}
+
+static void
+SwapUnlockSurface (Seat *seat, Surface *surface)
+{
+  if (seat->pointer_unlock_surface == surface)
+    return;
+
+  if (seat->pointer_unlock_surface)
+    {
+      XLSurfaceCancelRunOnFree (seat->pointer_unlock_surface_callback);
+      seat->pointer_unlock_surface_callback = NULL;
+      seat->pointer_unlock_surface = NULL;
+    }
+
+  if (surface)
+    {
+      seat->pointer_unlock_surface = surface;
+      seat->pointer_unlock_surface_callback
+	= XLSurfaceRunOnFree (surface, ClearPointerUnlockSurface, seat);
+    }
+}
+
+static void
+ClearLastSeenSurface (void *data)
+{
+  Seat *seat;
+
+  seat = data;
+
+  /* The surface underneath the pointer was destroyed, so clear the
+     cursor.  */
+  if (seat->cursor)
+    FreeCursor (seat->cursor);
+
+  seat->last_seen_surface = NULL;
+  seat->last_seen_surface_callback = NULL;
+}
+
+static void
+UndefineCursorOn (Seat *seat, Surface *surface)
+{
+  Window window;
+
+  window = XLWindowFromSurface (surface);
+
+  if (window == None)
+    return;
+
+  XIUndefineCursor (compositor.display,
+		    seat->master_pointer,
+		    window);
+
+  /* In addition to undefining the seat specific cursor, also undefine
+     the core cursor specified during window creation.  */
+  XUndefineCursor (compositor.display, window);
+}
+
+static void
+EnteredSurface (Seat *seat, Surface *surface, Time time,
+		double x, double y, Bool preserve_cursor)
+{
+  if (seat->grab_held && surface != seat->last_seen_surface)
+    {
+      /* If the seat is grabbed, delay this for later.  */
+      SwapUnlockSurface (seat, surface);
+      return;
+    }
+
+  if (seat->last_seen_surface == surface)
+    return;
+
+  if (seat->last_seen_surface)
+    {
+      if (seat->flags & IsDragging)
+	DragLeave (seat);
+      else
+	{
+	  SendLeave (seat, seat->last_seen_surface);
+
+	  /* The surface underneath the pointer was destroyed, so
+	     clear the cursor.  */
+	  if (seat->cursor && !preserve_cursor)
+	    FreeCursor (seat->cursor);
+	}
+
+      XLSurfaceCancelRunOnFree (seat->last_seen_surface_callback);
+      seat->last_seen_surface = NULL;
+      seat->last_seen_surface_callback = NULL;
+    }
+
+  if (surface)
+    {
+      seat->last_seen_surface = surface;
+      seat->last_seen_surface_callback
+	= XLSurfaceRunOnFree (surface, ClearLastSeenSurface, seat);
+
+      if (seat->flags & IsDragging)
+	DragEnter (seat, surface, x, y);
+      else if (!SendEnter (seat, surface, x, y))
+	/* Apparently what is done by other compositors when no
+	   wl_pointer object exists for the surface's client is to
+	   revert back to the default cursor.  */
+	UndefineCursorOn (seat, surface);
+    }
+}
+
+static void
+TransformToView (View *view, double event_x, double event_y,
+		 double *view_x_out, double *view_y_out)
+{
+  int int_x, int_y, x, y;
+  double view_x, view_y;
+
+  /* Even though event_x and event_y are doubles, they cannot exceed
+     65535.0, so this cannot overflow.  */
+  int_x = (int) event_x;
+  int_y = (int) event_y;
+
+  ViewTranslate (view, int_x, int_y, &x, &y);
+
+  /* Add the fractional part back to the final result.  */
+  view_x = ((double) x) + event_x - int_x;
+  view_y = ((double) y) + event_y - int_y;
+
+  /* Finally, transform the coordinates by the global output
+     scale.  */
+  *view_x_out = view_x / global_scale_factor;
+  *view_y_out = view_y / global_scale_factor;
+}
+
+static Bool
+CanDeliverEvents (Seat *seat, Surface *dispatch)
+{
+  if (!seat->grab_surface)
+    return True;
+
+  /* Otherwise, an owner-events grab is in effect; only dispatch
+     events to the client who owns the grab.  */
+  return (wl_resource_get_client (dispatch->resource)
+	  == wl_resource_get_client (seat->grab_surface->resource));
+}
+
+static void
+TranslateCoordinates (Window source, Window target, double x, double y,
+		      double *x_out, double *y_out)
+{
+  Window child_return;
+  int int_x, int_y, t1, t2;
+
+  int_x = (int) x;
+  int_y = (int) y;
+
+  XTranslateCoordinates (compositor.display, source,
+			 target, int_x, int_y, &t1, &t2,
+			 &child_return);
+
+  /* Add the fractional part back.  */
+  *x_out = (x - int_x) + t1;
+  *y_out = (y - int_y) + t2;
+}
+
+static Surface *
+ComputeGrabPosition (Seat *seat, Surface *dispatch,
+		     double *event_x, double *event_y)
+{
+  Window toplevel, grab;
+
+  toplevel = XLWindowFromSurface (dispatch);
+  grab = XLWindowFromSurface (seat->grab_surface);
+
+  TranslateCoordinates (toplevel, grab, *event_x, *event_y,
+			event_x, event_y);
+  return seat->grab_surface;
+}
+
+static void
+TranslateGrabPosition (Seat *seat, Window window, double *event_x,
+		       double *event_y)
+{
+  Window grab;
+
+  grab = XLWindowFromSurface (seat->grab_surface);
+
+  TranslateCoordinates (window, grab, *event_x, *event_y,
+			event_x, event_y);
+  return;
+}
+
+static void
+DispatchEntryExit (Subcompositor *subcompositor, XIEnterEvent *event)
+{
+  Seat *seat;
+  Surface *dispatch;
+  double x, y, event_x, event_y;
+
+  seat = XLLookUpAssoc (seats, event->deviceid);
+
+  if (!seat)
+    return;
+
+  if (event->mode == XINotifyUngrab
+      && seat->grab_surface)
+    /* Any explicit grab was released, so release the grab surface as
+       well.  */
+    SwapGrabSurface (seat, NULL);
+
+  if (event->mode == XINotifyUngrab
+      && seat->flags & IsDragging)
+    /* The active grab was released.  */
+    CancelDrag (seat, event->event, event->event_x,
+		event->event_y);
+
+  if (event->evtype == XI_Leave
+      && (event->mode == XINotifyGrab
+	  || event->mode == XINotifyUngrab))
+    /* Ignore grab-related weirdness in XI_Leave events.  */
+    return;
+
+  if (event->evtype == XI_Enter
+      && event->mode == XINotifyGrab)
+    /* Accepting entry events with XINotifyGrab leads to bad results
+       when they arrive on a popup that has just been grabbed.  */
+    return;
+
+  seat->flags &= ~IsWindowMenuShown;
+  seat->last_crossing_serial = event->serial;
+
+  if (event->evtype == XI_Leave)
+    dispatch = NULL;
+  else
+    dispatch = FindSurfaceUnder (subcompositor, event->event_x,
+				 event->event_y);
+
+  event_x = event->event_x;
+  event_y = event->event_y;
+
+  if (seat->grab_surface)
+    {
+      /* If the grab surface is set, translate the coordinates to
+	 it and use it instead.  */
+      TranslateGrabPosition (seat, event->event,
+			     &event_x, &event_y);
+      dispatch = seat->grab_surface;
+
+      goto after_dispatch_set;
+    }
+
+  if (!dispatch)
+    EnteredSurface (seat, NULL, event->time, 0, 0, False);
+  else
+    {
+      /* If dispatching during an active grab, and the event is for
+	 the wrong client, translate the coordinates to the grab
+	 window.  */
+      if (!CanDeliverEvents (seat, dispatch))
+	dispatch = ComputeGrabPosition (seat, dispatch,
+					&event_x, &event_y);
+
+    after_dispatch_set:
+
+      TransformToView (dispatch->view, event_x,
+		       event_y, &x, &y);
+
+      EnteredSurface (seat, dispatch, event->time, x, y, False);
+    }
+
+  seat->last_motion_x = event->root_x;
+  seat->last_motion_y = event->root_y;
+}
+
+static Bool
+ProcessValuator (Seat *seat, XIDeviceEvent *event, ScrollValuator *valuator,
+		 double value, double *total_x, double *total_y, int *flags)
+{
+  double diff;
+  Bool valid;
+
+  valid = False;
+
+  if (seat->last_crossing_serial > valuator->enter_serial)
+    /* The valuator is out of date.  Set its serial, value, and
+       return.  */
+    goto out;
+
+  diff = value - valuator->value;
+
+  if (valuator->direction == Horizontal)
+    *total_x += diff / valuator->increment;
+  else
+    *total_y += diff / valuator->increment;
+
+  if (valuator->direction == Horizontal)
+    *flags |= AnyVerticalAxis;
+  else
+    *flags |= AnyHorizontalAxis;
+
+  valid = True;
+
+ out:
+  valuator->value = value;
+  valuator->enter_serial = event->serial;
+
+  return valid;
+}
+
+static ScrollValuator *
+FindScrollValuator (Seat *seat, int number)
+{
+  ScrollValuator *valuator;
+
+  valuator = seat->valuators;
+
+  for (; valuator; valuator = valuator->next)
+    {
+      if (valuator->number == number)
+	return valuator;
+    }
+
+  return NULL;
+}
+
+static void
+SendScrollAxis (Seat *seat, Surface *surface, Time time,
+		double x, double y, double axis_x, double axis_y,
+		int flags, int sourceid)
+{
+  Pointer *pointer;
+  uint32_t serial;
+  SeatClientInfo *info;
+  DeviceInfo *deviceinfo;
+
+  serial = wl_display_next_serial (compositor.wl_display);
+  info = ClientInfoForResource (seat, surface->resource);
+
+  if (!info)
+    return;
+
+  pointer = info->pointers.next;
+  deviceinfo = XLLookUpAssoc (devices, sourceid);
+
+  for (; pointer != &info->pointers; pointer = pointer->next)
+    {
+      if (pointer->state & StateIsRaw)
+	{
+	  wl_pointer_send_enter (pointer->resource, serial,
+				 surface->resource,
+				 wl_fixed_from_double (x),
+				 wl_fixed_from_double (y));
+	  pointer->info->last_enter_serial = serial;
+	}
+
+      if (axis_x != 0.0)
+	wl_pointer_send_axis (pointer->resource, time,
+			      WL_POINTER_AXIS_HORIZONTAL_SCROLL,
+			      wl_fixed_from_double (axis_x));
+
+      if (axis_y != 0.0)
+	wl_pointer_send_axis (pointer->resource, time,
+			      WL_POINTER_AXIS_VERTICAL_SCROLL,
+			      wl_fixed_from_double (axis_y));
+
+      if (axis_y == 0.0 && axis_x == 0.0)
+	{
+	  /* This behavior is specific to a few X device
+	     drivers! */
+
+	  if (wl_resource_get_version (pointer->resource) >= 5)
+	    {
+	      /* wl_pointer_send_axis_stop is only present on
+		 version 5 or later.  */
+
+	      if (flags & AnyVerticalAxis)
+		wl_pointer_send_axis_stop (pointer->resource, time,
+					   WL_POINTER_AXIS_VERTICAL_SCROLL);
+
+	      if (flags & AnyHorizontalAxis)
+		wl_pointer_send_axis_stop (pointer->resource, time,
+					   WL_POINTER_AXIS_HORIZONTAL_SCROLL);
+	    }
+	}
+
+      if (wl_resource_get_version (pointer->resource) >= 5)
+	{
+	  /* Send the source of this axis movement if it can be
+	     determined.  We assume that axis movement from any
+	     device capable finger or edge scrolling comes from a
+	     touchpad.  */
+
+	  if (deviceinfo
+	      && (deviceinfo->flags & DeviceCanFingerScroll
+		  || deviceinfo->flags & DeviceCanEdgeScroll))
+	    wl_pointer_send_axis_source (pointer->resource,
+					 WL_POINTER_AXIS_SOURCE_FINGER);
+	}
+
+      if (axis_x != 0.0 || axis_y != 0.0
+	  || flags || pointer->state & StateIsRaw)
+	{
+	  if (wl_resource_get_version (pointer->resource) >= 5)
+	    wl_pointer_send_frame (pointer->resource);
+	}
+
+      pointer->state &= ~StateIsRaw;
+    }
+}
+
+static Bool
+HandleValuatorMotion (Seat *seat, Surface *dispatch, double x, double y,
+		      XIDeviceEvent *event)
+{
+  double total_x, total_y, *values;
+  ScrollValuator *valuator;
+  int i, flags;
+  Bool value;
+
+  total_x = 0.0;
+  total_y = 0.0;
+  value = False;
+  values = event->valuators.values;
+  flags = 0;
+
+  for (i = 0; i < event->valuators.mask_len * 8; ++i)
+    {
+      if (!XIMaskIsSet (event->valuators.mask, i))
+	continue;
+
+      valuator = FindScrollValuator (seat, i);
+
+      if (!valuator)
+	/* We still have to increment values even if we don't know
+	   about the valuator in question.  */
+	goto next;
+
+      value |= ProcessValuator (seat, event, valuator, *values,
+				&total_x, &total_y, &flags);
+
+    next:
+      values++;
+    }
+
+  if (value && dispatch)
+    SendScrollAxis (seat, dispatch, event->time, x, y,
+		    /* FIXME: this is how GTK converts those values,
+		       but is it really right?  */
+		    total_x * 10, total_y * 10, flags,
+		    /* Also pass the event source device ID, which is
+		       used in an attempt to determine the axis
+		       source.  */
+		    event->sourceid);
+  return value;
+}
+
+static void
+DispatchMotion (Subcompositor *subcompositor, XIDeviceEvent *xev)
+{
+  Seat *seat;
+  Surface *dispatch, *actual_dispatch;
+  double x, y, event_x, event_y;
+
+  seat = XLLookUpAssoc (seats, xev->deviceid);
+
+  if (!seat)
+    return;
+
+  if (InterceptResizeEvent (seat, xev))
+    return;
+
+  /* Move the drag-and-drop icon window.  */
+  if (seat->icon_surface)
+    XLMoveIconSurface (seat->icon_surface, xev->root_x,
+		       xev->root_y);
+
+  /* Update information used for resize tracking.  */
+  seat->its_root_x = xev->root_x;
+  seat->its_root_y = xev->root_y;
+  seat->its_press_time = xev->time;
+
+  actual_dispatch = FindSurfaceUnder (subcompositor, xev->event_x,
+				      xev->event_y);
+
+  if (seat->grab_held)
+    {
+      /* If the grab is held, make the surface underneath the pointer
+	 the pending unlock surface.  */
+      SwapUnlockSurface (seat, actual_dispatch);
+      dispatch = seat->last_seen_surface;
+    }
+  else
+    dispatch = FindSurfaceUnder (subcompositor, xev->event_x,
+				 xev->event_y);
+
+  event_x = xev->event_x;
+  event_y = xev->event_y;
+
+  if (!dispatch)
+    {
+      if (seat->grab_surface)
+	{
+	  /* If the grab surface is set, translate the coordinates to
+	     it and use it instead.  */
+	  TranslateGrabPosition (seat, xev->event,
+				 &event_x, &event_y);
+	  dispatch = seat->grab_surface;
+
+	  goto after_dispatch_set;
+	}
+
+      EnteredSurface (seat, dispatch, xev->time, 0, 0, False);
+
+      /* If drag and drop is in progress, handle "external" drag and
+	 drop.  */
+      if (seat->flags & IsDragging
+	  && seat->data_source)
+	XLDoDragMotion (seat, xev->root_x, xev->root_y);
+
+      return;
+    }
+
+  /* Update the outputs the pointer surface is currently displayed
+     inside, since it evidently moved.  */
+  if (seat->cursor)
+    UpdateCursorOutput (seat->cursor, xev->root_x,
+			xev->root_y);
+
+  /* If dispatching during an active grab, and the event is for the
+     wrong client, translate the coordinates to the grab window.  */
+  if (!CanDeliverEvents (seat, dispatch))
+    dispatch = ComputeGrabPosition (seat, dispatch,
+				    &event_x, &event_y);
+
+ after_dispatch_set:
+
+  if (seat->flags & IsDragging
+      && seat->data_source)
+    /* Inside a surface; cancel external drag and drop.  */
+    XLDoDragLeave (seat);
+
+  TransformToView (dispatch->view, event_x, event_y,
+		   &x, &y);
+  EnteredSurface (seat, dispatch, xev->time, x, y, False);
+
+  if (!HandleValuatorMotion (seat, dispatch, x, y, xev))
+    {
+      if (seat->flags & IsDragging)
+	DragMotion (seat, dispatch, x, y, xev->time);
+      else
+	SendMotion (seat, dispatch, x, y, xev->time);
+    }
+
+  /* These values are for tracking the output that a cursor is in.  */
+
+  seat->last_motion_x = xev->root_x;
+  seat->last_motion_y = xev->root_y;
+}
+
+static int
+GetXButton (int detail)
+{
+  switch (detail)
+    {
+    case Button1:
+      return BTN_LEFT;
+
+    case Button2:
+      return BTN_MIDDLE;
+
+    case Button3:
+      return BTN_RIGHT;
+
+    default:
+      return -1;
+    }
+}
+
+static void
+CancelGrab (Seat *seat, Time time, Window source,
+	    double x, double y)
+{
+  Window target;
+
+  if (!seat->grab_held)
+    return;
+
+  if (--seat->grab_held)
+    return;
+
+  if (seat->pointer_unlock_surface)
+    {
+      target = XLWindowFromSurface (seat->pointer_unlock_surface);
+
+      if (target == None)
+	/* If the window is gone, make the target surface NULL.  */
+	SwapUnlockSurface (seat, NULL);
+      else
+	{
+	  if (source != target)
+	    /* If the source is something other than the target,
+	       translate the coordinates to the target.  */
+	    TranslateCoordinates (source, target, x, y, &x, &y);
+
+	  /* Finally, translate the coordinates to the target
+	     view.  */
+	  TransformToView (seat->pointer_unlock_surface->view,
+			   x, y, &x, &y);
+	}
+    }
+
+  EnteredSurface (seat, seat->pointer_unlock_surface,
+		  time, x, y, False);
+  SwapUnlockSurface (seat, NULL);
+
+  /* Cancel the unmap callback.  */
+  XLSurfaceCancelUnmapCallback (seat->grab_unmap_callback);
+  seat->grab_unmap_callback = NULL;
+}
+
+static void
+CancelGrabEarly (Seat *seat)
+{
+  /* Do this to make sure the grab is immediately canceled.  */
+  seat->grab_held = 1;
+
+  /* Cancelling the grab should also result in the unmap callback
+     being cancelled.  */
+  CancelGrab (seat, seat->its_press_time,
+	      DefaultRootWindow (compositor.display),
+	      seat->its_root_x, seat->its_root_y);
+}
+
+static void
+HandleGrabUnmapped (void *data)
+{
+  CancelGrabEarly (data);
+}
+
+static void
+LockSurfaceFocus (Seat *seat)
+{
+  UnmapCallback *callback;
+
+  /* As long as an active grab is held, ignore the passive grab.  */
+  if (seat->grab_surface)
+    return;
+
+  seat->grab_held++;
+
+  /* Initially, make the focus revert back to the last seen
+     surface.  */
+  if (seat->grab_held == 1)
+    {
+      SwapUnlockSurface (seat, seat->last_seen_surface);
+
+      /* Also cancel the grab upon the surface being unmapped.  */
+      callback = XLSurfaceRunAtUnmap (seat->last_seen_surface,
+				      HandleGrabUnmapped, seat);
+      seat->grab_unmap_callback = callback;
+    }
+}
+
+static void
+ClearLastButtonPressSurface (void *data)
+{
+  Seat *seat;
+
+  seat = data;
+
+  seat->last_button_press_surface = NULL;
+  seat->last_button_press_surface_callback = NULL;
+}
+
+static void
+SetButtonSurface (Seat *seat, Surface *surface)
+{
+  DestroyCallback *callback;
+
+  if (surface == seat->last_button_press_surface)
+    return;
+
+  callback = seat->last_button_press_surface_callback;
+
+  if (seat->last_button_press_surface)
+    {
+      XLSurfaceCancelRunOnFree (callback);
+      seat->last_button_press_surface_callback = NULL;
+      seat->last_button_press_surface = NULL;
+    }
+
+  if (!surface)
+    return;
+
+  seat->last_button_press_surface = surface;
+  seat->last_button_press_surface_callback
+    = XLSurfaceRunOnFree (surface, ClearLastButtonPressSurface, seat);
+}
+
+static void
+DispatchButton (Subcompositor *subcompositor, XIDeviceEvent *xev)
+{
+  Seat *seat;
+  Surface *dispatch, *actual_dispatch;
+  double x, y, event_x, event_y;
+  int button;
+  uint32_t state;
+
+  if (xev->flags & XIPointerEmulated)
+    return;
+
+  seat = XLLookUpAssoc (seats, xev->deviceid);
+
+  if (!seat)
+    return;
+
+  if (InterceptResizeEvent (seat, xev))
+    return;
+
+  if (seat->flags & IsDragging)
+    {
+      DragButton (seat, xev);
+      return;
+    }
+
+  button = GetXButton (xev->detail);
+
+  if (button < 0)
+    return;
+
+  actual_dispatch = FindSurfaceUnder (subcompositor, xev->event_x,
+				      xev->event_y);
+
+  if (seat->grab_held)
+    {
+      /* If the grab is held, make the surface underneath the pointer
+	 the pending unlock surface.  */
+      SwapUnlockSurface (seat, actual_dispatch);
+      dispatch = seat->last_seen_surface;
+    }
+  else
+    dispatch = actual_dispatch;
+
+  event_x = xev->event_x;
+  event_y = xev->event_y;
+
+  if (!dispatch)
+    {
+      if (seat->grab_surface)
+	{
+	  /* If the grab surface is set, translate the coordinates to
+	     it and use it instead.  */
+	  TranslateGrabPosition (seat, xev->event,
+				 &event_x, &event_y);
+	  dispatch = seat->grab_surface;
+
+	  goto after_dispatch_set;
+	}
+
+      EnteredSurface (seat, dispatch, xev->time, 0, 0, False);
+      return;
+    }
+
+  /* Allow popups to be dismissed when the mouse button is released on
+     some other client's window.  */
+  if (XLHandleButtonForXdgPopups (seat, dispatch))
+    /* Ignore the button event that resulted in popup(s) being
+       dismissed.  */
+    return;
+
+  /* If dispatching during an active grab, and the event is for the
+     wrong client, translate the coordinates to the grab window.  */
+  if (!CanDeliverEvents (seat, dispatch))
+    dispatch = ComputeGrabPosition (seat, dispatch,
+				    &event_x, &event_y);
+
+ after_dispatch_set:
+
+  TransformToView (dispatch->view, xev->event_x,
+		   xev->event_y, &x, &y);
+  EnteredSurface (seat, dispatch, xev->time, x, y,
+		  False);
+
+  state = (xev->evtype == XI_ButtonPress
+	   ? WL_POINTER_BUTTON_STATE_PRESSED
+	   : WL_POINTER_BUTTON_STATE_RELEASED);
+
+  SendButton (seat, dispatch, xev->time, button,
+	      state, x, y);
+
+  if (xev->evtype == XI_ButtonPress)
+    {
+      /* These values are used for resize grip tracking.  */
+      seat->its_root_x = lrint (xev->root_x);
+      seat->its_root_y = lrint (xev->root_y);
+      seat->its_press_time = xev->time;
+      seat->last_button = xev->detail;
+
+      SetButtonSurface (seat, dispatch);
+    }
+
+  if (xev->evtype == XI_ButtonPress)
+    LockSurfaceFocus (seat);
+  else
+    CancelGrab (seat, xev->time, xev->event,
+		xev->event_x, xev->event_y);
+}
+
+static void
+DispatchKey (XIDeviceEvent *xev)
+{
+  Seat *seat;
+
+  seat = XLLookUpAssoc (seats, xev->deviceid);
+
+  if (!seat)
+    return;
+
+  /* Report key state changes here.  A side effect is that the key
+     state reported in enter events will include grabbed keys, but
+     that seems to be an acceptable tradeoff.  */
+
+  if (seat->focus_surface)
+    {
+      if (xev->evtype == XI_KeyPress)
+	SendKeyboardKey (seat, seat->focus_surface,
+			 xev->time, WaylandKeycode (xev->detail),
+			 WL_KEYBOARD_KEY_STATE_PRESSED);
+      else
+	SendKeyboardKey (seat, seat->focus_surface,
+			 xev->time, WaylandKeycode (xev->detail),
+			 WL_KEYBOARD_KEY_STATE_RELEASED);
+    }
+}
+
+static void
+WriteKeymap (void)
+{
+  FILE *file;
+  XkbFileInfo result;
+  Bool ok;
+
+  if (keymap_fd != -1)
+    close (keymap_fd);
+
+  keymap_fd = XLOpenShm ();
+
+  if (keymap_fd < 0)
+    {
+      fprintf (stderr, "Failed to allocate keymap fd\n");
+      exit (1);
+    }
+
+  memset (&result, 0, sizeof result);
+  result.type = XkmKeymapFile;
+  result.xkb = xkb_desc;
+
+  file = fdopen (dup (keymap_fd), "w");
+
+  if (!file)
+    {
+      perror ("fdopen");
+      exit (1);
+    }
+
+  ok = XkbWriteXKBFile (file, &result,
+			/* libxkbcommon doesn't read comments in
+			   virtual_modifier lines.  */
+			False, NULL, NULL);
+
+  if (!ok)
+    fprintf (stderr, "Warning: the XKB keymap could not be written\n"
+	     "Programs might not continue to interpret keyboard input"
+	     " correctly.\n");
+
+  fclose (file);
+}
+
+static void
+AfterMapUpdate (void)
+{
+  if (XkbGetIndicatorMap (compositor.display, ~0, xkb_desc) != Success)
+    {
+      fprintf (stderr, "Could not load indicator map\n");
+      exit (1);
+    }
+
+  if (XkbGetControls (compositor.display,
+		      XkbAllControlsMask, xkb_desc) != Success)
+    {
+      fprintf (stderr, "Could not load keyboard controls\n");
+      exit (1);
+    }
+
+  if (XkbGetCompatMap (compositor.display,
+		       XkbAllCompatMask, xkb_desc) != Success)
+    {
+      fprintf (stderr, "Could not load compatibility map\n");
+      exit (1);
+    }
+
+  if (XkbGetNames (compositor.display,
+		   XkbAllNamesMask, xkb_desc) != Success)
+    {
+      fprintf (stderr, "Could not load names\n");
+      exit (1);
+    }
+}
+
+static void
+UpdateKeymapInfo (void)
+{
+  XLList *tem;
+  Seat *seat;
+  Keyboard *keyboard;
+
+  for (tem = live_seats; tem; tem = tem->next)
+    {
+      seat = tem->data;
+
+      if (!seat->key_pressed)
+	/* max_keycode is small enough for this to not matter
+	   memory-wise.  */
+	seat->key_pressed
+	  = XLCalloc (MaskLen (xkb_desc->max_key_code
+			       - xkb_desc->min_key_code), 1);
+      else
+	seat->key_pressed
+	  = XLRealloc (seat->key_pressed,
+		       MaskLen (xkb_desc->max_key_code
+				- xkb_desc->min_key_code));
+
+      for (keyboard = seat->keyboards.next1;
+	   keyboard != &seat->keyboards;
+	   keyboard = keyboard->next1)
+	UpdateSingleKeyboard (keyboard);
+    }
+}
+
+static void
+SetupKeymap (void)
+{
+  int xkb_major, xkb_minor, xkb_op, xkb_error_code, mask;
+  xkb_major = XkbMajorVersion;
+  xkb_minor = XkbMinorVersion;
+
+  if (!XkbLibraryVersion (&xkb_major, &xkb_minor)
+      || !XkbQueryExtension (compositor.display, &xkb_op, &xkb_event_type,
+			     &xkb_error_code, &xkb_major, &xkb_minor))
+    {
+      fprintf (stderr, "Failed to set up Xkb\n");
+      exit (1);
+    }
+
+  xkb_desc = XkbGetMap (compositor.display,
+			XkbAllMapComponentsMask,
+			XkbUseCoreKbd);
+
+  if (!xkb_desc)
+    {
+      fprintf (stderr, "Failed to retrieve keymap from X server\n");
+      exit (1);
+    }
+
+  AfterMapUpdate ();
+  WriteKeymap ();
+
+  XkbSelectEvents (compositor.display, XkbUseCoreKbd,
+		   XkbMapNotifyMask | XkbNewKeyboardNotifyMask,
+		   XkbMapNotifyMask | XkbNewKeyboardNotifyMask);
+
+  /* Select for keyboard state changes too.  */
+  mask = 0;
+
+  mask |= XkbModifierStateMask;
+  mask |= XkbModifierBaseMask;
+  mask |= XkbModifierLatchMask;
+  mask |= XkbModifierLockMask;
+  mask |= XkbGroupStateMask;
+  mask |= XkbGroupBaseMask;
+  mask |= XkbGroupLatchMask;
+  mask |= XkbGroupLockMask;
+
+  XkbSelectEventDetails (compositor.display, XkbUseCoreKbd,
+			 /* Now enable everything in that mask.  */
+			 XkbStateNotify, mask, mask);
+
+  UpdateKeymapInfo ();
+}
+
+static Bool
+HandleXkbEvent (XkbEvent *event)
+{
+  if (event->any.xkb_type == XkbMapNotify
+      || event->any.xkb_type == XkbNewKeyboardNotify)
+    {
+      XkbRefreshKeyboardMapping (&event->map);
+      XkbFreeKeyboard (xkb_desc, XkbAllMapComponentsMask,
+		       True);
+
+      xkb_desc = XkbGetMap (compositor.display,
+			    XkbAllMapComponentsMask,
+			    XkbUseCoreKbd);
+
+      if (!xkb_desc)
+	{
+	  fprintf (stderr, "Failed to retrieve keymap from X server\n");
+	  exit (1);
+	}
+
+      AfterMapUpdate ();
+      WriteKeymap ();
+      UpdateKeymapInfo ();
+
+      return True;
+    }
+  else if (event->any.xkb_type == XkbStateNotify)
+    {
+      UpdateModifiersForSeats (event->state.base_mods,
+			       event->state.locked_mods,
+			       event->state.latched_mods,
+			       event->state.base_group,
+			       event->state.locked_group,
+			       event->state.latched_group,
+			       event->state.group);
+      return True;
+    }
+
+  return False;
+}
+
+static Seat *
+IdentifySeat (WhatEdge *edge, uint32_t serial)
+{
+  Seat *seat;
+  XLList *tem;
+
+  for (tem = live_seats; tem; tem = tem->next)
+    {
+      seat = tem->data;
+
+      if (seat->last_button_serial == serial
+	  || seat->last_button_press_serial == serial)
+	{
+	  /* This serial belongs to a button press.  */
+	  *edge = APointerEdge;
+	  return seat;
+	}
+
+      if (seat->last_keyboard_serial == serial)
+	{
+	  /* This serial belongs to a keyboard press.  */
+	  *edge = AKeyboardEdge;
+	  return seat;
+	}
+    }
+
+  /* No seat was found.  */
+  return NULL;
+}
+
+static Time
+GetLastUserTime (Seat *seat)
+{
+  return MAX (seat->its_press_time,
+	      seat->its_depress_time);
+}
+
+static Bool
+HandleKeyboardEdge (Seat *seat, Surface *target, uint32_t serial,
+		    ResizeEdge edge)
+{
+  Surface *surface;
+  XEvent msg;
+
+  surface = seat->last_button_press_surface;
+
+  if (!surface || surface != target)
+    return False;
+
+  memset (&msg, 0, sizeof msg);
+  msg.xclient.type = ClientMessage;
+  msg.xclient.window = XLWindowFromSurface (surface);
+  msg.xclient.format = 32;
+  msg.xclient.message_type = _NET_WM_MOVERESIZE;
+  msg.xclient.data.l[0] = seat->its_root_x;
+  msg.xclient.data.l[1] = seat->its_root_y;
+  msg.xclient.data.l[2] = edge;
+  msg.xclient.data.l[3] = seat->last_button;
+  msg.xclient.data.l[4] = edge == MoveEdge ? 10 : 9;
+
+  /* Release all grabs to the pointer device in question.  */
+  XIUngrabDevice (compositor.display, seat->master_pointer,
+		  seat->its_press_time);
+
+  /* Also release all grabs to the keyboard device.  */
+  XIUngrabDevice (compositor.display, seat->master_keyboard,
+		  seat->its_press_time);
+
+  /* Clear the grab immediately since it is no longer used.  */
+  if (seat->grab_held)
+    CancelGrabEarly (seat);
+
+  /* Send the message to the window manager.  */
+  XSendEvent (compositor.display,
+	      DefaultRootWindow (compositor.display),
+	      False,
+	      SubstructureRedirectMask | SubstructureNotifyMask,
+	      &msg);
+
+  /* There's no way to determine whether or not a keyboard resize has
+     ended.  */
+  return False;
+}
+
+static void
+HandleResizeUnmapped (void *data)
+{
+  Seat *seat;
+
+  seat = data;
+  CancelResizeOperation (seat, seat->resize_time);
+}
+
+static Bool
+FakePointerEdge (Seat *seat, Surface *target, uint32_t serial,
+		 ResizeEdge edge)
+{
+  Cursor cursor;
+  Status state;
+  Window window;
+  XIEventMask mask;
+  ptrdiff_t length;
+
+  if (edge == NoneEdge)
+    return False;
+
+  if (seat->resize_surface)
+    /* Some surface is already being resized.  Prohibit this resize
+       request.  */
+    return False;
+
+  window = XLWindowFromSurface (target);
+
+  if (window == None)
+    /* No window exists.  */
+    return False;
+
+  seat->resize_start_root_x = seat->its_root_x;
+  seat->resize_start_root_y = seat->its_root_y;
+
+  seat->resize_last_root_x = seat->its_root_x;
+  seat->resize_last_root_y = seat->its_root_y;
+
+  /* Get an appropriate cursor.  */
+  cursor = (seat->cursor ? seat->cursor->cursor : None);
+
+  /* Get the dimensions of the surface when it was first seen.
+     This can fail if the surface does not support the operation.  */
+  if (!XLSurfaceGetResizeDimensions (target, &seat->resize_width,
+				     &seat->resize_height))
+    return False;
+
+  /* Set up the event mask for the pointer grab.  */
+  length = XIMaskLen (XI_LASTEVENT);
+  mask.mask = alloca (length);
+  mask.mask_len = length;
+  mask.deviceid = XIAllMasterDevices;
+
+  memset (mask.mask, 0, length);
+
+  XISetMask (mask.mask, XI_FocusIn);
+  XISetMask (mask.mask, XI_FocusOut);
+  XISetMask (mask.mask, XI_Enter);
+  XISetMask (mask.mask, XI_Leave);
+  XISetMask (mask.mask, XI_Motion);
+  XISetMask (mask.mask, XI_ButtonPress);
+  XISetMask (mask.mask, XI_ButtonRelease);
+
+  /* Grab the pointer, and don't let go until the button is
+     released.  */
+  state = XIGrabDevice (compositor.display, seat->master_pointer,
+			window, seat->its_press_time, cursor,
+			XIGrabModeAsync, XIGrabModeAsync, False, &mask);
+
+  if (state != Success)
+    return False;
+
+  /* On the other hand, cancel focus locking, since we will not be
+     reporting motion events until the resize operation completes.
+
+     Send leave events to any surface, since the pointer is
+     (logically) no longer inside.  */
+  if (seat->grab_held)
+    CancelGrabEarly (seat);
+
+  /* Set the surface as the surface undergoing resize.  */
+  seat->resize_surface = target;
+  seat->resize_surface_callback
+    = XLSurfaceRunAtUnmap (seat->resize_surface,
+			   HandleResizeUnmapped, seat);
+  seat->resize_axis_flags = resize_edges[edge];
+  seat->resize_button = seat->last_button;
+  seat->resize_time = seat->its_press_time;
+
+  return True;
+}
+
+static Bool
+HandlePointerEdge (Seat *seat, Surface *target, uint32_t serial,
+		   ResizeEdge edge)
+{
+  Surface *surface;
+  XEvent msg;
+
+  surface = seat->last_button_press_surface;
+
+  if (!surface || surface != target)
+    return False;
+
+  if (!XLWmSupportsHint (_NET_WM_MOVERESIZE)
+      || getenv ("USE_BUILTIN_RESIZE"))
+    return FakePointerEdge (seat, target, serial, edge);
+
+  memset (&msg, 0, sizeof msg);
+  msg.xclient.type = ClientMessage;
+  msg.xclient.window = XLWindowFromSurface (surface);
+  msg.xclient.format = 32;
+  msg.xclient.message_type = _NET_WM_MOVERESIZE;
+  msg.xclient.data.l[0] = seat->its_root_x;
+  msg.xclient.data.l[1] = seat->its_root_y;
+  msg.xclient.data.l[2] = edge;
+  msg.xclient.data.l[3] = seat->last_button;
+  msg.xclient.data.l[4] = 1; /* Source indication.  */
+
+  /* Release all grabs to the pointer device in question.  */
+  XIUngrabDevice (compositor.display, seat->master_pointer,
+		  seat->its_press_time);
+
+  /* Also clear the core grab, even though it's not used anywhere.  */
+  XUngrabPointer (compositor.display, seat->its_press_time);
+
+  /* Clear the grab immediately since it is no longer used.  */
+  if (seat->grab_held)
+    CancelGrabEarly (seat);
+
+  /* Send the message to the window manager.  */
+  XSendEvent (compositor.display,
+	      DefaultRootWindow (compositor.display),
+	      False,
+	      SubstructureRedirectMask | SubstructureNotifyMask,
+	      &msg);
+
+  /* Assume a resize is in progress.  Stop resizing upon
+     seat->last_button being released.  */
+  return seat->resize_in_progress = True;
+}
+
+static Bool
+StartResizeTracking (Seat *seat, Surface *surface, uint32_t serial,
+		     ResizeEdge edge)
+{
+  WhatEdge type;
+
+  if (seat != IdentifySeat (&type, serial))
+    return False;
+
+  if (type == AKeyboardEdge)
+    return HandleKeyboardEdge (seat, surface, serial, edge);
+  else
+    return HandlePointerEdge (seat, surface, serial, edge);
+}
+
+Bool
+XLHandleOneXEventForSeats (XEvent *event)
+{
+  if (event->type == GenericEvent
+      && event->xgeneric.extension == xi2_opcode)
+    return HandleOneGenericEvent (&event->xcookie);
+
+  if (event->type == xkb_event_type)
+    return HandleXkbEvent ((XkbEvent *) event);
+
+  return False;
+}
+
+Window
+XLGetGEWindowForSeats (XEvent *event)
+{
+  XIFocusInEvent *focusin;
+  XIEnterEvent *enter;
+  XIDeviceEvent *xev;
+
+  if (event->type == GenericEvent
+      && event->xgeneric.extension == xi2_opcode)
+    {
+      switch (event->xgeneric.evtype)
+	{
+	case XI_FocusIn:
+	case XI_FocusOut:
+	  focusin = event->xcookie.data;
+	  return focusin->event;
+
+	case XI_Motion:
+	case XI_ButtonPress:
+	case XI_ButtonRelease:
+	case XI_KeyPress:
+	case XI_KeyRelease:
+	  xev = event->xcookie.data;
+	  return xev->event;
+
+	case XI_Enter:
+	case XI_Leave:
+	  enter = event->xcookie.data;
+	  return enter->event;
+	}
+    }
+
+  return None;
+}
+
+void
+XLSelectStandardEvents (Window window)
+{
+  XIEventMask mask;
+  ptrdiff_t length;
+
+  length = XIMaskLen (XI_LASTEVENT);
+  mask.mask = alloca (length);
+  mask.mask_len = length;
+  mask.deviceid = XIAllMasterDevices;
+
+  memset (mask.mask, 0, length);
+
+  XISetMask (mask.mask, XI_FocusIn);
+  XISetMask (mask.mask, XI_FocusOut);
+  XISetMask (mask.mask, XI_Enter);
+  XISetMask (mask.mask, XI_Leave);
+  XISetMask (mask.mask, XI_Motion);
+  XISetMask (mask.mask, XI_ButtonPress);
+  XISetMask (mask.mask, XI_ButtonRelease);
+  XISetMask (mask.mask, XI_KeyPress);
+  XISetMask (mask.mask, XI_KeyRelease);
+
+  XISelectEvents (compositor.display, window, &mask, 1);
+}
+
+void
+XLDispatchGEForSeats (XEvent *event, Surface *surface,
+		      Subcompositor *subcompositor)
+{
+  if (event->xgeneric.evtype == XI_FocusIn)
+    DispatchFocusIn (surface, event->xcookie.data);
+  else if (event->xgeneric.evtype == XI_FocusOut)
+    DispatchFocusOut (surface, event->xcookie.data);
+  else if (event->xgeneric.evtype == XI_Enter
+	   || event->xgeneric.evtype == XI_Leave)
+    DispatchEntryExit (subcompositor, event->xcookie.data);
+  else if (event->xgeneric.evtype == XI_Motion)
+    DispatchMotion (subcompositor, event->xcookie.data);
+  else if (event->xgeneric.evtype == XI_ButtonPress
+	   || event->xgeneric.evtype == XI_ButtonRelease)
+    DispatchButton (subcompositor, event->xcookie.data);
+  else if (event->xgeneric.evtype == XI_KeyPress
+	   || event->xgeneric.evtype == XI_KeyRelease)
+    DispatchKey (event->xcookie.data);
+}
+
+Cursor
+InitDefaultCursor (void)
+{
+  static Cursor empty_cursor;
+  Pixmap pixmap;
+  char no_data[1];
+  XColor color;
+
+  if (empty_cursor == None)
+    {
+      no_data[0] = 0;
+
+      pixmap = XCreateBitmapFromData (compositor.display,
+				      DefaultRootWindow (compositor.display),
+				      no_data, 1, 1);
+      color.pixel = 0;
+      color.red = 0;
+      color.green = 0;
+      color.blue = 0;
+      color.flags = DoRed | DoGreen | DoBlue;
+
+      empty_cursor = XCreatePixmapCursor (compositor.display,
+					  pixmap, pixmap,
+					  &color, &color, 0, 0);
+
+      XFreePixmap (compositor.display, pixmap);
+    }
+
+  return empty_cursor;
+}
+
+Bool
+XLResizeToplevel (Seat *seat, Surface *surface, uint32_t serial,
+		  uint32_t xdg_edge)
+{
+  ResizeEdge edge;
+
+  if (seat->resize_in_progress)
+    return False;
+
+  switch (xdg_edge)
+    {
+    case XDG_TOPLEVEL_RESIZE_EDGE_NONE:
+      edge = NoneEdge;
+      break;
+
+    case XDG_TOPLEVEL_RESIZE_EDGE_TOP_LEFT:
+      edge = TopLeftEdge;
+      break;
+
+    case XDG_TOPLEVEL_RESIZE_EDGE_TOP_RIGHT:
+      edge = TopRightEdge;
+      break;
+
+    case XDG_TOPLEVEL_RESIZE_EDGE_TOP:
+      edge = TopEdge;
+      break;
+
+    case XDG_TOPLEVEL_RESIZE_EDGE_RIGHT:
+      edge = RightEdge;
+      break;
+
+    case XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM:
+      edge = BottomEdge;
+      break;
+
+    case XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_RIGHT:
+      edge = BottomRightEdge;
+      break;
+
+    case XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_LEFT:
+      edge = BottomLeftEdge;
+      break;
+
+    case XDG_TOPLEVEL_RESIZE_EDGE_LEFT:
+      edge = LeftEdge;
+      break;
+
+    default:
+      edge = NoneEdge;
+      break;
+    }
+
+  return StartResizeTracking (seat, surface, serial, edge);
+}
+
+void
+XLMoveToplevel (Seat *seat, Surface *surface, uint32_t serial)
+{
+  StartResizeTracking (seat, surface, serial, MoveEdge);
+}
+
+void *
+XLSeatRunAfterResize (Seat *seat, void (*func) (void *, void *),
+		      void *data)
+{
+  ResizeDoneCallback *callback;
+
+  callback = XLMalloc (sizeof *callback);
+  callback->next = seat->resize_callbacks.next;
+  callback->last = &seat->resize_callbacks;
+
+  seat->resize_callbacks.next->last = callback;
+  seat->resize_callbacks.next = callback;
+
+  callback->data = data;
+  callback->done = func;
+
+  return callback;
+}
+
+void
+XLSeatCancelResizeCallback (void *key)
+{
+  ResizeDoneCallback *callback;
+
+  callback = key;
+  callback->last->next = callback->next;
+  callback->next->last = callback->last;
+
+  callback->last = callback;
+  callback->next = callback;
+
+  XLFree (callback);
+}
+
+void *
+XLSeatRunOnDestroy (Seat *seat, void (*destroy_func) (void *),
+		    void *data)
+{
+  DestroyListener *listener;
+
+  if (seat->flags & IsInert)
+    return NULL;
+
+  listener = XLMalloc (sizeof *listener);
+  listener->next = seat->destroy_listeners.next;
+  listener->last = &seat->destroy_listeners;
+
+  listener->destroy = destroy_func;
+  listener->data = data;
+
+  seat->destroy_listeners.next->last = listener;
+  seat->destroy_listeners.next = listener;
+
+  return listener;
+}
+
+void
+XLSeatCancelDestroyListener (void *key)
+{
+  DestroyListener *listener;
+
+  listener = key;
+  listener->next->last = listener->last;
+  listener->last->next = listener->next;
+
+  XLFree (listener);
+}
+
+Bool
+XLSeatExplicitlyGrabSurface (Seat *seat, Surface *surface, uint32_t serial)
+{
+  Status state;
+  Window window;
+  WhatEdge edge;
+  Time time;
+  XIEventMask mask;
+  ptrdiff_t length;
+  Cursor cursor;
+
+  if (seat->flags & IsInert
+      /* This would interfere with the drag-and-drop grab.  */
+      || seat->flags & IsDragging)
+    return False;
+
+  window = XLWindowFromSurface (surface);
+
+  if (!window)
+    return False;
+
+  if (serial && serial == seat->last_grab_serial)
+    {
+      /* This probably means we are trying to revert the grab to a
+	 popup's parent after the child is destroyed.  */
+
+      edge = seat->last_grab_edge;
+      time = seat->last_grab_time;
+    }
+  else
+    {
+      if (seat != IdentifySeat (&edge, serial))
+	return False;
+
+      if (edge == AKeyboardEdge)
+	time = seat->its_depress_time;
+      else
+	time = seat->its_press_time;
+    }
+
+  /* Record these values; they can be used to revert the grab to the
+     parent.  */
+  seat->last_grab_serial = serial;
+  seat->last_grab_edge = edge;
+  seat->last_grab_time = time;
+
+  length = XIMaskLen (XI_LASTEVENT);
+  mask.mask = alloca (length);
+  mask.mask_len = length;
+  mask.deviceid = XIAllMasterDevices;
+
+  memset (mask.mask, 0, length);
+
+  XISetMask (mask.mask, XI_FocusIn);
+  XISetMask (mask.mask, XI_FocusOut);
+  XISetMask (mask.mask, XI_Enter);
+  XISetMask (mask.mask, XI_Leave);
+  XISetMask (mask.mask, XI_Motion);
+  XISetMask (mask.mask, XI_ButtonPress);
+  XISetMask (mask.mask, XI_ButtonRelease);
+
+  cursor = (seat->cursor ? seat->cursor->cursor : None);
+
+  state = XIGrabDevice (compositor.display, seat->master_pointer,
+			window, time, cursor, XIGrabModeAsync,
+			XIGrabModeAsync, True, &mask);
+
+  if (state != Success)
+    return False;
+
+  /* The grab was obtained.  Since this grab is owner_events, remove
+     any focus locking.  */
+  if (seat->grab_held)
+    CancelGrabEarly (seat);
+
+  /* Now, grab the keyboard.  Note that we just grab the keyboard so
+     that keyboard focus cannot be changed; key events are still
+     reported based on raw events.  */
+
+  state = XIGrabDevice (compositor.display, seat->master_keyboard,
+			window, time, None, XIGrabModeAsync,
+			XIGrabModeAsync, True, &mask);
+
+  /* And record the grab surface, so that owner_events can be
+     implemented correctly.  */
+  SwapGrabSurface (seat, surface);
+
+  return True;
+}
+
+DataDevice *
+XLSeatGetDataDevice (Seat *seat)
+{
+  return seat->data_device;
+}
+
+void
+XLSeatSetDataDevice (Seat *seat, DataDevice *data_device)
+{
+  seat->data_device = data_device;
+
+  XLRetainDataDevice (data_device);
+}
+
+Bool
+XLSeatIsInert (Seat *seat)
+{
+  return seat->flags & IsInert;
+}
+
+Bool
+XLSeatIsClientFocused (Seat *seat, struct wl_client *client)
+{
+  struct wl_client *surface_client;
+
+  if (!seat->focus_surface)
+    return False;
+
+  surface_client
+    = wl_resource_get_client (seat->focus_surface->resource);
+
+  return client == surface_client;
+}
+
+void
+XLSeatShowWindowMenu (Seat *seat, Surface *surface, int root_x,
+		      int root_y)
+{
+  XEvent msg;
+  Window window;
+
+  if (!XLWmSupportsHint (_GTK_SHOW_WINDOW_MENU))
+    return;
+
+  if (seat->flags & IsDragging)
+    /* The window menu cannot be displayed while the drag-and-drop
+       grab is in effect.  */
+    return;
+
+  window = XLWindowFromSurface (surface);
+
+  if (window == None)
+    return;
+
+  /* Ungrab the pointer.  Also cancel any focus locking, if
+     active.  */
+  XIUngrabDevice (compositor.display, seat->master_pointer,
+		  seat->its_press_time);
+
+  /* Also clear the core grab, even though it's not used anywhere.  */
+  XUngrabPointer (compositor.display, seat->its_press_time);
+
+  /* Cancel focus locking.  */
+  if (seat->grab_held)
+    CancelGrabEarly (seat);
+
+  /* Signal that the window menu is now shown.  The assumption is that
+     the window manager will grab the pointer device; the flag is then
+     cleared once once any kind of crossing event is received.
+
+     This is race-prone for two reasons.  If the window manager does
+     not receive the event in time, the last-grab-time could have
+     changed.  Since there is no timestamp provided in the
+     _GTK_SHOW_WINDOW_MENU message, there is no way for the window
+     manager to know if the time it issued the grab is valid, as it
+     will need to obtain the grab time via a server roundtrip.  In
+     addition, there is no way for the client to cancel the window
+     menu grab, should it receive an event changing the last-grab-time
+     before the window manager has a chance to grab the pointer.
+
+     So the conclusion is that _GTK_SHOW_WINDOW_MENU is defective from
+     improper design.  In the meantime, the solution mentioned above
+     seems to work well enough in most cases.  */
+  seat->flags |= IsWindowMenuShown;
+
+  /* Send the message to the window manager with the device to grab,
+     and the coordinates where the window menu should be shown.  */
+  memset (&msg, 0, sizeof msg);
+  msg.xclient.type = ClientMessage;
+  msg.xclient.window = window;
+  msg.xclient.format = 32;
+  msg.xclient.message_type = _GTK_SHOW_WINDOW_MENU;
+  msg.xclient.data.l[0] = seat->master_pointer;
+  msg.xclient.data.l[1] = root_x;
+  msg.xclient.data.l[2] = root_y;
+
+  XSendEvent (compositor.display,
+	      DefaultRootWindow (compositor.display),
+	      False,
+	      SubstructureRedirectMask | SubstructureNotifyMask,
+	      &msg);
+}
+
+static void
+ForceEntry (Seat *seat, Window source, double x, double y)
+{
+  Surface *surface;
+  Window target;
+
+  if (seat->last_seen_surface)
+    {
+      surface = seat->last_seen_surface;
+      target = XLWindowFromSurface (surface);
+
+      if (target == None)
+	/* If the window is gone, make the target surface NULL.  */
+	SwapUnlockSurface (seat, NULL);
+      else
+	{
+	  if (source != target)
+	    /* If the source is something other than the target,
+	       translate the coordinates to the target.  */
+	    TranslateCoordinates (source, target, x, y, &x, &y);
+
+	  /* Finally, translate the coordinates to the target
+	     view.  */
+	  TransformToView (surface->view,  x, y, &x, &y);
+	}
+    }
+  else
+    return;
+
+  if (!SendEnter (seat, surface, x, y))
+    /* Apparently what is done by other compositors when no
+       wl_pointer object exists for the surface's client is to
+       revert back to the default cursor.  */
+    UndefineCursorOn (seat, surface);
+}
+
+static void
+CancelDrag (Seat *seat, Window event_source, double x, double y)
+{
+  if (!(seat->flags & IsDragging))
+    return;
+
+  /* If the last seen surface is now different from the drag start
+     surface, clear the cursor on the latter.  */
+  if (seat->drag_start_surface != seat->last_seen_surface
+      && seat->cursor)
+    FreeCursor (seat->cursor);
+
+  if (seat->data_source)
+    XLDoDragFinish (seat);
+
+  /* And cancel the drag flag.  */
+  seat->flags &= ~IsDragging;
+
+  /* Clear the surface and free its unmap callback.  */
+  seat->drag_start_surface = NULL;
+  XLSurfaceCancelUnmapCallback (seat->drag_start_unmap_callback);
+
+  /* Release the active grab as well, and leave any surface we
+     entered.  */
+  if (seat->drag_last_surface)
+    DragLeave (seat);
+
+  XIUngrabDevice (compositor.display, seat->master_pointer,
+		  seat->drag_grab_time);
+
+  if (seat->data_source)
+    {
+      /* Attach a NULL drag device to this source.  */
+      XLDataSourceAttachDragDevice (seat->data_source, NULL);
+
+      /* Cancel the destroy callback.  */
+      XLDataSourceCancelDestroyCallback (seat->data_source_destroy_callback);
+
+      /* If a data source is attached, clear it now.  */
+      seat->data_source = NULL;
+      seat->data_source_destroy_callback = NULL;
+    }
+
+  /* If nothing was dropped, emit the cancelled event.  */
+  if (seat->data_source && !(seat->flags & IsDropped))
+    XLDataSourceSendDropCancelled (seat->data_source);
+
+  /* Next, enter the last seen surface.  This is necessary when
+     releasing the pointer on top of a different surface after the
+     drag and drop operation completes.  */
+  ForceEntry (seat, event_source, x, y);
+
+  /* Destroy the grab window.  */
+  XDestroyWindow (compositor.display, seat->grab_window);
+  seat->grab_window = None;
+
+  /* Cancel the icon surface.  */
+  if (seat->icon_surface)
+    XLReleaseIconSurface (seat->icon_surface);
+  seat->icon_surface = NULL;
+}
+
+static void
+HandleDragSurfaceUnmapped (void *data)
+{
+  Seat *seat;
+  double root_x, root_y;
+
+  seat = data;
+
+  /* Cancel the drag and drop operation.  We don't know where the
+     pointer is ATM, so query for that information.  */
+
+  QueryPointer (seat, DefaultRootWindow (compositor.display),
+		&root_x, &root_y);
+
+  /* And cancel the drag with the pointer position.  */
+
+  CancelDrag (seat, DefaultRootWindow (compositor.display),
+	      root_x, root_y);
+}
+
+static void
+HandleDataSourceDestroyed (void *data)
+{
+  Seat *seat;
+  double root_x, root_y;
+
+  seat = data;
+
+  /* Clear those fields first, since their contents are now
+     destroyed.  */
+  seat->data_source = NULL;
+  seat->data_source_destroy_callback = NULL;
+
+  /* Cancel the drag and drop operation.  We don't know where the
+     pointer is ATM, so query for that information.  */
+
+  QueryPointer (seat, DefaultRootWindow (compositor.display),
+		&root_x, &root_y);
+
+  /* And cancel the drag with the pointer position.  */
+
+  CancelDrag (seat, DefaultRootWindow (compositor.display),
+	      root_x, root_y);
+}
+
+static Window
+MakeGrabWindow (void)
+{
+  Window window;
+  XSetWindowAttributes attrs;
+
+  /* Make the window override redirect.  */
+  attrs.override_redirect = True;
+
+  /* The window has to be mapped and visible, or the grab will
+     fail.  */
+  window = XCreateWindow (compositor.display,
+			  DefaultRootWindow (compositor.display),
+			  0, 0, 1, 1, 0, CopyFromParent, InputOnly,
+			  CopyFromParent, CWOverrideRedirect, &attrs);
+
+  /* Clear the input region of the window.  */
+  XShapeCombineRectangles (compositor.display, window,
+			   ShapeInput, 0, 0, NULL, 0, ShapeSet,
+			   Unsorted);
+
+  /* Map and return it.  */
+  XMapRaised (compositor.display, window);
+  return window;
+}
+
+void
+XLSeatBeginDrag (Seat *seat, DataSource *data_source, Surface *start_surface,
+		 Surface *icon_surface, uint32_t serial)
+{
+  Window window;
+  Time time;
+  XIEventMask mask;
+  ptrdiff_t length;
+  WhatEdge edge;
+  Status state;
+
+  /* If the surface is unmapped or window-less, don't allow dragging
+     from it.  */
+
+  window = XLWindowFromSurface (start_surface);
+
+  if (window == None)
+    return;
+
+  /* To begin a drag and drop session, first look up the given serial.
+     Then, acquire an active grab on the pointer with owner_events set
+     to true.
+
+     While the grab is active, all crossing and motion event dispatch
+     is hijacked to send events to the appropriate data device manager
+     instead.
+
+     If, for some reason, data_source is destroyed, or the source
+     surface is destroyed, the grab is cancelled and the drag and drop
+     operation terminates.  Otherwise, drop is sent to the correct
+     data device manager once all the pointer buttons are
+     released.  */
+
+  if (seat->flags & IsDragging)
+    return;
+
+  if (seat != IdentifySeat (&edge, serial))
+    return;
+
+  if (edge == AKeyboardEdge)
+    return;
+
+  /* Use the time of the last button press or release.  */
+  time = seat->its_press_time;
+
+  /* Initialize the event mask used for the grab.  */
+  length = XIMaskLen (XI_LASTEVENT);
+  mask.mask = alloca (length);
+  mask.mask_len = length;
+  mask.deviceid = XIAllMasterDevices;
+
+  memset (mask.mask, 0, length);
+
+  /* These are just the events we want reported relative to the grab
+     window.  */
+
+  XISetMask (mask.mask, XI_Enter);
+  XISetMask (mask.mask, XI_Leave);
+  XISetMask (mask.mask, XI_Motion);
+  XISetMask (mask.mask, XI_ButtonPress);
+  XISetMask (mask.mask, XI_ButtonRelease);
+
+  /* Create the window that will be used for the grab.  */
+
+  XLAssert (seat->grab_window == None);
+  seat->grab_window = MakeGrabWindow ();
+
+  /* Record that the drag has started, temporarily, for cursor
+     updates.  */
+  seat->flags |= IsDragging;
+
+  /* Move the cursor to the drag grab window.  */
+  if (seat->cursor)
+    UpdateCursorFromSubcompositor (seat->cursor);
+
+  /* Unset the drag flag again.  */
+  seat->flags &= ~IsDragging;
+
+  /* Now, try to grab the pointer device with events reported relative
+     to the grab window.  */
+
+  state = XIGrabDevice (compositor.display, seat->master_pointer,
+		        seat->grab_window, time, None, XIGrabModeAsync,
+			XIGrabModeAsync, True, &mask);
+
+  if (state != Success)
+    {
+      /* Destroy the grab window.  */
+      XDestroyWindow (compositor.display, seat->grab_window);
+      seat->grab_window = None;
+
+      return;
+    }
+
+  /* Since the active grab is now held and is owner_events, remove
+     focus locking.  */
+  if (seat->grab_held)
+    CancelGrabEarly (seat);
+
+  /* Record the originating surface of the grab and add an unmap
+     callback.  */
+  seat->drag_start_surface = start_surface;
+  seat->drag_start_unmap_callback
+    = XLSurfaceRunAtUnmap (start_surface, HandleDragSurfaceUnmapped,
+			   seat);
+
+  seat->flags &= ~IsDragging;
+
+  /* Since dragging has started, leave the last seen surface now.
+     Preserve the cursor, since that surface is where the cursor is
+     currently set.  */
+  EnteredSurface (seat, NULL, CurrentTime, 0, 0, True);
+
+  if (data_source)
+    {
+      /* Record the data source.  */
+      XLDataSourceAttachDragDevice (data_source,
+				    seat->data_device);
+      seat->data_source = data_source;
+
+      /* Add a destroy callback.  */
+      seat->data_source_destroy_callback
+	= XLDataSourceAddDestroyCallback (data_source,
+					  HandleDataSourceDestroyed,
+					  seat);
+    }
+  else
+    /* This should've been destroyed by CancelGrab.  */
+    XLAssert (seat->data_source == NULL);
+
+  /* If the icon surface was specified, give it the right type and
+     attach the role.  */
+  if (icon_surface)
+    {
+      /* Note that the caller is responsible for validating the type
+	 of the icon surface.  */
+      icon_surface->role_type = DndIconType;
+      seat->icon_surface = XLGetIconSurface (icon_surface);
+
+      /* Move the icon surface to the last known root window position
+	 of the pointer.  */
+      XLMoveIconSurface (seat->icon_surface, seat->its_root_x,
+			 seat->its_root_y);
+    }
+
+  /* Record that the drag has really started.  */
+  seat->drag_grab_time = time;
+  seat->flags |= IsDragging;
+  seat->flags &= ~IsDropped;
+}
+
+Time
+XLSeatGetLastUserTime (Seat *seat)
+{
+  return GetLastUserTime (seat);
+}
+
+void
+XLInitSeats (void)
+{
+  int rc;
+
+  /* This is the version of the input extension that we want.  */
+  xi2_major = 2;
+  xi2_minor = 3;
+
+  if (XQueryExtension (compositor.display, "XInputExtension",
+		       &xi2_opcode, &xi_first_event, &xi_first_error))
+    {
+      rc = XIQueryVersion (compositor.display, &xi2_major, &xi2_minor);
+
+      if (xi2_major < 2 || (xi2_major == 2 && xi2_minor < 3) || rc)
+	{
+	  fprintf (stderr, "version 2.3 or later of of the X Input Extension is"
+		   " not present on the X server\n");
+	  exit (1);
+	}
+    }
+
+  seats = XLCreateAssocTable (25);
+  devices = XLCreateAssocTable (25);
+  keymap_fd = -1;
+
+  SelectDeviceEvents ();
+  SetupInitialDevices ();
+  SetupKeymap ();
+}
+
+DataSource *
+XLSeatGetDragDataSource (Seat *seat)
+{
+  return seat->data_source;
+}
+
+void *
+XLSeatAddModifierCallback (Seat *seat, void (*changed) (unsigned int, void *),
+			   void *data)
+{
+  ModifierChangeCallback *callback;
+
+  callback = XLMalloc (sizeof *callback);
+  callback->next = seat->modifier_callbacks.next;
+  callback->last = &seat->modifier_callbacks;
+  seat->modifier_callbacks.next->last = callback;
+  seat->modifier_callbacks.next = callback;
+
+  callback->changed = changed;
+  callback->data = data;
+
+  return callback;
+}
+
+void
+XLSeatRemoveModifierCallback (void *key)
+{
+  ModifierChangeCallback *callback;
+
+  callback = key;
+  callback->next->last = callback->last;
+  callback->last->next = callback->next;
+
+  XLFree (callback);
+}
+
+unsigned int
+XLSeatGetEffectiveModifiers (Seat *seat)
+{
+  return seat->base | seat->locked | seat->latched;
+}

@@ -1,0 +1,94 @@
+#include "libraries.def"
+
+#ifndef HasPosixThreads
+#error "Posix threads are required"
+#endif
+
+SYS_LIBRARIES = MathLibrary ThreadsLibraries
+DEPLIBS = $(DEPXLIB) $(DEPEXTENSIONLIB) $(DEPXRANDRLIB) $(DEPXRENDERLIB) \
+  $(DEPXFIXESLIB) $(DEPXILIB) $(DEPXKBFILELIB)
+
+ETAGS = etags
+
+LOCAL_LIBRARIES = $(XLIB) $(EXTENSIONLIB) $(XCBLIB) $(XCB) $(XCB_SHM)      \
+  $(XRANDRLIB) $(PIXMAN) $(XRENDERLIB) $(XILIB) $(XKBFILELIB) $(XFIXESLIB) \
+  $(XCB_DRI3) $(XCB_SHAPE) $(WAYLAND_SERVER)
+
+INCLUDES := $(DRMINCLUDES) $(PIXMANINCLUDES)
+
+SRCS = 12to11.c run.c alloc.c fns.c output.c compositor.c       \
+  xdg-shell.c surface.c region.c shm.c atoms.c subcompositor.c  \
+  positioner.c xdg_wm.c xdg_surface.c xdg_toplevel.c            \
+  frame_clock.c xerror.c ewmh.c timer.c subsurface.c seat.c     \
+  data_device.c xdg_popup.c linux-dmabuf-unstable-v1.c dmabuf.c \
+  buffer.c select.c xdata.c xsettings.c dnd.c icon_surface.c
+
+OBJS = 12to11.o run.o alloc.o fns.o output.o compositor.o       \
+  xdg-shell.o surface.o region.o shm.o atoms.o subcompositor.o  \
+  positioner.o xdg_wm.o xdg_surface.o xdg_toplevel.o            \
+  frame_clock.o xerror.o ewmh.o timer.o subsurface.o seat.o     \
+  data_device.o xdg_popup.o linux-dmabuf-unstable-v1.o dmabuf.o \
+  buffer.o select.o xdata.o xsettings.o dnd.o icon_surface.o
+
+OPTIMIZE = -O0
+ANALYZE  = -fanalyzer
+
+CDEBUGFLAGS := -fno-common -Wall -Warith-conversion -Wdate-time \
+  -Wdisabled-optimization -Wdouble-promotion -Wduplicated-cond  \
+  -Wextra -Wformat-signedness -Winit-self -Winvalid-pch         \
+  -Wlogical-op -Wmissing-declarations -Wmissing-include-dirs    \
+  -Wmissing-prototypes -Wnested-externs -Wnull-dereference      \
+  -Wold-style-definition -Wopenmp-simd -Wpacked -Wpointer-arith \
+  -Wstrict-prototypes -Wsuggest-attribute=format                \
+  -Wsuggest-attribute=noreturn -Wsuggest-final-methods          \
+  -Wsuggest-final-types -Wuninitialized -Wunknown-pragmas       \
+  -Wunused-macros -Wvariadic-macros                             \
+  -Wvector-operation-performance -Wwrite-strings                \
+  -Warray-bounds=2 -Wattribute-alias=2 -Wformat=2               \
+  -Wformat-truncation=2 -Wimplicit-fallthrough=5                \
+  -Wshift-overflow=2 -Wuse-after-free=3 -Wvla-larger-than=4031  \
+  -Wredundant-decls -Wno-missing-field-initializers             \
+  -Wno-override-init -Wno-sign-compare -Wno-type-limits         \
+  -Wno-unused-parameter -Wno-format-nonliteral -g3 $(OPTIMIZE)  \
+  $(ANALYZE)
+
+short_types.txt: media_types.txt
+XCOMM	remove all data types starting with application/vnd.
+XCOMM	no program really uses them in clipboard data, and they
+XCOMM	waste a lot of space on disk.
+	sed '/application\/vnd/d' media_types.txt > $@
+
+transfer_atoms.h: short_types.txt mime0.awk mime1.awk mime2.awk mime3.awk \
+		  mime4.awk
+	awk -f mime0.awk short_types.txt >  $@
+	awk -f mime1.awk short_types.txt >> $@
+	awk -f mime2.awk short_types.txt >> $@
+	awk -f mime3.awk short_types.txt >> $@
+	awk -f mime4.awk short_types.txt >> $@
+
+$(OBJS): transfer_atoms.h
+
+linux-dmabuf-unstable-v1.h: linux-dmabuf-unstable-v1.xml
+	$(WAYLAND_SCANNER) server-header $< $@
+
+linux-dmabuf-unstable-v1.c: linux-dmabuf-unstable-v1.xml \
+			    linux-dmabuf-unstable-v1.h
+	$(WAYLAND_SCANNER) private-code $< $@
+
+xdg-shell.h: xdg-shell.xml
+	$(WAYLAND_SCANNER) server-header $< $@
+
+xdg-shell.c: xdg-shell.xml xdg-shell.h
+	$(WAYLAND_SCANNER) private-code $< $@
+
+cleandir::
+	$(RM) linux-dmabuf-unstable-v1.c linux-dmabuf-unstable-v1.h \
+	      xdg-shell.c xdg-shell.h
+	$(RM) transfer_atoms.h short_types.txt
+
+/* Undefine _BSD_SOURCE and _SVID_SOURCE, since both are deprecated
+   and are also superseeded by _GNU_SOURCE.  */
+
+EXTRA_DEFINES := -D_GNU_SOURCE -U_BSD_SOURCE -U_SVID_SOURCE
+
+ComplexProgramTarget(12to11)
