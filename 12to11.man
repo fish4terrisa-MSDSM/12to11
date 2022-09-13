@@ -1,4 +1,4 @@
-.TH OCLOCK
+.TH 12to11
 .SH NAME
 12to11 - Wayland to X protocol translator
 .SH SYNOPSIS
