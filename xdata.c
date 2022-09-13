@@ -42,6 +42,7 @@ typedef struct _ConversionTransferInfo ConversionTransferInfo;
 typedef struct _WriteInfo WriteInfo;
 typedef struct _ConversionWriteInfo ConversionWriteInfo;
 typedef struct _DataConversion DataConversion;
+typedef struct _TargetMappingTable TargetMappingTable;
 
 struct _ReadTargetsData
 {
@@ -54,8 +55,12 @@ struct _ReadTargetsData
 
 struct _TargetMapping
 {
-  /* The atom of the X target.  */
-  Atom atom;
+  /* The atom of the X target.  The top 3 bits of an XID are
+     guaranteed to be 0, so the 31st bit is used to store a flag
+     meaning that the next entry is a duplicate of this one, and the
+     30th bit is used to store a flag containing state used by
+     SendOffers.  */
+  Atom atom_flag;
 
   /* The name of the Wayland MIME type.  */
   const char *mime_type;
@@ -63,6 +68,13 @@ struct _TargetMapping
   /* Optional translation function.  */
   void (*translation_func) (Time, Atom, Atom, int);
 };
+
+#define MappingAtom(mapping)		((mapping)->atom_flag & 0x1fffffff)
+#define MappingFlag(mapping)		((mapping)->atom_flag & (1 << 29))
+#define MappingIsNextDuplicate(mapping)	((mapping)->atom_flag & (1 << 30))
+#define MappingSetFlag(mapping)		((mapping)->atom_flag |= (1 << 29))
+#define MappingUnsetFlag(mapping)	((mapping)->atom_flag &= ~(1 << 29))
+#define MappingIs(mapping, atom)	(MappingAtom (mapping) == (atom))
 
 struct _DataConversion
 {
@@ -179,19 +191,42 @@ struct _ConversionWriteInfo
   iconv_t cd;
 };
 
+struct _TargetMappingTable
+{
+  /* Array of indices into direct_transfer.  */
+  unsigned short *buckets[32];
+
+  /* Number of elements in each array.  */
+  unsigned short n_elements[32];
+
+  /* Array of indices into direct_transfer.  */
+  unsigned short *atom_buckets[16];
+
+  /* Number of elements in each array.  */
+  unsigned short n_atom_elements[16];
+};
+
 /* Base event code of the Xfixes extension.  */
 static int fixes_event_base;
+
+/* This means the next item in the targets mapping table has the same
+   MIME type as this one.  */
+
+#define Duplicate (1U << 30)
 
 /* Map of targets that can be transferred from X to Wayland clients
    and vice versa.  */
 static TargetMapping direct_transfer[] =
   {
-    { XA_STRING, "text/plain;charset=iso-9889-1"	},
-    { 0,	 "text/plain;charset=utf-8"		},
-    { XA_STRING, "text/plain;charset=utf-8"		},
+    { XA_STRING,	"text/plain;charset=iso-9889-1"	},
+    { Duplicate,	"text/plain;charset=utf-8"	},
+    { XA_STRING,	"text/plain;charset=utf-8"	},
     /* These mappings are automatically generated.  */
     DirectTransferMappings
   };
+
+/* Lookup table for such mappings.  */
+static TargetMappingTable mapping_table;
 
 /* Map of Wayland offer types to X atoms and data conversion
    functions.  */
@@ -244,6 +279,53 @@ Accept (struct wl_client *client, struct wl_resource *resource,
   /* Nothing has to be done here yet.  */
 }
 
+static unsigned int
+HashMimeString (const char *string)
+{
+  unsigned int i;
+
+  i = 3323198485ul;
+  for (; *string; ++string)
+    {
+      i ^= *string;
+      i *= 0x5bd1e995;
+      i ^= i >> 15;
+    }
+  return i;
+}
+
+static void
+SetupMappingTable (void)
+{
+  unsigned int idx, i, nelements;
+
+  /* This is needed for the atoms table, since the atom indices are
+     determined by the X server.  */
+  XLAssert (ArrayElements (direct_transfer) <= USHRT_MAX);
+
+  for (i = 0; i < ArrayElements (direct_transfer); ++i)
+    {
+      idx = HashMimeString (direct_transfer[i].mime_type) % 32;
+
+      nelements = ++mapping_table.n_elements[idx];
+      mapping_table.buckets[idx]
+	= XLRealloc (mapping_table.buckets[idx],
+		     nelements * sizeof (unsigned short));
+      mapping_table.buckets[idx][nelements - 1] = i;
+
+      /* Now, set up the lookup table indexed by atoms.  It is faster
+	 to compare atoms than strings, so the table is smaller.  */
+
+      idx = MappingAtom (&direct_transfer[i]) % 16;
+
+      nelements = ++mapping_table.n_atom_elements[idx];
+      mapping_table.atom_buckets[idx]
+	= XLRealloc (mapping_table.atom_buckets[idx],
+		     nelements * sizeof (unsigned short));
+      mapping_table.atom_buckets[idx][nelements - 1] = i;
+    }
+}
+
 static Bool
 HasSelectionTarget (Atom atom)
 {
@@ -261,13 +343,18 @@ HasSelectionTarget (Atom atom)
 static TargetMapping *
 FindTranslationForMimeType (const char *mime_type)
 {
-  int i;
+  unsigned short *buckets, i;
+  unsigned int idx;
 
-  for (i = 0; i < ArrayElements (direct_transfer); ++i)
+  idx = HashMimeString (mime_type) % 32;
+  buckets = mapping_table.buckets[idx];
+
+  for (i = 0; i < mapping_table.n_elements[idx]; ++i)
     {
-      if (!strcmp (direct_transfer[i].mime_type, mime_type)
-	  && HasSelectionTarget (direct_transfer[i].atom))
-	return &direct_transfer[i];
+      if (!strcmp (direct_transfer[buckets[i]].mime_type,
+		   mime_type)
+	  && HasSelectionTarget (MappingAtom (&direct_transfer[buckets[i]])))
+	return &direct_transfer[buckets[i]];
     }
 
   return NULL;
@@ -575,11 +662,13 @@ Receive (struct wl_client *client, struct wl_resource *resource,
     {
       if (!translation->translation_func)
 	/* If a corresponding target exists, ask to receive it.  */
-	PostReceiveDirect (time, CLIPBOARD, translation->atom, fd);
+	PostReceiveDirect (time, CLIPBOARD,
+			   MappingAtom (translation), fd);
       else
 	/* Otherwise, use the translation function.  */
 	translation->translation_func (time, CLIPBOARD,
-				       translation->atom, fd);
+				       MappingAtom (translation),
+				       fd);
     }
   else
     close (fd);
@@ -632,10 +721,55 @@ CreateOffer (struct wl_client *client, Time time)
   return resource;
 }
 
+static Bool
+CheckDuplicate (unsigned short index, Atom a)
+{
+  TargetMapping *start;
+
+  start = &direct_transfer[index];
+
+  /* If the flag is already set, then this type has already been
+     sent.  */
+  if (MappingFlag (start))
+    return False;
+
+  /* Set this entry's duplicate flag.  */
+  MappingSetFlag (start);
+
+  /* As long as the next index still refers to a duplicate of this
+     item, set its duplicate flag.  */
+
+  while (MappingIsNextDuplicate (start))
+    MappingSetFlag (++start);
+
+  /* Do the same backwards.  */
+
+  if (index)
+    {
+      start = &direct_transfer[index - 1];
+
+      while (MappingIsNextDuplicate (start))
+	{
+	  MappingSetFlag (start);
+
+	  /* If this is now the start of the target mapping table,
+	     break.  */
+	  if (start == direct_transfer)
+	    break;
+
+	  start--;
+	}
+    }
+
+  return True;
+}
+
 static void
 SendOffers (struct wl_resource *resource, Time time)
 {
   int i, j;
+  unsigned int idx;
+  unsigned short *buckets;
 
   if (time < last_x_selection_change)
     /* This offer is out of date.  */
@@ -644,16 +778,29 @@ SendOffers (struct wl_resource *resource, Time time)
   for (i = 0; i < num_x_selection_targets; ++i)
     {
       /* Offer each type corresponding to this target.  */
+      idx = x_selection_targets[i] % 16;
 
-      for (j = 0; j < ArrayElements (direct_transfer); ++j)
+      /* N.B. that duplicates do appear in the atom buckets, which
+	 is intentional.  */
+      buckets = mapping_table.atom_buckets[idx];
+
+      for (j = 0; j < mapping_table.n_atom_elements[idx]; ++j)
 	{
-	  if (direct_transfer[j].atom == x_selection_targets[i])
-	    /* If it exists, offer it to the client.  TODO: handle
-	       duplicates.  */
+	  if (MappingIs (&direct_transfer[buckets[j]],
+			 x_selection_targets[i])
+	      && CheckDuplicate (buckets[j],
+				 x_selection_targets[i]))
+	    /* If it exists and was not previously offered, offer it
+	       to the client.  */
 	    wl_data_offer_send_offer (resource,
-				      direct_transfer[j].mime_type);
+				      direct_transfer[buckets[j]].mime_type);
 	}
     }
+
+  /* Clear the duplicate flag of each item in the targets table that
+     was touched.  */
+  for (i = 0; i < ArrayElements (direct_transfer); ++i)
+    MappingUnsetFlag (&direct_transfer[i]);
 }
 
 static void
@@ -1751,9 +1898,12 @@ XLInitXData (void)
   SelectSelectionInput (CLIPBOARD);
 
   /* Initialize atoms used in the direct transfer table.  */
-  direct_transfer[1].atom = UTF8_STRING;
+  direct_transfer[1].atom_flag = UTF8_STRING | Duplicate;
   direct_transfer[2].translation_func = PostReceiveConversion;
   DirectTransferInitializer (direct_transfer, 3);
+
+  /* Set up the direct transfer table.  */
+  SetupMappingTable ();
 
   /* And those used in the data conversions table.  */
   data_conversions[0].atom = UTF8_STRING;

@@ -965,6 +965,11 @@ extern void XLInitIconSurfaces (void);
 extern void XLReleaseIconSurface (IconSurface *);
 extern Bool XLIsWindowIconSurface (Window);
 
+/* Defined in primary_selection.c.  */
+
+extern void XLInitPrimarySelection (void);
+extern void XLPrimarySelectionHandleFocusChange (Seat *);
+
 /* Utility functions that don't belong in a specific file.  */
 
 #define ArrayElements(arr) (sizeof (arr) / sizeof (arr)[0])

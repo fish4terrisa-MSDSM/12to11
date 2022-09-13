@@ -1167,7 +1167,13 @@ XLSurfaceRunFrameCallbacks (Surface *surface, struct timespec time)
   uint32_t ms_time;
   XLList *list;
 
-  ms_time = time.tv_sec * 1000 + time.tv_nsec / 1000000;
+  /* I don't know what else is reasonable in case of overflow.  */
+
+  if (IntMultiplyWrapv (time.tv_sec, 1000, &ms_time))
+    ms_time = UINT32_MAX;
+  else if (IntAddWrapv (ms_time, time.tv_nsec / 1000000,
+			&ms_time))
+    ms_time = UINT32_MAX;
 
   RunFrameCallbacks (&surface->current_state.frame_callbacks,
 		     ms_time);

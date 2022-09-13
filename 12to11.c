@@ -155,6 +155,7 @@ XLMain (int argc, char **argv)
   XLInitXData ();
   XLInitXSettings ();
   XLInitIconSurfaces ();
+  XLInitPrimarySelection ();
   /* This has to come after the rest of the initialization.  */
   DetermineServerTime ();
   XLRunCompositor ();

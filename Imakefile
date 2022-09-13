@@ -21,14 +21,16 @@ SRCS = 12to11.c run.c alloc.c fns.c output.c compositor.c       \
   positioner.c xdg_wm.c xdg_surface.c xdg_toplevel.c            \
   frame_clock.c xerror.c ewmh.c timer.c subsurface.c seat.c     \
   data_device.c xdg_popup.c linux-dmabuf-unstable-v1.c dmabuf.c \
-  buffer.c select.c xdata.c xsettings.c dnd.c icon_surface.c
+  buffer.c select.c xdata.c xsettings.c dnd.c icon_surface.c    \
+  primary-selection-unstable-v1.c primary_selection.c
 
 OBJS = 12to11.o run.o alloc.o fns.o output.o compositor.o       \
   xdg-shell.o surface.o region.o shm.o atoms.o subcompositor.o  \
   positioner.o xdg_wm.o xdg_surface.o xdg_toplevel.o            \
   frame_clock.o xerror.o ewmh.o timer.o subsurface.o seat.o     \
   data_device.o xdg_popup.o linux-dmabuf-unstable-v1.o dmabuf.o \
-  buffer.o select.o xdata.o xsettings.o dnd.o icon_surface.o
+  buffer.o select.o xdata.o xsettings.o dnd.o icon_surface.o    \
+  primary-selection-unstable-v1.o primary_selection.o
 
 OPTIMIZE = -O0
 ANALYZE  = -fanalyzer
@@ -53,7 +55,7 @@ CDEBUGFLAGS := -fno-common -Wall -Warith-conversion -Wdate-time \
   $(ANALYZE)
 
 short_types.txt: media_types.txt
-XCOMM	remove all data types starting with application/vnd.
+XCOMM	Remove all data types starting with application/vnd.
 XCOMM	no program really uses them in clipboard data, and they
 XCOMM	waste a lot of space on disk.
 	sed '/application\/vnd/d' media_types.txt > $@
@@ -81,9 +83,17 @@ xdg-shell.h: xdg-shell.xml
 xdg-shell.c: xdg-shell.xml xdg-shell.h
 	$(WAYLAND_SCANNER) private-code $< $@
 
+primary-selection-unstable-v1.h: primary-selection-unstable-v1.xml
+	$(WAYLAND_SCANNER) server-header $< $@
+
+primary-selection-unstable-v1.c: primary-selection-unstable-v1.xml \
+				 primary-selection-unstable-v1.h
+	$(WAYLAND_SCANNER) private-code $< $@
+
 cleandir::
-	$(RM) linux-dmabuf-unstable-v1.c linux-dmabuf-unstable-v1.h \
-	      xdg-shell.c xdg-shell.h
+	$(RM) linux-dmabuf-unstable-v1.c linux-dmabuf-unstable-v1.h   \
+	      xdg-shell.c xdg-shell.h primary-selection-unstable-v1.c \
+	      primary-selection-unstable-v1.h
 	$(RM) transfer_atoms.h short_types.txt
 
 /* Undefine _BSD_SOURCE and _SVID_SOURCE, since both are deprecated

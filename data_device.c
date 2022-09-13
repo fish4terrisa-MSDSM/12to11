@@ -1364,6 +1364,11 @@ XLDataDeviceSendEnter (Seat *seat, Surface *surface, double x, double y,
 	      /* First, create a data offer corresponding to the data
 		 source if it exists.  */
 	      resource = AddDataOffer (client, source);
+
+	      if (!resource)
+		/* Allocation of the resource failed.  */
+		goto next;
+
 	      offer = wl_resource_get_user_data (resource);
 	      offer->dnd_serial = serial;
 	      offer->last_action = -1;
@@ -1397,6 +1402,7 @@ XLDataDeviceSendEnter (Seat *seat, Surface *surface, double x, double y,
 
 	}
 
+    next:
       reference = reference->next;
     }
 }

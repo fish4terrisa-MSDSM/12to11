@@ -42,14 +42,15 @@ complete degree:
   'wl_seat',                                    version:  7
   'wl_data_device_manager',                     version:  3
   'zwp_linux_dmabuf_v1',                        version:  4
+  'zwp_primary_selection_device_manager_v1',    version:  1
 
 With the main caveat being that zwp_linux_dmabuf_v1 has no real
 support for multiple-provider setups (help wanted).
 
-Primary selections and window decorations are also not supported, even
-though they fit in nicely with X window management.
+Window decorations are also not supported, even though they fit in
+nicely with X window management.
 
-It would also be nice to have pinch gesture support in wl_pointer.
+It would also be nice to have pinch gesture support.
 
 This directory is organized as follows:
 

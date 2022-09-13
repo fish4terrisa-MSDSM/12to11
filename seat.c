@@ -2625,13 +2625,20 @@ SetFocusSurface (Seat *seat, Surface *focus)
     }
 
   if (!focus)
-    return;
+    {
+      /* These changes must be handled even if there is no more focus
+	 surface.  */
+      XLPrimarySelectionHandleFocusChange (seat);
+      return;
+    }
 
   seat->focus_surface = focus;
   seat->focus_destroy_callback
     = XLSurfaceRunOnFree (focus, ClearFocusSurface, seat);
 
   SendKeyboardEnter (seat, focus);
+
+  XLPrimarySelectionHandleFocusChange (seat);
 
   if (seat->data_device)
     XLDataDeviceHandleFocusChange (seat->data_device);
@@ -2670,8 +2677,10 @@ FindSurfaceUnder (Subcompositor *subcompositor, double x, double y)
   int x_off, y_off;
   View *view;
 
-  view = SubcompositorLookupView (subcompositor, lrint (x),
-				  lrint (y), &x_off, &y_off);
+  /* Do not round these figures.  Instead, cut off the fractional,
+     like the X server does when deciding when to set the cursor.  */
+  view = SubcompositorLookupView (subcompositor, x, y,
+				  &x_off, &y_off);
 
   if (view)
     return ViewGetData (view);

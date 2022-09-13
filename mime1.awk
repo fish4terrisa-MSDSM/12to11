@@ -26,7 +26,7 @@ BEGIN {
   match ($0, /  ([a-z]+\/[-+.[:alnum:]]+) /, array)
   name = array[1]
   gsub (/[[:punct:]]/, "_", name) # Convert to a valid atom name
-  printf "	table[%d + start].atom = %s;\\\n", i++, name
+  printf "	table[%d + start].atom_flag = %s;\\\n", i++, name
 }
 
 END {
