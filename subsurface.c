@@ -22,8 +22,6 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include "compositor.h"
 
-/* TODO: handle unmapping nested subsurfaces.  */
-
 enum
   {
     PendingPosition	 = 1,

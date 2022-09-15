@@ -46,7 +46,6 @@ PickVisual (int *depth)
 
   if (n_visuals)
     {
-      /* TODO: verify visual format.  */
       selection = visuals[0].visual;
       *depth = visuals[0].depth;
       XFree (visuals);

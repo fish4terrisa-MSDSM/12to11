@@ -684,7 +684,7 @@ XLHandleOneXEventForDmabuf (XEvent *event)
 #define CreateHeader									\
   BufferParams *params;									\
   int num_buffers, i, depth, bpp;							\
-  uint32_t mod_high, mod_low;								\
+  uint32_t mod_high, mod_low, all_flags;						\
   int32_t *allfds;									\
 											\
   params = wl_resource_get_user_data (resource);					\
@@ -752,7 +752,25 @@ XLHandleOneXEventForDmabuf (XEvent *event)
       goto inert_error;									\
     }											\
 											\
-  /* TODO: handle flags.  */								\
+  all_flags = (ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_Y_INVERT				\
+	       | ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_INTERLACED				\
+	       | ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_BOTTOM_FIRST);			\
+											\
+  if (flags & ~all_flags)								\
+    {											\
+      wl_resource_post_error (resource,							\
+			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT, 		\
+			      "invalid dmabuf flags: %u", flags);			\
+      goto inert_error;									\
+    }											\
+											\
+  if (flags)										\
+    {											\
+      /* Flags are not supported by wlroots, so I guess we don't have			\
+	 to either.  */									\
+      zwp_linux_buffer_params_v1_send_failed (resource);				\
+      goto inert_error;									\
+    }											\
 											\
   /* Copy the file descriptors into a buffer.  At this point, we know			\
      there are no gaps in params->entries.  */						\

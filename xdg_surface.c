@@ -1049,8 +1049,6 @@ CurrentRootPosition (XdgRole *role, int *root_x, int *root_y)
       return;
     }
 
-  /* TODO: handle root position changing in quick succession and avoid
-     call to XTranslateCoordinates.  */
   XTranslateCoordinates (compositor.display, role->window,
 			 DefaultRootWindow (compositor.display),
 			 0, 0, root_x, root_y, &child_return);
@@ -1284,9 +1282,6 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
 			      "surface already has attached role");
       return;
     }
-
-  /* TODO: post more errors if the surface is not in a valid
-     state.  */
 
   role = XLSafeMalloc (sizeof *role);
 

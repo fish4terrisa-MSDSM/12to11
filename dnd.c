@@ -990,8 +990,6 @@ HandleXdndPositionEvent (Surface *surface, XEvent *event)
   uint32_t action;
   Bool sent_actions;
 
-  /* TODO: handle subsurfaces.  */
-
   if (event->xclient.data.l[0] != dnd_state.source_window)
     /* The message is coming from the wrong window, or drag and drop
        has not yet been set up.  */
@@ -1011,7 +1009,6 @@ HandleXdndPositionEvent (Surface *surface, XEvent *event)
 			 XLWindowFromSurface (surface),
 			 root_x, root_y, &x, &y, &child);
 
-  /* Compute the action.  TODO: handle multiple actions.  */
   action = TranslateAction (event->xclient.data.l[4]);
 
   /* Handle mouse motion.  */
