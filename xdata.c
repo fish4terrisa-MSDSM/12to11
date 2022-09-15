@@ -1150,14 +1150,19 @@ SelectSelectionInput (Atom selection)
 {
   int mask;
 
-  /* If SELECTION already exists, announce it as well.  Use
-     CurrentTime (even though the ICCCM says this is a bad idea); any
-     XFixeSeslectionNotify event that arrives later will clear up our
-     (bad) view of the selection change time.  */
+  /* If the selection already exists, announce it to Wayland clients
+     as well.  Use CurrentTime (even though the ICCCM says this is a
+     bad idea); any XFixesSelectionNotify event that arrives later
+     will clear up our (incorrect) view of the selection change
+     time.  */
 
   if (selection == CLIPBOARD
       && XGetSelectionOwner (compositor.display, CLIPBOARD) != None)
     NoticeClipboardChanged (CurrentTime);
+
+  if (selection == XA_PRIMARY
+      && XGetSelectionOwner (compositor.display, XA_PRIMARY) != None)
+    NoticePrimaryChanged (CurrentTime);
 
   mask = XFixesSetSelectionOwnerNotifyMask;
   mask |= XFixesSelectionWindowDestroyNotifyMask;
