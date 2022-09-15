@@ -5129,3 +5129,9 @@ XLSeatGetEffectiveModifiers (Seat *seat)
 {
   return seat->base | seat->locked | seat->latched;
 }
+
+Bool
+XLSeatResizeInProgress (Seat *seat)
+{
+  return seat->resize_in_progress;
+}

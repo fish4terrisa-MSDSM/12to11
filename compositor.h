@@ -86,6 +86,10 @@ struct _Compositor
 
 typedef struct _Seat Seat;
 
+/* Forward declarations from primary_selection.c.  */
+
+typedef struct _PDataSource PDataSource;
+
 /* Defined in 12to11.c.  */
 
 extern Compositor compositor;
@@ -703,6 +707,7 @@ extern void *XLXdgRoleRunOnReconstrain (Role *, void (*) (void *, XEvent *),
 extern void XLXdgRoleCancelReconstrainCallback (void *);
 extern void XLXdgRoleReconstrain (Role *, XEvent *);
 extern void XLXdgRoleMoveBy (Role *, int, int);
+extern void XLXdgRoleNoteRejectedConfigure (Role *);
 
 extern Window XLWindowFromXdgRole (Role *);
 extern Subcompositor *XLSubcompositorFromXdgRole (Role *);
@@ -871,6 +876,7 @@ extern void *XLSeatAddModifierCallback (Seat *, void (*) (unsigned int, void *),
 					void *);
 extern void XLSeatRemoveModifierCallback (void *);
 extern unsigned int XLSeatGetEffectiveModifiers (Seat *);
+extern Bool XLSeatResizeInProgress (Seat *);
 
 extern Cursor InitDefaultCursor (void);
 
@@ -933,6 +939,7 @@ extern void XLNoteSourceDestroyed (DataSource *);
 extern Bool XLNoteLocalSelection (Seat *, DataSource *);
 extern void XLReceiveDataFromSelection (Time, Atom, Atom, int);
 extern Bool XLOwnDragSelection (Time, DataSource *);
+extern void XLNotePrimaryDestroyed (PDataSource *);
 
 extern void XLInitXData (void);
 
@@ -968,7 +975,15 @@ extern Bool XLIsWindowIconSurface (Window);
 /* Defined in primary_selection.c.  */
 
 extern void XLInitPrimarySelection (void);
+extern void XLSetForeignPrimary (Time, CreateOfferFuncs);
+extern void XLClearForeignPrimary (Time);
+extern Bool XLNoteLocalPrimary (Seat *, PDataSource *);
 extern void XLPrimarySelectionHandleFocusChange (Seat *);
+extern struct wl_resource *XLResourceFromPDataSource (PDataSource *);
+extern Bool XLPDataSourceHasAtomTarget (PDataSource *, Atom);
+extern Bool XLPDataSourceHasTarget (PDataSource *, const char *);
+extern int XLPDataSourceTargetCount (PDataSource *);
+extern void XLPDataSourceGetTargets (PDataSource *, Atom *);
 
 /* Utility functions that don't belong in a specific file.  */
 

@@ -24,7 +24,6 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "primary-selection-unstable-v1.h"
 
 typedef struct _PDataDevice PDataDevice;
-typedef struct _PDataSource PDataSource;
 typedef struct _PDataOffer PDataOffer;
 
 enum
@@ -74,6 +73,9 @@ struct _PDataSource
   /* List of all MIME types provided by this source.  */
   XLList *mime_types;
 
+  /* List of atoms provided by this source.  */
+  XIDList *atom_types;
+
   /* Number of MIME types provided by this source.  */
   int n_mime_types;
 };
@@ -89,6 +91,17 @@ static uint32_t last_change_serial;
 
 /* All data devices.  */
 static PDataDevice all_devices;
+
+/* A special PDataSource meaning that the primary selection is a
+   foreign selection.  */
+static PDataSource foreign_selection_key;
+
+/* Functions to call to obtain zwp_primary_selection_v1_offer
+   resources and send associated data for foreign selections.  */
+static CreateOfferFuncs foreign_selection_functions;
+
+/* The time the foreign selection was set.  */
+static Time foreign_selection_time;
 
 /* Forward declaration.  */
 
@@ -224,6 +237,8 @@ Offer (struct wl_client *client, struct wl_resource *resource,
      this source.  */
   source->mime_types = XLListPrepend (source->mime_types,
 				      XLStrdup (mime_type));
+  source->atom_types = XIDListPrepend (source->atom_types,
+				       InternAtom (mime_type));
   source->n_mime_types++;
 }
 
@@ -259,6 +274,10 @@ HandleSourceResourceDestroy (struct wl_resource *resource)
 
   /* And free the MIME types offered by the source.  */
   XLListFree (source->mime_types, XLFree);
+  XIDListFree (source->atom_types, NULL);
+
+  /* Maybe disown the primary selection.  */
+  XLNotePrimaryDestroyed (source);
 
   /* If source is the primary selection, clear it and send the change
      to all clients.  */
@@ -272,9 +291,91 @@ HandleSourceResourceDestroy (struct wl_resource *resource)
   XLFree (source);
 }
 
+struct wl_resource *
+XLResourceFromPDataSource (PDataSource *source)
+{
+  return source->resource;
+}
+
+Bool
+XLPDataSourceHasAtomTarget (PDataSource *source, Atom target)
+{
+  XIDList *list;
+
+  for (list = source->atom_types; list; list = list->next)
+    {
+      if (list->data == target)
+	return True;
+    }
+
+  return False;
+}
+
+Bool
+XLPDataSourceHasTarget (PDataSource *source, const char *mime_type)
+{
+  XLList *list;
+
+  for (list = source->mime_types; list; list = list->next)
+    {
+      if (!strcmp (list->data, mime_type))
+	return True;
+    }
+
+  return False;
+}
+
+int
+XLPDataSourceTargetCount (PDataSource *source)
+{
+  return source->n_mime_types;
+}
+
+void
+XLPDataSourceGetTargets (PDataSource *source, Atom *targets)
+{
+  int i;
+  XIDList *list;
+
+  list = source->atom_types;
+
+  for (i = 0; i < source->n_mime_types; ++i)
+    {
+      targets[i] = list->data;
+      list = list->next;
+    }
+}
 
 /* Device implementation.  */
 
+
+static void
+UpdateSingleReferenceWithForeignOffer (struct wl_client *client,
+				       PDataDevice *reference)
+{
+  struct wl_resource *scratch, *resource;
+  Time time;
+
+  time = foreign_selection_time;
+  resource = foreign_selection_functions.create_offer (client, time);
+  scratch = reference->resource;
+
+  if (!resource)
+    return;
+
+  /* Make the data offer known to the client.  */
+  zwp_primary_selection_device_v1_send_data_offer (scratch, resource);
+
+  /* Tell the foreign selection provider to send supported resources
+     to the client.  */
+  foreign_selection_functions.send_offers (resource, time);
+
+  /* Finally, tell the client that the offer is a selection.  */
+  zwp_primary_selection_device_v1_send_selection (scratch, resource);
+
+  /* Set WasSentOffer since an offer was sent.  */
+  reference->flags |= WasSentOffer;
+}
 
 static void
 UpdateForSingleReference (PDataDevice *reference)
@@ -299,6 +400,15 @@ UpdateForSingleReference (PDataDevice *reference)
     {
       /* There is no primary selection.  Send a NULL selection.  */
       zwp_primary_selection_device_v1_send_selection (scratch, NULL);
+      return;
+    }
+
+  /* If the primary selection is foreign, call the foreign selection
+     functions.  */
+  if (primary_selection == &foreign_selection_key)
+    {
+      UpdateSingleReferenceWithForeignOffer (client, reference);
+
       return;
     }
 
@@ -392,7 +502,15 @@ static void
 SetSelection (struct wl_client *client, struct wl_resource *resource,
 	      struct wl_resource *source_resource, uint32_t serial)
 {
+  PDataDevice *device;
+  PDataSource *source;
   struct wl_resource *scratch;
+
+  device = wl_resource_get_user_data (resource);
+
+  if (!device->seat)
+    /* This device is inert, since the seat has been deleted.  */
+    return;
 
   if (serial < last_change_serial)
     /* This change is out of date.  Do nothing.  */
@@ -401,19 +519,34 @@ SetSelection (struct wl_client *client, struct wl_resource *resource,
   /* Otherwise, set the primary selection.  */
   last_change_serial = serial;
 
+  if (source_resource)
+    source = wl_resource_get_user_data (source_resource);
+  else
+    source = NULL;
+
+  /* Try to own the X primary selection.  If it fails, refrain from
+     changing the current selection data.  */
+  if (!XLNoteLocalPrimary (device->seat, source))
+    return;
+
   if (primary_selection)
     {
       /* The primary selection already exists.  Send the cancelled
 	 event and clear the primary selection variable.  */
       scratch = primary_selection->resource;
-      primary_selection = NULL;
 
-      zwp_primary_selection_source_v1_send_cancelled (scratch);
+      if (primary_selection != &foreign_selection_key)
+	/* The special foreign selection has no associated
+	   wl_resource.  */
+	zwp_primary_selection_source_v1_send_cancelled (scratch);
+
+      /* Clear primary_selection.  */
+      primary_selection = NULL;
     }
 
   if (source_resource)
     /* Make source_resource the new primary selection.  */
-    primary_selection = wl_resource_get_user_data (source_resource);
+    primary_selection = source;
 
   /* Now, send the updated primary selection to clients.  */
   NoticeChanged ();
@@ -583,6 +716,56 @@ HandleBind (struct wl_client *client, void *data, uint32_t version,
     }
 
   wl_resource_set_implementation (resource, &manager_impl, NULL, NULL);
+}
+
+
+
+void
+XLSetForeignPrimary (Time time, CreateOfferFuncs functions)
+{
+  uint32_t serial;
+  struct wl_resource *scratch;
+
+  if (time < foreign_selection_time)
+    return;
+
+  serial = wl_display_next_serial (compositor.wl_display);
+
+  /* Use this serial to prevent clients from changing the selection
+     again until the next event is sent.  */
+  last_change_serial = serial;
+
+  foreign_selection_time = time;
+  foreign_selection_functions = functions;
+
+  if (primary_selection
+      && primary_selection != &foreign_selection_key)
+    {
+      scratch = primary_selection->resource;
+      zwp_primary_selection_source_v1_send_cancelled (scratch);
+    }
+
+  /* Use a special value of primary_selection to mean that foreign
+     selections are in use.  */
+  primary_selection = &foreign_selection_key;
+
+  /* Send new data offers to current clients.  */
+  NoticeChanged ();
+}
+
+void
+XLClearForeignPrimary (Time time)
+{
+  if (time < foreign_selection_time)
+    return;
+
+  if (primary_selection == &foreign_selection_key)
+    {
+      primary_selection = NULL;
+      NoticeChanged ();
+    }
+
+  foreign_selection_time = time;
 }
 
 void

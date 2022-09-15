@@ -68,7 +68,8 @@ transfer_atoms.h: short_types.txt mime0.awk mime1.awk mime2.awk mime3.awk \
 	awk -f mime3.awk short_types.txt >> $@
 	awk -f mime4.awk short_types.txt >> $@
 
-$(OBJS): transfer_atoms.h
+$(OBJS): transfer_atoms.h primary-selection-unstable-v1.h \
+	 linux-dmabuf-unstable-v1.h xdg-shell.h
 
 linux-dmabuf-unstable-v1.h: linux-dmabuf-unstable-v1.xml
 	$(WAYLAND_SCANNER) server-header $< $@

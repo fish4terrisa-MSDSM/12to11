@@ -9,6 +9,83 @@ starts a Wayland compositor on the next available socket;
 Wayland programs will then be displayed through the X server.
 .SH OPTIONS
 None.
+.SH ENVIRONMENT
+Several environment variables exist that modify the behavior of the
+protocol translator in one way or another.  Most of these are used for
+debugging, but some may be relevant to users as well.
+.PP
+The
+.B USE_BUILTIN_RESIZE
+environment variable, if set, forces the use of the built-in
+drag-to-resize support provided by the protocol translator, even if
+the X window manager provides its own.
+.PP
+The
+.B DEBUG_REFRESH_PREDICTION
+environment variable, if set, forces the frame clock to predict the
+presentation deadline of the X compositing manager.  This is used to
+debug code that is otherwise not run without subsurfaces being
+present.
+.PP
+The
+.B DISABLE_FRAME_SYNCHRONIZATION
+environment variable, if set, disables frame synchronization with the
+X compositing manager.  Setting this variable is probably not a good
+idea.
+.PP
+The
+.B SYNCHRONIZE
+environment variable, if set, causes the X library to check for errors
+immediately after issuing a request.  The resulting backtraces from
+the error handler then reflect the protocol request that actually
+caused the error, instead of some unpredictable request in the future.
+.PP
+The
+.B APPLY_STATE_WORKAROUND
+environment variable, if set, causes the protocol translator to handle
+toplevel window state changes differently.  If Wayland programs do not
+make the transition between fullscreen and maximized states correctly,
+try setting this variable.
+.PP
+The
+.B GLOBAL_SCALE
+environment variable, if set to an integer, overrides the global
+program scale factor normally provided by the
+.I Gdk/WindowScalingFactor
+X setting.
+.PP
+The
+.B OUTPUT_SCALE
+environment variable, if set to an integer, overrides the output scale
+factor that is otherwise set to the global program scale factor.
+Setting this option is only useful to debug Wayland program
+downscaling.
+.PP
+The
+.B DIRECT_STATE_CHANGES
+variable, if set, forces ConfigureNotify events from the window
+manager to be handled directly, without waiting some time for a
+corresponding _NET_WM_STATE event to arrive.  This is only
+useful for debugging the window resizing logic.
+.SH BUGS
+There is a hard to catch bug where Wayland programs leaving the
+fullscreen or maximized state may abruptly return to their maximized
+size.  Setting the
+.B APPLY_STATE_WORKAROUND
+environment variable may help.
+.PP
+Mozilla Firefox also does not work correctly.  Resizing the Firefox
+window leads to screen tearing, and Firefox often resizes its toplevel
+windows outside their normal boundaries, causing invalid screen
+contents to be displayed over other applications.
+.PP
+Using this protocol translator under a window manager that does not at
+least support the
+.B _NET_WM_SYNC_REQUEST
+and
+.B _NET_WM_STATE
+window manager hints will result in Wayland programs running
+incorrectly.
 .SH "SEE ALSO"
 X(1), Xorg(1)
 .SH AUTHOR

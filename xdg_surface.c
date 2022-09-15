@@ -35,7 +35,9 @@ enum
     StateLateFrame		= (1 << 1),
     StatePendingWindowGeometry	= (1 << 2),
     StateWaitingForAckConfigure = (1 << 3),
-    StateLateFrameAcked		= (1 << 4),
+    StateWaitingForAckCommit	= (1 << 4),
+    StateLateFrameAcked		= (1 << 5),
+    StateMaybeConfigure		= (1 << 6),
   };
 
 typedef struct _XdgRole XdgRole;
@@ -599,6 +601,10 @@ AckConfigure (struct wl_client *client, struct wl_resource *resource,
       if (XLFrameClockIsFrozen (xdg_role->clock)
 	  && xdg_role->role.surface)
 	RunFrameCallbacksConditionally (xdg_role);
+
+#ifdef DEBUG_GEOMETRY_CALCULATION
+      fprintf (stderr, "Client acknowledged configuration\n");
+#endif
     }
 
   if (xdg_role->impl)
@@ -655,6 +661,10 @@ Commit (Surface *surface, Role *role)
 
       xdg_role->state &= ~StatePendingWindowGeometry;
     }
+
+  /* This flag means no commit has happened after an
+     ack_configure.  */
+  xdg_role->state &= ~StateWaitingForAckCommit;
 
   /* A frame is already in progress, so instead say that an urgent
      update is needed immediately after the frame completes.  In any
@@ -1062,6 +1072,13 @@ NoteBounds (void *data, int min_x, int min_y,
        Don't resize the window until it's acknowledged.  */
     return;
 
+  if (role->state & StateWaitingForAckCommit)
+    /* Don't resize the window until all configure events are
+       acknowledged.  We wait for a commit on the xdg_toplevel to do
+       this, because Firefox updates subsurfaces while the old size is
+       still in effect.  */
+    return;
+
   /* Avoid resizing the window should its actual size not have
      changed.  */
 
@@ -1071,6 +1088,10 @@ NoteBounds (void *data, int min_x, int min_y,
   if (role->bounds_width != bounds_width
       || role->bounds_height != bounds_height)
     {
+#ifdef DEBUG_GEOMETRY_CALCULATION
+      fprintf (stderr, "Resizing to: %d %d\n", bounds_width, bounds_height);
+#endif
+      
       if (role->impl->funcs.note_window_pre_resize)
 	role->impl->funcs.note_window_pre_resize (&role->role,
 						  role->impl,
@@ -1225,6 +1246,24 @@ WriteRedirectProperty (XdgRole *role)
 		   (unsigned char *) &bypass_compositor, 1);
 }
 
+static void
+HandleFreeze (void *data)
+{
+  XdgRole *role;
+
+  role = data;
+
+  /* _NET_WM_SYNC_REQUEST events should be succeeded by a
+     ConfigureNotify event.  */
+  role->state |= StateWaitingForAckConfigure;
+  role->state |= StateWaitingForAckCommit;
+
+  /* This flag means the WaitingForAckConfigure was caused by a
+     _NET_WM_SYNC_REQUEST, and the following ConfigureNotify event
+     might not lead to a configure event being sent.  */
+  role->state |= StateMaybeConfigure;
+}
+
 void
 XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
 		 uint32_t id, struct wl_resource *surface_resource)
@@ -1331,6 +1370,8 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
   role->subcompositor = MakeSubcompositor ();
   role->clock = XLMakeFrameClockForWindow (role->window);
 
+  XLFrameClockSetFreezeCallback (role->clock, HandleFreeze, role);
+
   SubcompositorSetTarget (role->subcompositor, role->picture);
   SubcompositorSetInputCallback (role->subcompositor,
 				 InputRegionChanged, role);
@@ -1412,6 +1453,16 @@ XLXdgRoleSendConfigure (Role *role, uint32_t serial)
   xdg_role = XdgRoleFromRole (role);
   xdg_role->conf_serial = serial;
   xdg_role->state |= StateWaitingForAckConfigure;
+  xdg_role->state |= StateWaitingForAckCommit;
+
+  /* We know know that the ConfigureNotify event following any
+     _NET_WM_SYNC_REQUEST event was accepted, so clear the maybe
+     configure flag.  */
+  xdg_role->state &= ~StateMaybeConfigure;
+
+#ifdef DEBUG_GEOMETRY_CALCULATION
+  fprintf (stderr, "Waiting for ack_configure...\n");
+#endif
 
   xdg_surface_send_configure (role->resource, serial);
 }
@@ -1766,4 +1817,25 @@ XLLookUpXdgPopup (Window window)
     return NULL;
 
   return role->impl;
+}
+
+void
+XLXdgRoleNoteRejectedConfigure (Role *role)
+{
+  XdgRole *xdg_role;
+
+  xdg_role = XdgRoleFromRole (role);
+
+  if (xdg_role->state & StateMaybeConfigure)
+    {
+      /* A configure event immediately following _NET_WM_SYNC_REQUEST
+	 was rejected, meaning that we do not have to change anything
+	 before unfreezing the frame clock.  */
+      xdg_role->state &= ~StateWaitingForAckConfigure;
+      xdg_role->state &= ~StateWaitingForAckCommit;
+      xdg_role->state &= ~StateMaybeConfigure;
+
+      /* Unfreeze the frame clock now.  */
+      XLFrameClockUnfreeze (xdg_role->clock);
+    }
 }

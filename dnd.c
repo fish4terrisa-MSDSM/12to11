@@ -30,9 +30,6 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
    Drags between Wayland clients are implemented in seat.c and
    data_device.c instead.  */
 
-/* TODO: Handle XdndActionAsk and allow using keyboard modifiers to
-   change the selected action.  Then, update README.  */
-
 enum
   {
     XdndProtocolVersion = 5,

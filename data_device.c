@@ -452,7 +452,7 @@ DataOfferSetActions (struct wl_client *client, struct wl_resource *resource,
 
   if (!(offer->state & IsDragAndDrop))
     {
-      wl_resource_post_error (resource, WL_DATA_OFFER_ERROR_INVALID_FINISH,
+      wl_resource_post_error (resource, WL_DATA_OFFER_ERROR_INVALID_OFFER,
 			      "trying to finish non-drag-and-drop data offer");
       return;
     }

@@ -37,11 +37,14 @@ typedef enum _How How;
 
 enum
   {
-    StateIsMapped	    = 1,
-    StateMissingState	    = (1 << 1),
-    StatePendingMaxSize	    = (1 << 2),
-    StatePendingMinSize	    = (1 << 3),
-    StatePendingAckMovement = (1 << 4),
+    StateIsMapped		= 1,
+    StateMissingState		= (1 << 1),
+    StatePendingMaxSize		= (1 << 2),
+    StatePendingMinSize		= (1 << 3),
+    StatePendingAckMovement	= (1 << 4),
+    StatePendingResize		= (1 << 5),
+    StatePendingConfigureSize	= (1 << 6),
+    StatePendingConfigureStates = (1 << 7),
   };
 
 enum
@@ -195,10 +198,26 @@ struct _XdgToplevel
   int width01, height01, width10, height10;
   int width00, height00, width11, height11;
 
+  /* The width, height, west and north motion of the next resize.  */
+  int resize_width, resize_height, resize_west, resize_north;
+
   /* Mask of what this toplevel is allowed to do.  It is first set
      based on _NET_SUPPORTED upon toplevel creation, and then
      _NET_WM_ALLOWED_ACTIONS.  */
   int supported;
+
+  /* Timer for completing window state changes.  The order of
+     _NET_WM_STATE changes and ConfigureNotify events is not
+     predictable, so we batch up both kinds of events with a 0.01
+     second delay by default, before sending the resulting
+     ConfigureNotify event.  However, if drag-to-resize is in
+     progress, no such delay is effected.  */
+#define DefaultStateDelayNanoseconds 10000000
+  Timer *configuration_timer;
+
+  /* The width and height used by that timer if
+     StatePendingConfigureSize is set.  */
+  int configure_width, configure_height;
 };
 
 /* iconv context used to convert between UTF-8 and Latin-1.  */
@@ -207,6 +226,10 @@ static iconv_t latin_1_cd;
 /* Whether or not to work around state changes being desynchronized
    with configure events.  */
 static Bool apply_state_workaround;
+
+/* Whether or not to batch together state and size changes that arrive
+   at almost the same time.  */
+static Bool batch_state_changes;
 
 static XdgUnmapCallback *
 RunOnUnmap (XdgToplevel *toplevel, void (*unmap) (void *),
@@ -290,6 +313,10 @@ DestroyBacking (XdgToplevel *toplevel)
   if (--toplevel->refcount)
     return;
 
+  /* If there is a pending configuration timer, remove it.  */
+  if (toplevel->configuration_timer)
+    RemoveTimer (toplevel->configuration_timer);
+
   if (toplevel->parent_callback)
     CancelUnmapCallback (toplevel->parent_callback);
 
@@ -323,6 +350,109 @@ SendConfigure (XdgToplevel *toplevel, unsigned int width,
 
   toplevel->conf_reply = True;
   toplevel->conf_serial = serial;
+}
+
+/* Forward declaration.  */
+
+static void SendStates (XdgToplevel *);
+static void WriteStates (XdgToplevel *);
+
+static void
+NoteConfigureTime (Timer *timer, void *data, struct timespec time)
+{
+  XdgToplevel *toplevel;
+  int width, height, effective_width, effective_height;
+
+  toplevel = data;
+
+  /* If only the window state changed, call SendStates.  */
+  if (!(toplevel->state & StatePendingConfigureSize))
+    SendStates (toplevel);
+  else
+    {
+      /* If the states changed, write them.  */
+      if (toplevel->state & StatePendingConfigureStates)
+	WriteStates (toplevel);
+
+      effective_width = toplevel->configure_width / global_scale_factor;
+      effective_height = toplevel->configure_height / global_scale_factor;
+
+      /* Compute the geometry for the configure event based on the
+	 current size of the toplevel.  */
+      XLXdgRoleCalcNewWindowSize (toplevel->role,
+				  effective_width,
+				  effective_height,
+				  &width, &height);
+
+      /* Send the configure event.  */
+      SendConfigure (toplevel, width, height);
+
+      /* Mark the state has having been calculated if some state
+	 transition has occured.  */
+      if (toplevel->toplevel_state.fullscreen
+	  || toplevel->toplevel_state.maximized)
+	toplevel->state &= ~StateMissingState;
+    }
+
+  /* Clear the pending size and state flags.  */
+  toplevel->state &= ~StatePendingConfigureSize;
+  toplevel->state &= ~StatePendingConfigureStates;
+
+  /* Cancel and clear the timer.  */
+  RemoveTimer (timer);
+  toplevel->configuration_timer = NULL;
+}
+
+static void
+FlushConfigurationTimer (XdgToplevel *toplevel)
+{
+  if (!toplevel->configuration_timer)
+    return;
+
+  /* Cancel the configuration timer and flush pending state to the
+     state array.  It is assumed that a configure event will be sent
+     immediately afterwards.  */
+
+  if (toplevel->state & StatePendingConfigureStates)
+    WriteStates (toplevel);
+
+  /* Clear the pending size and state flags.  */
+  toplevel->state &= ~StatePendingConfigureSize;
+  toplevel->state &= ~StatePendingConfigureStates;
+
+  /* Cancel and clear the timer.  */
+  RemoveTimer (toplevel->configuration_timer);
+  toplevel->configuration_timer = NULL;
+}
+
+static Bool
+MaybePostDelayedConfigure (XdgToplevel *toplevel, int flag)
+{
+  XLList *tem;
+
+  if (!batch_state_changes)
+    return False;
+
+  toplevel->state |= flag;
+
+  if (toplevel->configuration_timer)
+    {
+      /* The timer is already ticking... */
+      RetimeTimer (toplevel->configuration_timer);
+      return True;
+    }
+
+  /* If some seat is being resized, return False.  */
+  for (tem = live_seats; tem; tem = tem->next)
+    {
+      if (XLSeatResizeInProgress (tem->data))
+	return False;
+    }
+
+  toplevel->configuration_timer
+    = AddTimer (NoteConfigureTime, toplevel,
+		MakeTimespec (0, DefaultStateDelayNanoseconds));
+  return True;
 }
 
 static void
@@ -477,7 +607,9 @@ HandleWmStateChange (XdgToplevel *toplevel)
 	state->maximized = True;
     }
 
-  if (memcmp (&old, &state, sizeof *state))
+  if (memcmp (&old, &state, sizeof *state)
+      && !MaybePostDelayedConfigure (toplevel,
+				     StatePendingConfigureStates))
     /* Finally, send states if they changed.  */
     SendStates (toplevel);
 
@@ -826,6 +958,11 @@ Unmap (XdgToplevel *toplevel)
 
   memset (&toplevel->state, 0, sizeof toplevel->states);
 
+  /* If there is a pending configure timer, remove it.  */
+  if (toplevel->configuration_timer)
+    RemoveTimer (toplevel->configuration_timer);
+  toplevel->configuration_timer = NULL;
+
   XLListFree (toplevel->resize_callbacks,
 	      XLSeatCancelResizeCallback);
   toplevel->resize_callbacks = NULL;
@@ -909,6 +1046,7 @@ Commit (Role *role, Surface *surface, XdgRoleImplementation *impl)
       if (toplevel->state & StateIsMapped)
 	Unmap (toplevel);
 
+      FlushConfigurationTimer (toplevel);
       SendConfigure (toplevel, 0, 0);
     }
   else if (!toplevel->conf_reply)
@@ -916,6 +1054,67 @@ Commit (Role *role, Surface *surface, XdgRoleImplementation *impl)
       /* Configure reply received, so map the toplevel.  */
       if (!(toplevel->state & StateIsMapped))
 	Map (toplevel);
+    }
+}
+
+static void
+PostResize1 (XdgToplevel *toplevel, int west_motion, int north_motion,
+	     int new_width, int new_height)
+{
+  /* FIXME: the two computations below are still not completely
+     right.  */
+
+  if (new_width < toplevel->min_width)
+    {
+      west_motion += toplevel->min_width - new_width;
+
+      /* Don't move too far west.  */
+      if (west_motion > 0)
+	west_motion = 0;
+
+      new_width = toplevel->min_width;
+    }
+
+  if (new_height < toplevel->min_height)
+    {
+      north_motion += toplevel->min_height - new_height;
+
+      /* Don't move too far north.  */
+      if (north_motion > 0)
+	north_motion = 0;
+
+      new_height = toplevel->min_height;
+    }
+
+  if (!(toplevel->state & StatePendingAckMovement))
+    {
+      FlushConfigurationTimer (toplevel);
+      SendConfigure (toplevel, new_width, new_height);
+
+      toplevel->ack_west += west_motion;
+      toplevel->ack_north += north_motion;
+      toplevel->state |= StatePendingAckMovement;
+
+      /* Clear extra state flags that are no longer useful.  */
+      toplevel->state &= ~StatePendingResize;
+      toplevel->resize_west = 0;
+      toplevel->resize_north = 0;
+      toplevel->resize_width = 0;
+      toplevel->resize_height = 0;
+    }
+  else
+    {
+      /* A configure event has been posted but has not yet been fully
+	 processed.  Accumulate the new width, height, west and north
+	 values, and send another configure event once it really does
+	 arrive, and the previous changes have been committed.  */
+
+      toplevel->state |= StatePendingResize;
+
+      toplevel->resize_west += west_motion;
+      toplevel->resize_north += north_motion;
+      toplevel->resize_width = new_width;
+      toplevel->resize_height = new_height;
     }
 }
 
@@ -935,6 +1134,14 @@ CommitInsideFrame (Role *role, XdgRoleImplementation *impl)
       toplevel->ack_west = 0;
       toplevel->ack_north = 0;
       toplevel->state &= ~StatePendingAckMovement;
+
+      /* This pending movement has completed.  Apply postponed state,
+	 if there is any.  */
+      if (toplevel->state & StatePendingResize)
+	PostResize1 (toplevel, toplevel->resize_west,
+		     toplevel->resize_north,
+		     toplevel->resize_width,
+		     toplevel->resize_height);
     }
 }
 
@@ -994,7 +1201,14 @@ HandleConfigureEvent (XdgToplevel *toplevel, XEvent *event)
 
   if (event->xconfigure.width == toplevel->width
       && event->xconfigure.height == toplevel->height)
-    return True;
+    {
+      if (!toplevel->configuration_timer)
+	/* No configure event will be generated in the future.
+	   Unfreeze the frame clock.  */
+	XLXdgRoleNoteRejectedConfigure (toplevel->role);
+
+      return True;
+    }
 
   /* Try to guess if the window state was restored to some earlier
      value, and set it now, to avoid race conditions when some clients
@@ -1005,16 +1219,21 @@ HandleConfigureEvent (XdgToplevel *toplevel, XEvent *event)
 			 event->xconfigure.height))
     WriteStates (toplevel);
 
-  XLXdgRoleCalcNewWindowSize (toplevel->role,
-			      ConfigureWidth (event),
-			      ConfigureHeight (event),
-			      &width, &height);
+  if (!MaybePostDelayedConfigure (toplevel, StatePendingConfigureSize))
+    {
+      XLXdgRoleCalcNewWindowSize (toplevel->role,
+				  ConfigureWidth (event),
+				  ConfigureHeight (event),
+				  &width, &height);
 
-  SendConfigure (toplevel, width, height);
+      SendConfigure (toplevel, width, height);
+    }
 
   /* Set toplevel->width and toplevel->height correctly.  */
   toplevel->width = event->xconfigure.width;
   toplevel->height = event->xconfigure.height;
+  toplevel->configure_width = toplevel->width;
+  toplevel->configure_height = toplevel->height;
 
   /* Also set the bounds width and height to avoid resizing
      the window.  */
@@ -1177,27 +1396,8 @@ PostResize (Role *role, XdgRoleImplementation *impl, int west_motion,
   XdgToplevel *toplevel;
 
   toplevel = ToplevelFromRoleImpl (impl);
-
-  if (new_width < toplevel->min_width)
-    {
-      new_width = toplevel->min_width;
-
-      /* FIXME: this computation is not correct, just "good
-	 enough".  */
-      west_motion = 0;
-    }
-
-  if (new_height < toplevel->min_height)
-    {
-      new_height = toplevel->min_height;
-      north_motion = 0;
-    }
-
-  SendConfigure (toplevel, new_width, new_height);
-
-  toplevel->ack_west += west_motion;
-  toplevel->ack_north += north_motion;
-  toplevel->state |= StatePendingAckMovement;
+  PostResize1 (toplevel, west_motion, north_motion,
+	       new_width, new_height);
 }
 
 static void
@@ -1858,6 +2058,7 @@ XLInitXdgToplevels (void)
 {
   latin_1_cd = iconv_open ("ISO-8859-1", "UTF-8");
   apply_state_workaround = (getenv ("APPLY_STATE_WORKAROUND") != NULL);
+  batch_state_changes = !getenv ("DIRECT_STATE_CHANGES");
 }
 
 Bool

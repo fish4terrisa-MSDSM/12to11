@@ -30,10 +30,11 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <iconv.h>
 
 #include "compositor.h"
+#include "primary-selection-unstable-v1.h"
 
 #include <X11/extensions/Xfixes.h>
 
-/* X11 data source for Wayland clients.  */
+/* X11 data transfer to and from Wayland clients.  */
 
 typedef struct _ReadTargetsData ReadTargetsData;
 typedef struct _TargetMapping TargetMapping;
@@ -51,6 +52,9 @@ struct _ReadTargetsData
 
   /* Number of atoms read.  */
   int n_atoms;
+
+  /* What selection is being read from.  */
+  Atom selection;
 };
 
 struct _TargetMapping
@@ -88,7 +92,11 @@ struct _DataConversion
   Atom atom;
 
   /* An alternative GetClipboardCallback, if any.  */
-  GetDataFunc (*clipboard_callback) (WriteTransfer *, Atom, Atom *);
+  GetDataFunc (*clipboard_callback) (WriteTransfer *, Atom, Atom *,
+				     struct wl_resource *,
+				     void (*) (struct wl_resource *,
+					       const char *, int),
+				     Bool);
 };
 
 enum
@@ -243,11 +251,20 @@ static Time last_x_selection_change;
    time any client did that.  */
 static Time last_clipboard_time, last_clipboard_change;
 
+/* The last time ownership over PRIMARY changed.  */
+static Time last_primary_time;
+
 /* The currently supported selection targets.  */
 static Atom *x_selection_targets;
 
 /* The number of targets in that array.  */
 static int num_x_selection_targets;
+
+/* The currently supported primary selection targets.  */
+static Atom *x_primary_targets;
+
+/* The number of targets in that array.  */
+static int num_x_primary_targets;
 
 /* Data source currently being used to provide the X clipboard.  */
 static DataSource *selection_data_source;
@@ -255,6 +272,10 @@ static DataSource *selection_data_source;
 /* Data source currently being used to provide the X drag-and-drop
    selection.  */
 static DataSource *drag_data_source;
+
+/* Data source currently being used to provide the primary
+   selection.  */
+static PDataSource *primary_data_source;
 
 #ifdef DEBUG
 
@@ -327,9 +348,22 @@ SetupMappingTable (void)
 }
 
 static Bool
-HasSelectionTarget (Atom atom)
+HasSelectionTarget (Atom atom, Bool is_primary)
 {
   int i;
+
+  if (is_primary)
+    {
+      /* Do this for the primary selection instead.  */
+
+      for (i = 0; i < num_x_primary_targets; ++i)
+	{
+	  if (x_primary_targets[i] == atom)
+	    return True;
+	}
+
+      return False;
+    }
 
   for (i = 0; i < num_x_selection_targets; ++i)
     {
@@ -341,7 +375,7 @@ HasSelectionTarget (Atom atom)
 }
 
 static TargetMapping *
-FindTranslationForMimeType (const char *mime_type)
+FindTranslationForMimeType (const char *mime_type, Bool is_primary)
 {
   unsigned short *buckets, i;
   unsigned int idx;
@@ -349,12 +383,21 @@ FindTranslationForMimeType (const char *mime_type)
   idx = HashMimeString (mime_type) % 32;
   buckets = mapping_table.buckets[idx];
 
+  DebugPrint ("Looking for translation of MIME type %s\n",
+	      mime_type);
+
   for (i = 0; i < mapping_table.n_elements[idx]; ++i)
     {
       if (!strcmp (direct_transfer[buckets[i]].mime_type,
 		   mime_type)
-	  && HasSelectionTarget (MappingAtom (&direct_transfer[buckets[i]])))
-	return &direct_transfer[buckets[i]];
+	  && HasSelectionTarget (MappingAtom (&direct_transfer[buckets[i]]),
+				 is_primary))
+	{
+	  DebugPrint ("Found translation for MIME type %s\n",
+		      mime_type);
+
+	  return &direct_transfer[buckets[i]];
+	}
     }
 
   return NULL;
@@ -644,34 +687,40 @@ PostReceiveDirect (Time time, Atom selection, Atom target, int fd)
 
 static void PostReceiveConversion (Time, Atom, Atom, int);
 
+#define ReceiveBody(selection, primary)						\
+  Time time;								\
+  TargetMapping *translation;						\
+									\
+  DebugPrint ("Receiving %s from X " #selection " \n",			\
+	      mime_type);						\
+									\
+  /* Cast to intptr_t to silence warnings when the pointer type is	\
+     larger than long.  */						\
+  time = (Time) (intptr_t) wl_resource_get_user_data (resource);	\
+									\
+  /* Find which selection target corresponds to MIME_TYPE.  */		\
+  translation = FindTranslationForMimeType (mime_type, primary);	\
+									\
+  if (translation)							\
+    {									\
+      if (!translation->translation_func)				\
+	/* If a corresponding target exists, ask to receive it.  */	\
+	PostReceiveDirect (time, selection,				\
+			   MappingAtom (translation), fd);		\
+      else								\
+	/* Otherwise, use the translation function.  */			\
+	translation->translation_func (time, selection,			\
+				       MappingAtom (translation),	\
+				       fd);				\
+    }									\
+  else									\
+    close (fd)
+
 static void
 Receive (struct wl_client *client, struct wl_resource *resource,
 	 const char *mime_type, int fd)
 {
-  Time time;
-  TargetMapping *translation;
-
-  /* Cast to intptr_t to silence warnings when the pointer type is
-     larger than long.  */
-  time = (Time) (intptr_t) wl_resource_get_user_data (resource);
-
-  /* Find which selection target corresponds to MIME_TYPE.  */
-  translation = FindTranslationForMimeType (mime_type);
-
-  if (translation)
-    {
-      if (!translation->translation_func)
-	/* If a corresponding target exists, ask to receive it.  */
-	PostReceiveDirect (time, CLIPBOARD,
-			   MappingAtom (translation), fd);
-      else
-	/* Otherwise, use the translation function.  */
-	translation->translation_func (time, CLIPBOARD,
-				       MappingAtom (translation),
-				       fd);
-    }
-  else
-    close (fd);
+  ReceiveBody (CLIPBOARD, False);
 }
 
 static void
@@ -683,14 +732,16 @@ Destroy (struct wl_client *client, struct wl_resource *resource)
 static void
 Finish (struct wl_client *client, struct wl_resource *resource)
 {
-  /* TODO... */
+  wl_resource_post_error (resource, WL_DATA_OFFER_ERROR_INVALID_FINISH,
+			  "trying to finish foreign data offer");
 }
 
 static void
 SetActions (struct wl_client *client, struct wl_resource *resource,
 	    uint32_t dnd_actions, uint32_t preferred_action)
 {
-  /* TODO... */
+  wl_resource_post_error (resource, WL_DATA_OFFER_ERROR_INVALID_OFFER,
+			  "trying to finish non-drag-and-drop data offer");
 }
 
 static const struct wl_data_offer_interface wl_data_offer_impl =
@@ -717,6 +768,38 @@ CreateOffer (struct wl_client *client, Time time)
   /* Otherwise, set the user_data to the time of the selection
      change.  */
   wl_resource_set_implementation (resource, &wl_data_offer_impl,
+				  (void *) time, NULL);
+  return resource;
+}
+
+static void
+ReceivePrimary (struct wl_client *client, struct wl_resource *resource,
+		const char *mime_type, int fd)
+{
+  ReceiveBody (XA_PRIMARY, True);
+}
+
+static struct zwp_primary_selection_offer_v1_interface primary_offer_impl =
+  {
+    .receive = ReceivePrimary,
+    .destroy = Destroy,
+  };
+
+static struct wl_resource *
+CreatePrimaryOffer (struct wl_client *client, Time time)
+{
+  struct wl_resource *resource;
+
+  resource = wl_resource_create (client,
+				 &zwp_primary_selection_offer_v1_interface,
+				 1, 0);
+  if (!resource)
+    /* If allocating the resource failed, return NULL.  */
+    return NULL;
+
+  /* Otherwise, set the user_data to the time of the selection
+     change.  */
+  wl_resource_set_implementation (resource, &primary_offer_impl,
 				  (void *) time, NULL);
   return resource;
 }
@@ -765,20 +848,17 @@ CheckDuplicate (unsigned short index, Atom a)
 }
 
 static void
-SendOffers (struct wl_resource *resource, Time time)
+SendOffers1 (struct wl_resource *resource, int ntargets, Atom *targets,
+	     void (*send_offer_func) (struct wl_resource *, const char *))
 {
   int i, j;
   unsigned int idx;
   unsigned short *buckets;
 
-  if (time < last_x_selection_change)
-    /* This offer is out of date.  */
-    return;
-
-  for (i = 0; i < num_x_selection_targets; ++i)
+  for (i = 0; i < ntargets; ++i)
     {
       /* Offer each type corresponding to this target.  */
-      idx = x_selection_targets[i] % 16;
+      idx = targets[i] % 16;
 
       /* N.B. that duplicates do appear in the atom buckets, which
 	 is intentional.  */
@@ -787,13 +867,12 @@ SendOffers (struct wl_resource *resource, Time time)
       for (j = 0; j < mapping_table.n_atom_elements[idx]; ++j)
 	{
 	  if (MappingIs (&direct_transfer[buckets[j]],
-			 x_selection_targets[i])
-	      && CheckDuplicate (buckets[j],
-				 x_selection_targets[i]))
+			 targets[i])
+	      && CheckDuplicate (buckets[j], targets[i]))
 	    /* If it exists and was not previously offered, offer it
 	       to the client.  */
-	    wl_data_offer_send_offer (resource,
-				      direct_transfer[buckets[j]].mime_type);
+	    send_offer_func (resource,
+			     direct_transfer[buckets[j]].mime_type);
 	}
     }
 
@@ -804,10 +883,62 @@ SendOffers (struct wl_resource *resource, Time time)
 }
 
 static void
-HandleNewSelection (Time time, Atom *targets, int ntargets)
+SendOffers (struct wl_resource *resource, Time time)
+{
+  if (time < last_x_selection_change)
+    /* This offer is out of date.  */
+    return;
+
+  SendOffers1 (resource, num_x_selection_targets,
+	       x_selection_targets, wl_data_offer_send_offer);
+}
+
+static void
+SendPrimaryOffers (struct wl_resource *resource, Time time)
+{
+  if (time < last_primary_time)
+    /* This offer is out of date.  */
+    return;
+
+  SendOffers1 (resource, num_x_primary_targets,
+	       x_primary_targets,
+	       zwp_primary_selection_offer_v1_send_offer);
+}
+
+static void
+HandleNewSelection (Time time, Atom selection, Atom *targets,
+		    int ntargets)
 {
   CreateOfferFuncs funcs;
 
+  if (selection == XA_PRIMARY)
+    {
+      /* The primary selection changed, and now has the given
+	 targets.  */
+
+      if (time < last_primary_time)
+	{
+	  XLFree (targets);
+	  return;
+	}
+
+      /* Set up the new primary targets.  */
+      XLFree (x_primary_targets);
+      x_primary_targets = targets;
+      num_x_primary_targets = ntargets;
+      last_primary_time = time;
+
+      /* Add the right functions and set them as the foreign primary
+	 selection handler at TIME.  */
+      funcs.create_offer = CreatePrimaryOffer;
+      funcs.send_offers = SendPrimaryOffers;
+
+      XLSetForeignPrimary (time, funcs);
+      return;
+    }
+
+  /* Else, the selection that changed is CLIPBOARD.  */
+  
   /* Ignore outdated selection changes.  */
   if (time < last_x_selection_change)
     {
@@ -888,13 +1019,14 @@ TargetsFinishCallback (ReadTransfer *transfer, Bool success)
   data = GetTransferData (transfer);
 
   if (success)
-    DebugPrint ("Received targets from CLIPBOARD\n");
+    DebugPrint ("Received targets from %lu\n", data->selection);
   else
-    DebugPrint ("Failed to obtain targets from CLIPBOARD\n");
+    DebugPrint ("Failed to obtain targets\n");
 
   if (success)
     HandleNewSelection (GetTransferTime (transfer),
-			data->atoms, data->n_atoms);
+			data->selection, data->atoms,
+			data->n_atoms);
   else
     /* HandleNewSelection keeps data->atoms around for a while.  */
     XLFree (data->atoms);
@@ -913,8 +1045,24 @@ NoticeClipboardChanged (Time time)
   ReadTargetsData *data;
 
   data = XLCalloc (1, sizeof *data);
+  data->selection = CLIPBOARD;
 
   ConvertSelectionFuncs (CLIPBOARD, TARGETS, time, data,
+			 NULL, TargetsReadCallback,
+			 TargetsFinishCallback);
+}
+
+/* The same, but for the primary selection.  */
+
+static void
+NoticePrimaryChanged (Time time)
+{
+  ReadTargetsData *data;
+
+  data = XLCalloc (1, sizeof *data);
+  data->selection = XA_PRIMARY;
+
+  ConvertSelectionFuncs (XA_PRIMARY, TARGETS, time, data,
 			 NULL, TargetsReadCallback,
 			 TargetsFinishCallback);
 }
@@ -926,8 +1074,33 @@ NoticeClipboardCleared (Time time)
   if (time < last_x_selection_change)
     return;
 
+  DebugPrint ("CLIPBOARD was cleared at %lu\n", time);
+
   last_x_selection_change = time;
   XLClearForeignSelection (time);
+
+  /* Free data that is no longer used.  */
+  XLFree (x_selection_targets);
+  x_selection_targets = NULL;
+  num_x_selection_targets = 0;
+}
+
+static void
+NoticePrimaryCleared (Time time)
+{
+  /* Ignore outdated events.  */
+  if (time < last_primary_time)
+    return;
+
+  DebugPrint ("PRIMARY was cleared at %lu\n", time);
+
+  last_primary_time = time;
+  XLClearForeignPrimary (time);
+
+  /* Free data that is no longer used.  */
+  XLFree (x_primary_targets);
+  x_primary_targets = NULL;
+  num_x_primary_targets = 0;
 }
 
 static void
@@ -943,11 +1116,20 @@ HandleSelectionNotify (XFixesSelectionNotifyEvent *event)
        disowning the selection were successful.  */
     last_clipboard_change = event->selection_timestamp;
 
+  if (event->selection == XA_PRIMARY
+      && event->selection_timestamp > last_primary_time)
+    last_primary_time = event->selection_timestamp;
+
   if (event->owner != None
       && event->selection == CLIPBOARD)
     NoticeClipboardChanged (event->timestamp);
-  else
+  else if (event->selection == CLIPBOARD)
     NoticeClipboardCleared (event->timestamp);
+  else if (event->owner != None
+	   && event->selection == XA_PRIMARY)
+    NoticePrimaryChanged (event->timestamp);
+  else if (event->selection == XA_PRIMARY)
+    NoticePrimaryCleared (event->timestamp);
 }
 
 Bool
@@ -1001,17 +1183,25 @@ GetDataConversion (Atom target)
 }
 
 static const char *
-MimeTypeFromTarget (Atom target)
+MimeTypeFromTarget (Atom target, Bool primary)
 {
   DataConversion *conversion;
   static char *string;
+  Bool missing_type;
 
   /* TODO: replace XGetAtomName with something more efficient.  */
   if (string)
     XFree (string);
   string = NULL;
 
-  if (!XLDataSourceHasAtomTarget (selection_data_source, target))
+  if (!primary)
+    missing_type = !XLDataSourceHasAtomTarget (selection_data_source,
+					       target);
+  else
+    missing_type = !XLPDataSourceHasAtomTarget (primary_data_source,
+						target);
+
+  if (missing_type)
     {
       /* If the data source does not itself provide the specified
 	 target, then a conversion function is in use.  */
@@ -1032,11 +1222,19 @@ MimeTypeFromTarget (Atom target)
 }
 
 static Atom
-TypeFromTarget (Atom target)
+TypeFromTarget (Atom target, Bool primary)
 {
   DataConversion *conversion;
+  Bool missing_type;
 
-  if (!XLDataSourceHasAtomTarget (selection_data_source, target))
+  if (!primary)
+    missing_type = !XLDataSourceHasAtomTarget (selection_data_source,
+					       target);
+  else
+    missing_type = !XLPDataSourceHasAtomTarget (primary_data_source,
+						target);
+
+  if (missing_type)
     {
       /* If the data source does not itself provide the specified
 	 target, then a conversion function is in use.  Use the type
@@ -1183,10 +1381,13 @@ GetClipboardCallback (WriteTransfer *transfer, Atom target,
   WriteInfo *info;
   int pipe[2], rc;
   DataConversion *conversion;
+  struct wl_resource *resource;
 
   /* If the selection data source is destroyed, the selection will be
      disowned.  */
   XLAssert (selection_data_source != NULL);
+
+  resource = XLResourceFromDataSource (selection_data_source);
 
   if (!XLDataSourceHasAtomTarget (selection_data_source, target))
     {
@@ -1202,7 +1403,9 @@ GetClipboardCallback (WriteTransfer *transfer, Atom target,
 
       if (conversion->clipboard_callback)
 	return conversion->clipboard_callback (transfer, target,
-					       type);
+					       type, resource,
+					       wl_data_source_send_send,
+					       False);
 
       /* Otherwise, use the default callback.  */
       DebugPrint ("Conversion to type %lu specified with default callback\n",
@@ -1223,12 +1426,13 @@ GetClipboardCallback (WriteTransfer *transfer, Atom target,
   DebugPrint ("Created pipe (%d, %d)\n", pipe[0], pipe[1]);
 
   /* Send the write end of the pipe to the source.  */
-  wl_data_source_send_send (XLResourceFromDataSource (selection_data_source),
-			    MimeTypeFromTarget (target), pipe[1]);
+  wl_data_source_send_send (resource,
+			    MimeTypeFromTarget (target, False),
+			    pipe[1]);
   close (pipe[1]);
 
   /* And set the prop type appropriately.  */
-  *type = TypeFromTarget (target);
+  *type = TypeFromTarget (target, False);
 
   /* Create the transfer info structure.  */
   info = XLMalloc (sizeof *info);
@@ -1416,8 +1620,11 @@ ConversionReadFunc (WriteTransfer *transfer, unsigned char *buffer,
 }
 
 static GetDataFunc
-GetConversionCallback (WriteTransfer *transfer, Atom target,
-		       Atom *type)
+GetConversionCallback (WriteTransfer *transfer, Atom target, Atom *type,
+		       struct wl_resource *source,
+		       void (*send_send) (struct wl_resource *, const char *,
+					  int),
+		       Bool is_primary)
 {
   ConversionWriteInfo *info;
   int pipe[2], rc;
@@ -1441,8 +1648,7 @@ GetConversionCallback (WriteTransfer *transfer, Atom target,
     return NULL;
 
   /* Then, send the write end of the pipe to the data source.  */
-  wl_data_source_send_send (XLResourceFromDataSource (selection_data_source),
-			    "text/plain;charset=utf-8", pipe[1]);
+  send_send (source, "text/plain;charset=utf-8", pipe[1]);
   close (pipe[1]);
 
   /* Following that, set the property type correctly.  */
@@ -1677,7 +1883,7 @@ GetDragCallback (WriteTransfer *transfer, Atom target,
      be disowned.  */
   XLAssert (drag_data_source != NULL);
 
-  DebugPrint ("Entered GetClipboardCallback; target is %lu\n",
+  DebugPrint ("Entered GetDragCallback; target is %lu\n",
 	      target);
 
   /* First, create a non-blocking pipe.  We will give the write end to
@@ -1757,10 +1963,23 @@ XLNoteSourceDestroyed (DataSource *source)
   if (source == drag_data_source)
     {
       DebugPrint ("Disowning XdndSelection\nThis is being done in response"
-		  "to the data source being destroyed.\n");
+		  " to the data source being destroyed.\n");
 
       /* Disown the selection.  */
       DisownSelection (XdndSelection);
+    }
+}
+
+void
+XLNotePrimaryDestroyed (PDataSource *source)
+{
+  if (source == primary_data_source)
+    {
+      DebugPrint ("Disowning PRIMARY\nThis is being done in response"
+		  " to the data source being destroyed.\n");
+
+      /* Disown the selection.  */
+      DisownSelection (XA_PRIMARY);
     }
 }
 
@@ -1778,52 +1997,96 @@ FindTargetInArray (Atom *targets, int ntargets, Atom atom)
   return False;
 }
 
+/* FIXME: this should really be something other than two giant
+   macros...  */
+
+#define NoteLocalSelectionBody(callback, time_1, time_2, atom, field, foreign, n_foreign)	\
+  Time time;											\
+  Atom *targets;										\
+  int ntargets, i, n_data_conversions;								\
+  Bool rc;											\
+												\
+  if (source == NULL)										\
+    {												\
+      DebugPrint ("Disowning " #atom " at %lu (vs. last change %lu)\n",				\
+		  time_1, time_2);								\
+												\
+      /* Disown the selection.  */								\
+      DisownSelection (atom);									\
+      field = NULL;										\
+												\
+      /* Return whether or not the selection was actually					\
+	 disowned.  */										\
+      return time_1 >= time_2;									\
+    }												\
+												\
+  time = XLSeatGetLastUserTime (seat);								\
+												\
+  DebugPrint ("Acquiring ownership of " #atom " at %lu\n", time);				\
+												\
+  if (!time)											\
+    /* Nothing has yet happened on the seat.  */						\
+    return False;										\
+												\
+  if (time < time_1 || time < time_2)								\
+    /* TIME is out of date.  */									\
+    return False;										\
+												\
+  DebugPrint ("Setting callback function for " #atom "\n");					\
+												\
+  /* Since the local selection is now set, free foreign selection				\
+     data.  */											\
+  XLFree (foreign);										\
+  n_foreign = 0;										\
+  foreign = NULL;										\
+												\
+  /* Otherwise, set the clipboard change time to TIME.  */					\
+  time_1 = time;										\
+  time_2 = time;										\
+												\
+
+#define NoteLocalSelectionFooter(callback, atom, field, has_target)				\
+  /* Now, look to see what standard X targets the client doesn't				\
+     offer, and add them to the targets array.							\
+												\
+     Most functioning Wayland clients will also offer the typical X				\
+     selection targets such as STRING and UTF8_STRING in addition to				\
+     MIME types; when they do, they perform the data conversion					\
+     conversion better than us.  */								\
+												\
+  for (i = 0; i < ArrayElements (data_conversions); ++i)					\
+    {												\
+      /* If the source provides MIME typed-data for a format we know				\
+	 how to convert, announce the associated selection conversion				\
+	 targets.  */										\
+												\
+      if (has_target (source,									\
+		      data_conversions[i].mime_type)						\
+	  && !FindTargetInArray (targets, ntargets,						\
+				 data_conversions[i].type))					\
+	{											\
+	  DebugPrint ("Client doesn't provide standard X conversion"				\
+		      " target for %s; adding it\n",						\
+		      data_conversions[i].mime_type);						\
+												\
+	  targets[ntargets++] = data_conversions[i].type;					\
+	}											\
+    }												\
+												\
+  /* And own the selection.  */									\
+  field = source;										\
+												\
+  rc = OwnSelection (time, atom, callback, targets, ntargets);					\
+  XLFree (targets);										\
+  return rc											\
+
 Bool
 XLNoteLocalSelection (Seat *seat, DataSource *source)
 {
-  Time time;
-  Atom *targets;
-  int ntargets, i, n_data_conversions;
-  Bool rc;
-
-  if (source == NULL)
-    {
-      DebugPrint ("Disowning CLIPBOARD at %lu (vs. last change %lu)\n",
-		  last_clipboard_time, last_x_selection_change);
-
-      /* Disown the selection.  */
-      DisownSelection (CLIPBOARD);
-      selection_data_source = NULL;
-
-      /* Return whether or not the selection was actually
-	 disowned.  */
-      return last_clipboard_time >= last_x_selection_change;
-    }
-
-  time = XLSeatGetLastUserTime (seat);
-
-  DebugPrint ("Acquiring ownership of CLIPBOARD at %lu\n", time);
-
-  if (!time)
-    /* Nothing has yet happened on the seat.  */
-    return False;
-
-  if (time < last_clipboard_time
-      || time < last_clipboard_change)
-    /* TIME is out of date.  */
-    return False;
-
-  DebugPrint ("Setting callback function for CLIPBOARD\n");
-
-  /* Since the local selection is now set, free foreign selection
-     data.  */
-  XLFree (x_selection_targets);
-  num_x_selection_targets = 0;
-  x_selection_targets = NULL;
-
-  /* Otherwise, set the clipboard change time to TIME.  */
-  last_clipboard_time = time;
-  last_clipboard_change = time;
+  NoteLocalSelectionBody (GetClipboardCallback, last_clipboard_time,
+			  last_x_selection_change, CLIPBOARD,
+			  selection_data_source, x_selection_targets,
+			  num_x_selection_targets);
 
   /* And copy the targets from the data source.  */
   ntargets = XLDataSourceTargetCount (source);
@@ -1831,41 +2094,113 @@ XLNoteLocalSelection (Seat *seat, DataSource *source)
   targets = XLMalloc (sizeof *targets * (ntargets + n_data_conversions));
   XLDataSourceGetTargets (source, targets);
 
-  /* Now, look to see what standard X targets the client doesn't
-     offer, and add them to the targets array.
+  NoteLocalSelectionFooter (GetClipboardCallback, CLIPBOARD,
+			    selection_data_source,
+			    XLDataSourceHasTarget);
+}
 
-     Most functioning Wayland clients will also offer the typical X
-     selection targets such as STRING and UTF8_STRING in addition to
-     MIME types; when they do, they perform the data conversion
-     conversion better than us.  */
+static GetDataFunc
+GetPrimaryCallback (WriteTransfer *transfer, Atom target,
+		    Atom *type)
+{
+  WriteInfo *info;
+  int pipe[2], rc;
+  DataConversion *conversion;
+  struct wl_resource *resource;
 
-  for (i = 0; i < ArrayElements (data_conversions); ++i)
+  /* If the selection data source is destroyed, the selection will be
+     disowned.  */
+  XLAssert (primary_data_source != NULL);
+
+  resource = XLResourceFromPDataSource (primary_data_source);
+
+  if (!XLPDataSourceHasAtomTarget (primary_data_source, target))
     {
-      /* If the source provides MIME typed-data for a format we know
-	 how to convert, announce the associated selection conversion
-	 targets.  */
+      /* If the data source does not itself provide the specified
+	 target, then a conversion function is in use.  Call the
+	 clipboard callback specified in the conversion table entry,
+	 if it exists.  */
+      conversion = GetDataConversion (target);
 
-      if (XLDataSourceHasTarget (source,
-				 data_conversions[i].mime_type)
-	  && !FindTargetInArray (targets, ntargets,
-				 data_conversions[i].type))
-	{
-	  DebugPrint ("Client doesn't provide standard X conversion"
-		      " target for %s; adding it\n",
-		      data_conversions[i].mime_type);
+      if (!conversion)
+	/* There must be a data conversion here.  */
+	abort ();
 
-	  targets[ntargets++] = data_conversions[i].type;
-	}
+      /* This is ugly but the only reasonable way to fit the following
+	 function in 80 columns.  */
+
+#define Function zwp_primary_selection_source_v1_send_send
+
+      if (conversion->clipboard_callback)
+	return conversion->clipboard_callback (transfer, target,
+					       type, resource,
+					       Function, True);
+
+#undef Function
+
+      /* Otherwise, use the default callback.  */
+      DebugPrint ("Conversion to type %lu specified with default callback\n",
+		  target);
     }
 
-  /* And own the selection.  */
-  selection_data_source = source;
+  DebugPrint ("Entered GetPrimaryCallback; target is %lu\n",
+	      target);
 
-  rc = OwnSelection (time, CLIPBOARD, GetClipboardCallback,
-		     targets, ntargets);
-  XLFree (targets);
+  /* First, create a non-blocking pipe.  We will give the write end to
+     the client.  */
+  rc = pipe2 (pipe, O_NONBLOCK);
 
-  return rc;
+  if (rc)
+    /* Creating the pipe failed.  */
+    return NULL;
+
+  DebugPrint ("Created pipe (%d, %d)\n", pipe[0], pipe[1]);
+
+  /* Send the write end of the pipe to the source.  */
+  zwp_primary_selection_source_v1_send_send (resource,
+					     MimeTypeFromTarget (target, True),
+					     pipe[1]);
+  close (pipe[1]);
+
+  /* And set the prop type appropriately.  */
+  *type = TypeFromTarget (target, True);
+
+  /* Create the transfer info structure.  */
+  info = XLMalloc (sizeof *info);
+  info->fd = pipe[0];
+  info->flags = 0;
+
+  DebugPrint ("Adding the read callback\n");
+
+  /* Wait for info to become readable.  */
+  info->read_callback = XLAddReadFd (info->fd, transfer,
+				     NoticeTransferReadable);
+
+  /* Set info as the transfer data.  */
+  SetWriteTransferData (transfer, info);
+
+  return ClipboardReadFunc;
+}
+
+Bool
+XLNoteLocalPrimary (Seat *seat, PDataSource *source)
+{
+  /* I forgot why there are two variables for tracking the clipboard
+     time, so just use one here.  */
+  NoteLocalSelectionBody (GetPrimaryCallback, last_primary_time,
+			  last_primary_time, XA_PRIMARY,
+			  primary_data_source, x_primary_targets,
+			  num_x_primary_targets);
+
+  /* And copy the targets from the data source.  */
+  ntargets = XLPDataSourceTargetCount (source);
+  n_data_conversions = ArrayElements (data_conversions);
+  targets = XLMalloc (sizeof *targets * (ntargets + n_data_conversions));
+  XLPDataSourceGetTargets (source, targets);
+
+  NoteLocalSelectionFooter (GetPrimaryCallback, XA_PRIMARY,
+			    primary_data_source,
+			    XLPDataSourceHasTarget);
 }
 
 void
@@ -1896,6 +2231,7 @@ XLInitXData (void)
     }
 
   SelectSelectionInput (CLIPBOARD);
+  SelectSelectionInput (XA_PRIMARY);
 
   /* Initialize atoms used in the direct transfer table.  */
   direct_transfer[1].atom_flag = UTF8_STRING | Duplicate;

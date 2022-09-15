@@ -2,8 +2,8 @@ This is a tool for running Wayland applications on an X server,
 preferably with a compositing manager running.
 
 It is not yet complete.  What is not yet implemented includes support
-for the primary selection, touchscreens, input methods, device
-switching in dmabuf feedback, and the viewporter protocol extension.
+for touchscreens, input methods, device switching in dmabuf feedback,
+and the viewporter protocol extension.
 
 There are also problems with output reporting in subsurfaces.
 
