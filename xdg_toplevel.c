@@ -1622,6 +1622,11 @@ SetAppId (struct wl_client *client, struct wl_resource *resource,
   if (!toplevel->role)
     return;
 
+  if (toplevel->state & StateIsMapped)
+    /* The toplevel is already mapped.  Setting class hints in this
+       situation is not possible under X.  */
+    return;
+
   class_hints.res_name = (char *) app_id;
   class_hints.res_class = (char *) app_id;
 

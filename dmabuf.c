@@ -102,9 +102,6 @@ struct _BufferParams
   /* The width and height of the buffer that will be created.  */
   int width, height;
 
-  /* The buffer ID that will be used to create the buffer.  */
-  uint32_t buffer_id;
-
   /* The DRM format.  */
   uint32_t drm_format;
 };

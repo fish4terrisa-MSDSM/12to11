@@ -263,17 +263,18 @@ CreateBuffer (struct wl_client *client, struct wl_resource *resource,
   if (!depth)
     {
       wl_resource_post_error (resource, WL_SHM_ERROR_INVALID_FORMAT,
-			      "The specified format is not supported");
+			      "the specified format is not supported");
       return;
     }
 
   pool = wl_resource_get_user_data (resource);
 
   if (pool->size < offset || stride != width * 4
-      || offset + stride * height > pool->size)
+      || offset + stride * height > pool->size
+      || offset < 0)
     {
       wl_resource_post_error (resource, WL_SHM_ERROR_INVALID_STRIDE,
-			      "Invalid offset or stride, or pool too small");
+			      "invalid offset or stride, or pool too small");
       return;
     }
 
@@ -288,7 +289,8 @@ CreateBuffer (struct wl_client *client, struct wl_resource *resource,
     {
       /* X doesn't support smaller drawables.  */
       wl_resource_post_error (resource, WL_SHM_ERROR_INVALID_STRIDE,
-			      "Invalid size, X server does not support zero-width drawables");
+			      "invalid size, this server does not support"
+			      " zero-width drawables");
       return;
     }
 
