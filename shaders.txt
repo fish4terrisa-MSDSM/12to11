@@ -43,24 +43,27 @@ main (void)
 //== Composite Rectangle Fragment Shader RGBA
 precision mediump float;
 uniform sampler2D texture;
+uniform float scale;
 varying vec2 v_texcoord;
 
 void
 main (void)
 {
-  gl_FragColor = texture2D (texture, v_texcoord);
+  gl_FragColor = texture2D (texture, v_texcoord / scale);
 }
 //==
 
 //== Composite Rectangle Fragment Shader RGBX
 precision mediump float;
 uniform sampler2D texture;
+uniform float scale;
 varying vec2 v_texcoord;
 
 void
 main (void)
 {
-  gl_FragColor = vec4 (texture2D (texture, v_texcoord).rgb,
+  gl_FragColor = vec4 (texture2D (texture,
+				  v_texcoord / scale).rgb,
 		       1.0);
 }
 //==
@@ -70,11 +73,12 @@ main (void)
 
 precision mediump float;
 uniform samplerExternalOES texture;
+uniform float scale;
 varying vec2 v_texcoord;
 
 void
 main (void)
 {
-  gl_FragColor = texture2D (texture, v_texcoord);
+  gl_FragColor = texture2D (texture, v_texcoord / scale);
 }
 //==

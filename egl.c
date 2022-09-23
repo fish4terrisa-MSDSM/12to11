@@ -122,6 +122,9 @@ struct _EglBuffer
   /* The width and height of the buffer.  */
   int width, height;
 
+  /* The projective scale factor.  */
+  GLfloat scale;
+
   /* Various different buffers.  */
   union {
     /* The type of the buffer.  */
@@ -174,6 +177,9 @@ struct _CompositeProgram
 
   /* The index of the texture uniform.  */
   GLuint texture;
+
+  /* The index of the scale uniform.  */
+  GLuint scale;
 };
 
 /* All known SHM formats.  */
@@ -706,6 +712,8 @@ EglCompileCompositeProgram (CompositeProgram *program,
 					   "pos");
   program->texture = glGetUniformLocation (program->program,
 					  "texture");
+  program->scale = glGetUniformLocation (program->program,
+					 "scale");
 
   /* Now delete the shaders.  */
   glDeleteShader (vertex);
@@ -1082,7 +1090,10 @@ ClearRectangle (RenderTarget target, int x, int y, int width, int height)
 static void
 ApplyTransform (RenderBuffer buffer, double divisor)
 {
-  /* TODO... */
+  EglBuffer *egl_buffer;
+
+  egl_buffer = buffer.pointer;
+  egl_buffer->scale = 1.0f / (GLfloat) divisor;
 }
 
 static CompositeProgram *
@@ -1198,6 +1209,7 @@ Composite (RenderBuffer buffer, RenderTarget target,
   glUseProgram (program->program);
 
   glUniform1i (program->texture, 0);
+  glUniform1f (program->scale, egl_buffer->scale);
   glVertexAttribPointer (program->position, 2, GL_FLOAT,
 			 GL_FALSE, 0, verts);
   glVertexAttribPointer (program->texcoord, 2, GL_FLOAT,
@@ -1348,6 +1360,7 @@ BufferFromDmaBuf (DmaBufAttributes *attributes, Bool *error)
   buffer->texture = EGL_NO_TEXTURE;
   buffer->width = attributes->width;
   buffer->height = attributes->height;
+  buffer->scale = 1.0f;
   buffer->u.type = DmaBufBuffer;
   i = 0;
 
@@ -1492,6 +1505,7 @@ BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
   buffer->texture = EGL_NO_TEXTURE;
   buffer->width = attributes->width;
   buffer->height = attributes->height;
+  buffer->scale = 1.0f;
   buffer->u.type = ShmBuffer;
 
   /* Record the buffer data.  */
@@ -1955,8 +1969,25 @@ UpdateBuffer (RenderBuffer buffer, pixman_region32_t *damage)
 static void
 UpdateBufferForDamage (RenderBuffer buffer, pixman_region32_t *damage)
 {
-  /* TODO: handle scaling.  */
-  UpdateBuffer (buffer, damage);
+  EglBuffer *egl_buffer;
+  pixman_region32_t region;
+
+  egl_buffer = buffer.pointer;
+
+  if (egl_buffer->scale != 1.0f && damage)
+    {
+      /* Scale the damage, specified in scaled coordinates, down to
+	 texture coordinates.  */
+
+      pixman_region32_init (&region);
+      XLScaleRegion (&region, damage,
+		     1.0f / egl_buffer->scale,
+		     1.0f / egl_buffer->scale);
+      UpdateBuffer (buffer, &region);
+      pixman_region32_fini (&region);
+    }
+  else
+    UpdateBuffer (buffer, damage);
 }
 
 static BufferFuncs egl_buffer_funcs =
