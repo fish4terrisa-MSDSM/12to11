@@ -31,6 +31,27 @@ extensions:
 In addition, it requires Xlib to be built with the XCB transport, and
 the XCB bindings for MIT-SHM and DRI3 to be available.
 
+Sometimes, it might be desirable to build with EGL, and use OpenGL ES
+2.0 for i.e. YUV video format support.  To do so, uncomment the block
+of code for EGL support in libraries.def before running `xmkmf'.  This
+will additionally require the EGL and GLESv2 development files, and
+for the following EGL and GLES extensions to be present at runtime:
+
+  EGL_EXT_platform_base
+  EGL_EXT_device_query
+  EGL_KHR_image_base
+  EGL_EXT_image_dma_buf_import_modifiers
+  EGL_EXT_image_dma_buf_import
+  EGL_EXT_buffer_age
+
+  GL_OES_EGL_image
+  GL_OES_EGL_image_external
+  GL_EXT_read_format_bgra
+  GL_EXT_unpack_subimage
+
+After building with EGL support, the renderer must be enabled by
+setting the environment variable "RENDERER" to "egl".
+
 The following Wayland protocols are implemented to a more-or-less
 complete degree:
 
@@ -58,6 +79,9 @@ This directory is organized as follows:
   libraries.def - files for libraries that don't provide Imakefiles
   *.xml         - Wayland protocol definition source
   *.c, *.h      - C source code
+  *.awk         - scripts used to generate headers
+  *.txt         - text data used to generate some headers, i.e.
+                  those containing MIME types or shaders
 
 Building the source code is simple, provided that you have the
 necessary libwayland-server library, wayland-scanner, pixman, XCB, and

@@ -30,7 +30,6 @@ struct _DestroyListener
   void *data;
 };
 
-
 void
 XLRetainBuffer (ExtBuffer *buffer)
 {
@@ -43,16 +42,10 @@ XLDereferenceBuffer (ExtBuffer *buffer)
   buffer->funcs.dereference (buffer);
 }
 
-Picture
-XLPictureFromBuffer (ExtBuffer *buffer)
+RenderBuffer
+XLRenderBufferFromBuffer (ExtBuffer *buffer)
 {
-  return buffer->funcs.get_picture (buffer);
-}
-
-Pixmap
-XLPixmapFromBuffer (ExtBuffer *buffer)
-{
-  return buffer->funcs.get_pixmap (buffer);
+  return buffer->funcs.get_buffer (buffer);
 }
 
 unsigned int

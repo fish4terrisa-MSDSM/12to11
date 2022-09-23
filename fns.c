@@ -22,12 +22,16 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <sys/stat.h>
 #include <sys/errno.h>
 
+#include <signal.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 
 #include <math.h>
 
 #include "compositor.h"
+
+typedef struct _Busfault Busfault;
 
 struct _RootWindowSelection
 {
@@ -38,8 +42,29 @@ struct _RootWindowSelection
   unsigned long event_mask;
 };
 
+struct _Busfault
+{
+  /* Nodes to the left and right.  */
+  Busfault *left, *right;
+
+  /* Start of the ignored area.  */
+  char *data;
+
+  /* Size of the ignored area.  */
+  size_t ignored_area;
+
+  /* Height of this node.  */
+  int height;
+};
+
 /* Events that are being selected for on the root window.  */
 static RootWindowSelection root_window_events;
+
+/* All busfaults.  */
+static Busfault *busfault_tree;
+
+/* Whether or not the SIGBUS handler has been installed.  */
+static Bool bus_handler_installed;
 
 void
 XLListFree (XLList *list, void (*item_func) (void *))
@@ -472,4 +497,305 @@ XLDeselectInputFromRootWindow (RootWindowSelection *key)
 
   XLFree (key);
   ReselectRootWindowInput ();
+}
+
+static int
+GetHeight (Busfault *busfault)
+{
+  if (!busfault)
+    return 0;
+
+  return busfault->height;
+}
+
+static void
+FixHeights (Busfault *busfault)
+{
+  XLAssert (busfault != NULL);
+
+  busfault->height = 1 + MAX (GetHeight (busfault->left),
+			      GetHeight (busfault->right));
+}
+
+static void
+RotateLeft (Busfault **root)
+{
+  Busfault *old_root, *new_root, *old_middle;
+
+  /* Rotate *root->left to *root.  */
+  old_root = *root;
+  new_root = old_root->left;
+  old_middle = new_root->right;
+  old_root->left = old_middle;
+  new_root->right = old_root;
+  *root = new_root;
+
+  /* Update heights.  */
+  FixHeights ((*root)->right);
+  FixHeights (*root);
+}
+
+static void
+RotateRight (Busfault **root)
+{
+  Busfault *old_root, *new_root, *old_middle;
+
+  /* Rotate *root->right to *root.  */
+  old_root = *root;
+  new_root = old_root->right;
+  old_middle = new_root->left;
+  old_root->right = old_middle;
+  new_root->left = old_root;
+  *root = new_root;
+
+  /* Update heights.  */
+  FixHeights ((*root)->left);
+  FixHeights (*root);
+}
+
+static void
+RebalanceBusfault (Busfault **tree)
+{
+  if (*tree)
+    {
+      /* Check the left.  It could be too tall.  */
+      if (GetHeight ((*tree)->left)
+	  > GetHeight ((*tree)->right) + 1)
+	{
+	  /* The left side is unbalanced.  Look for a taller
+	     grandchild of tree->left.  */
+
+	  if (GetHeight ((*tree)->left->left)
+	      > GetHeight ((*tree)->left->right))
+	    RotateLeft (tree);
+	  else
+	    {
+	      RotateRight (&(*tree)->left);
+	      RotateLeft (tree);
+	    }
+
+	  return;
+	}
+      /* Then, check the right.  */
+      else if (GetHeight ((*tree)->right)
+	       > GetHeight ((*tree)->left) + 1)
+	{
+	  /* The right side is unbalanced.  Look for a taller
+	     grandchild of tree->right.  */
+
+	  if (GetHeight ((*tree)->right->right)
+	      > GetHeight ((*tree)->right->left))
+	    RotateRight (tree);
+	  else
+	    {
+	      RotateLeft (&(*tree)->right);
+	      RotateRight (tree);
+	    }
+
+	  return;
+	}
+
+      /* Nothing was called, so fix heights.  */
+      FixHeights (*tree);
+    }
+}
+
+static void
+RecordBusfault (Busfault **tree, Busfault *node)
+{
+  if (!*tree)
+    {
+      /* Tree is empty.  Replace it with node.  */
+      *tree = node;
+      node->left = NULL;
+      node->right = NULL;
+      node->height = 1;
+
+      return;
+    }
+
+  /* Record busfault into the correct subtree.  */
+  if (node->data > (*tree)->data)
+    RecordBusfault (&(*tree)->right, node);
+  else
+    RecordBusfault (&(*tree)->left, node);
+
+  /* Balance the tree.  */
+  RebalanceBusfault (tree);
+}
+
+static Busfault *
+DetectBusfault (Busfault *tree, char *address)
+{
+  /* This function is reentrant, but the functions that remove and
+     insert busfaults are not.  */
+
+  if (!tree)
+    return NULL;
+  else if (address >= tree->data
+	   && address < tree->data + tree->ignored_area)
+    return tree;
+
+  /* Continue searching in the tree.  */
+  if (address > tree->data)
+    /* Search in the right node.  */
+    return DetectBusfault (tree->right, address);
+
+  /* Search in the left.  */
+  return DetectBusfault (tree->left, address);
+}
+
+static void
+DeleteMin (Busfault **tree, Busfault *out)
+{
+  Busfault *old_root;
+
+  /* Delete and return the minimum value of the tree.  */
+
+  XLAssert (*tree != NULL);
+
+  if (!(*tree)->left)
+    {
+      /* *tree contains the smallest value.  */
+      old_root = *tree;
+      out->data = old_root->data;
+      out->ignored_area = old_root->ignored_area;
+      *tree = old_root->right;
+      XLFree (old_root);
+    }
+  else
+    /* Keep looking to the left.  */
+    DeleteMin (&(*tree)->left, out);
+
+  RebalanceBusfault (tree);
+}
+
+static void
+RemoveBusfault (Busfault **tree, char *data)
+{
+  Busfault *old_root;
+
+  if (!*tree)
+    /* There should always be a busfault.  */
+    abort ();
+  else if ((*tree)->data == data)
+    {
+      if ((*tree)->right)
+	/* Replace with min value of right subtree.  */
+	DeleteMin (&(*tree)->right, *tree);
+      else
+	{
+	  /* Splice out old root.  */
+	  old_root = *tree;
+	  *tree = (*tree)->left;
+	  XLFree (old_root);
+	}
+    }
+  else if (data > (*tree)->data)
+    /* Delete child from the right.  */
+    RemoveBusfault (&(*tree)->right, data);
+  else
+    /* Delete from the left.  */
+    RemoveBusfault (&(*tree)->left, data);
+
+  RebalanceBusfault (tree);
+}
+
+static void
+HandleBusfault (int signal, siginfo_t *siginfo, void *ucontext)
+{
+  /* SIGBUS received.  If the faulting address is currently part of a
+     shared memory buffer, ignore.  Otherwise, print an error and
+     return.  Only reentrant functions must be called within this
+     signal handler.  */
+
+  if (DetectBusfault (busfault_tree, siginfo->si_addr))
+    return;
+
+  write (2, "unexpected bus fault\n",
+	 sizeof "unexpected bus fault\n");
+  _exit (EXIT_FAILURE);
+}
+
+static void
+MaybeInstallBusHandler (void)
+{
+  struct sigaction act;
+
+  /* If the SIGBUS handler is already installed, return.  */
+  if (bus_handler_installed)
+    return;
+
+  bus_handler_installed = 1;
+  memset (&act, 0, sizeof act);
+
+  /* Install a SIGBUS handler.  When a client truncates the file
+     backing a shared memory buffer without notifying the compositor,
+     attempting to access the contents of the mapped memory beyond the
+     end of the file will result in SIGBUS being called, which we
+     handle here.  */
+
+  act.sa_flags = SA_SIGINFO;
+  act.sa_sigaction = HandleBusfault;
+
+  if (sigaction (SIGBUS, &act, NULL))
+    {
+      perror ("sigaction");
+      abort ();
+    }
+}
+
+static void
+BlockSigbus (void)
+{
+  sigset_t sigset;
+
+  sigemptyset (&sigset);
+  sigaddset (&sigset, SIGBUS);
+
+  if (sigprocmask (SIG_BLOCK, &sigset, NULL))
+    {
+      perror ("sigprocmask");
+      abort ();
+    }
+}
+
+static void
+UnblockSigbus (void)
+{
+  sigset_t sigset;
+
+  sigemptyset (&sigset);
+
+  if (sigprocmask (SIG_BLOCK, &sigset, NULL))
+    {
+      perror ("sigprocmask");
+      abort ();
+    }
+}
+
+/* These must not overlap.  */
+
+void
+XLRecordBusfault (void *data, size_t data_size)
+{
+  Busfault *node;
+
+  MaybeInstallBusHandler ();
+
+  BlockSigbus ();
+  node = XLMalloc (sizeof *node);
+  node->data = data;
+  node->ignored_area = data_size;
+
+  RecordBusfault (&busfault_tree, node);
+  UnblockSigbus ();
+}
+
+void
+XLRemoveBusfault (void *data)
+{
+  BlockSigbus ();
+  RemoveBusfault (&busfault_tree, data);
+  UnblockSigbus ();
 }

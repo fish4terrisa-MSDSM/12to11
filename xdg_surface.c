@@ -91,8 +91,8 @@ struct _XdgRole
   /* The window backing this role.  */
   Window window;
 
-  /* The picture backing this role.  */
-  Picture picture;
+  /* The render target backing this role.  */
+  RenderTarget target;
 
   /* The subcompositor backing this role.  */
   Subcompositor *subcompositor;
@@ -775,7 +775,7 @@ ReleaseBacking (XdgRole *role)
     XLXdgRoleDetachImplementation (&role->role, role->impl);
 
   /* Release all allocated resources.  */
-  XRenderFreePicture (compositor.display, role->picture);
+  RenderDestroyRenderTarget (role->target);
   XDestroyWindow (compositor.display, role->window);
 
   /* And the association.  */
@@ -1268,7 +1268,6 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
 {
   XdgRole *role;
   XSetWindowAttributes attrs;
-  XRenderPictureAttributes picture_attrs;
   unsigned int flags;
   Surface *surface;
 
@@ -1356,18 +1355,14 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
 				0, 0, 20, 20, 0, compositor.n_planes,
 				InputOutput, compositor.visual, flags,
 				&attrs);
-  role->picture = XRenderCreatePicture (compositor.display,
-					role->window,
-					/* TODO: get this from the
-					   visual instead.  */
-					compositor.argb_format,
-					0, &picture_attrs);
+  role->target = RenderTargetFromWindow (role->window);
+
   role->subcompositor = MakeSubcompositor ();
   role->clock = XLMakeFrameClockForWindow (role->window);
 
   XLFrameClockSetFreezeCallback (role->clock, HandleFreeze, role);
 
-  SubcompositorSetTarget (role->subcompositor, role->picture);
+  SubcompositorSetTarget (role->subcompositor, &role->target);
   SubcompositorSetInputCallback (role->subcompositor,
 				 InputRegionChanged, role);
   SubcompositorSetOpaqueCallback (role->subcompositor,

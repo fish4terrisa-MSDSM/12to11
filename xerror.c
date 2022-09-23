@@ -92,7 +92,12 @@ ErrorHandler (Display *display, XErrorEvent *event)
       return 0;
     }
 
+#if 0
   if (XLHandleErrorForDmabuf (event))
+    return 0;
+#endif
+
+  if (HandleErrorForPictureRenderer (event))
     return 0;
 
   if (event->error_code == (xi_first_error + XI_BadDevice))

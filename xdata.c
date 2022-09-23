@@ -687,7 +687,7 @@ PostReceiveDirect (Time time, Atom selection, Atom target, int fd)
 
 static void PostReceiveConversion (Time, Atom, Atom, int);
 
-#define ReceiveBody(selection, primary)						\
+#define ReceiveBody(selection, primary)					\
   Time time;								\
   TargetMapping *translation;						\
 									\

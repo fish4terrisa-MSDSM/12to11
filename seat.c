@@ -513,7 +513,7 @@ struct _DeviceInfo
 #define CursorFromRole(role)	((SeatCursor *) (role))
 
 /* Subcompositor targets used inside cursor subframes.  */
-static Picture cursor_subframe_picture;
+static RenderTarget cursor_subframe_target;
 
 /* Its associated pixmap.  */
 static Pixmap cursor_subframe_pixmap;
@@ -856,22 +856,6 @@ ReleaseSeat (Seat *seat)
   XLFree (seat);
 }
 
-static Picture
-PictureForCursor (Drawable drawable)
-{
-  XRenderPictureAttributes attrs;
-  Picture picture;
-
-  /* This is only required to pacfy -Wmaybe-uninitialized, since
-     valuemask is 0.  */
-  memset (&attrs, 0, sizeof attrs);
-
-  picture = XRenderCreatePicture (compositor.display, drawable,
-				  compositor.argb_format, 0,
-				  &attrs);
-  return picture;
-}
-
 static void
 ComputeHotspot (SeatCursor *cursor, int min_x, int min_y,
 		int *x, int *y)
@@ -899,19 +883,24 @@ ComputeHotspot (SeatCursor *cursor, int min_x, int min_y,
 }
 
 static void
-ApplyCursor (SeatCursor *cursor, Picture picture,
+ApplyCursor (SeatCursor *cursor, RenderTarget target,
 	     int min_x, int min_y)
 {
   Window window;
   int x, y;
+  Picture picture;
 
   if (cursor->cursor)
     XFreeCursor (compositor.display, cursor->cursor);
 
   ComputeHotspot (cursor, min_x, min_y, &x, &y);
+
+  picture = RenderPictureFromTarget (target);
   cursor->cursor = XRenderCreateCursor (compositor.display,
 					picture, MAX (0, x),
 					MAX (0, y));
+  RenderFreePictureFromTarget (picture);
+
   window = CursorWindow (cursor);
 
   if (!(cursor->seat->flags & IsInert) && window != None)
@@ -923,9 +912,8 @@ ApplyCursor (SeatCursor *cursor, Picture picture,
 static void
 UpdateCursorFromSubcompositor (SeatCursor *cursor)
 {
-  static XRenderColor empty;
-  Picture picture;
   Pixmap pixmap;
+  RenderTarget target;
   int min_x, min_y, max_x, max_y, width, height, x, y;
   Bool need_clear;
 
@@ -963,13 +951,12 @@ UpdateCursorFromSubcompositor (SeatCursor *cursor)
   pixmap = XCreatePixmap (compositor.display,
 			  DefaultRootWindow (compositor.display),
 			  width, height, compositor.n_planes);
-  picture = PictureForCursor (pixmap);
+  target = RenderTargetFromPixmap (pixmap);
 
   /* If the bounds extend beyond the subcompositor, clear the
      picture.  */
   if (need_clear)
-    XRenderFillRectangle (compositor.display, PictOpClear,
-			  picture, &empty, 0, 0, width, height);
+    RenderClearRectangle (target, 0, 0, width, height);
 
   /* Garbage the subcompositor, since cursor contents are not
      preserved.  */
@@ -979,13 +966,13 @@ UpdateCursorFromSubcompositor (SeatCursor *cursor)
   SubcompositorSetProjectiveTransform (cursor->subcompositor,
 				       MAX (0, -x), MAX (0, -x));
 
-  SubcompositorSetTarget (cursor->subcompositor, picture);
+  SubcompositorSetTarget (cursor->subcompositor, &target);
   SubcompositorUpdate (cursor->subcompositor);
-  SubcompositorSetTarget (cursor->subcompositor, None);
+  SubcompositorSetTarget (cursor->subcompositor, NULL);
 
-  ApplyCursor (cursor, picture, min_x, min_y);
+  ApplyCursor (cursor, target, min_x, min_y);
 
-  XRenderFreePicture (compositor.display, picture);
+  RenderDestroyRenderTarget (target);
   XFreePixmap (compositor.display, pixmap);
 }
 
@@ -1081,8 +1068,7 @@ ReleaseBuffer (Surface *surface, Role *role, ExtBuffer *buffer)
 static Bool
 Subframe (Surface *surface, Role *role)
 {
-  static XRenderColor empty;
-  Picture picture;
+  RenderTarget target;
   Pixmap pixmap;
   int min_x, min_y, max_x, max_y, width, height, x, y;
   Bool need_clear;
@@ -1129,13 +1115,12 @@ Subframe (Surface *surface, Role *role)
   pixmap = XCreatePixmap (compositor.display,
 			  DefaultRootWindow (compositor.display),
 			  width, height, compositor.n_planes);
-  picture = PictureForCursor (pixmap);
+  target = RenderTargetFromPixmap (pixmap);
 
   /* If the bounds extend beyond the subcompositor, clear the
      picture.  */
   if (need_clear)
-    XRenderFillRectangle (compositor.display, PictOpClear,
-			  picture, &empty, 0, 0, width, height);
+    RenderClearRectangle (target, 0, 0, width, height);
 
   /* Garbage the subcompositor, since cursor contents are not
      preserved.  */
@@ -1144,10 +1129,14 @@ Subframe (Surface *surface, Role *role)
   /* Set the right transform if the hotspot is negative.  */
   SubcompositorSetProjectiveTransform (cursor->subcompositor,
 				       MAX (0, -x), MAX (0, -x));
-  SubcompositorSetTarget (cursor->subcompositor, picture);
 
-  /* Set the subframe picture to the picture in question.  */
-  cursor_subframe_picture = picture;
+  /* Attach the rendering target.  */
+  SubcompositorSetTarget (cursor->subcompositor, &target);
+
+  /* Set the subframe target and pixmap to the target and pixmap in
+     use.  */
+  cursor_subframe_target = target;
+  cursor_subframe_pixmap = pixmap;
 
   /* Return True to let the drawing proceed.  */
   return True;
@@ -1161,21 +1150,20 @@ EndSubframe (Surface *surface, Role *role)
 
   cursor = CursorFromRole (role);
 
-  if (cursor_subframe_picture)
+  if (cursor_subframe_pixmap != None)
     {
       /* First, compute the bounds of the subcompositor.  */
       SubcompositorBounds (cursor->subcompositor,
 			   &min_x, &min_y, &max_x, &max_y);
 
       /* Apply the cursor.  */
-      ApplyCursor (cursor, cursor_subframe_picture, min_x, min_y);
+      ApplyCursor (cursor, cursor_subframe_target, min_x, min_y);
 
       /* Then, free the temporary target.  */
-      XRenderFreePicture (compositor.display,
-			  cursor_subframe_picture);
+      RenderDestroyRenderTarget (cursor_subframe_target);
 
       /* Finally, clear the target.  */
-      SubcompositorSetTarget (cursor->subcompositor, None);
+      SubcompositorSetTarget (cursor->subcompositor, NULL);
     }
   else
     ApplyEmptyCursor (cursor);
@@ -1183,6 +1171,8 @@ EndSubframe (Surface *surface, Role *role)
   if (cursor_subframe_pixmap)
     XFreePixmap (compositor.display,
 		 cursor_subframe_pixmap);
+
+  cursor_subframe_pixmap = None;
 }
 
 static void

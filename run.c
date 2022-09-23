@@ -143,7 +143,12 @@ HandleOneXEvent (XEvent *event)
   if (XLHandleOneXEventForIconSurfaces (event))
     return;
 
+#if 0
   if (XLHandleOneXEventForDmabuf (event))
+    return;
+#endif
+
+  if (HandleOneXEventForPictureRenderer (event))
     return;
 
   if (XLHandleOneXEventForXData (event))

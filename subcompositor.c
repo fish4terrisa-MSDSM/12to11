@@ -139,19 +139,21 @@ enum
   {
     /* This means that the view hierarchy has changed, and all
        subcompositing optimisations should be skipped.  */
-    SubcompositorIsGarbaged		= 1,
+    SubcompositorIsGarbaged	   = 1,
     /* This means that the opaque region of one of the views
        changed.  */
-    SubcompositorIsOpaqueDirty		= (1 << 2),
+    SubcompositorIsOpaqueDirty	   = (1 << 2),
     /* This means that the input region of one of the views
        changed.  */
-    SubcompositorIsInputDirty		= (1 << 3),
+    SubcompositorIsInputDirty	   = (1 << 3),
     /* This means that there is at least one unmapped view in this
        subcompositor.  */
-    SubcompositorIsPartiallyMapped	= (1 << 4),
+    SubcompositorIsPartiallyMapped = (1 << 4),
     /* This means that the subcompositor is frozen and updates should
        do nothing.  */
-    SubcompositorIsFrozen		= (1 << 5),
+    SubcompositorIsFrozen	   = (1 << 5),
+    /* This means that the subcompositor has a target attached.  */
+    SubcompositorIsTargetAttached  = (1 << 6),
   };
 
 #define IsGarbaged(subcompositor)				\
@@ -178,6 +180,11 @@ enum
   ((subcompositor)->state |= SubcompositorIsFrozen)
 #define IsFrozen(subcompositor)					\
   ((subcompositor)->state & SubcompositorIsFrozen)
+
+#define SetTargetAttached(subcompositor)			\
+  ((subcompositor)->state |= SubcompositorIsTargetAttached)
+#define IsTargetAttached(subcompositor)				\
+  ((subcompositor)->state & SubcompositorIsTargetAttached)
 
 #ifndef TEST
 
@@ -217,11 +224,6 @@ struct _View
      supposed to call ViewSetSubcompositor before inserting a view
      into a compositor.  */
   Subcompositor *subcompositor;
-
-#ifndef TEST
-  /* Picture this subcompositor draws to.  */
-  Picture picture;
-#endif
 
   /* Pointer to the parent view.  NULL if the parent is the
      subcompositor itself.  */
@@ -289,8 +291,8 @@ struct _Subcompositor
   List *children, *last_children;
 
 #ifndef TEST
-  /* The picture that is rendered to.  */
-  Picture target;
+  /* Target this subcompositor draws to.  */
+  RenderTarget target;
 
   /* Function called when the opaque region changes.  */
   void (*opaque_change) (Subcompositor *, void *,
@@ -316,6 +318,14 @@ struct _Subcompositor
 
   /* An additional offset to apply when drawing to the target.  */
   int tx, ty;
+
+  /* Buffers used to store that damage.  */
+  pixman_region32_t prior_damage[2];
+
+  /* The damage region of previous updates.  last_damage is what the
+     damage region was 1 update ago, and before_damage is what the
+     damage region was 2 updates ago.  */
+  pixman_region32_t *last_damage, *before_damage;
 #endif
 };
 
@@ -329,10 +339,6 @@ enum
     DoMaxY = (1 << 3),
     DoAll  = 0xf,
   };
-
-/* The identity transform.  */
-
-static XTransform identity_transform;
 
 #endif
 
@@ -410,6 +416,10 @@ MakeSubcompositor (void)
 
   subcompositor->last = subcompositor->inferiors;
   subcompositor->last_children = subcompositor->children;
+
+  /* Initialize the buffers used to store previous damage.  */
+  pixman_region32_init (&subcompositor->prior_damage[0]);
+  pixman_region32_init (&subcompositor->prior_damage[1]);
 
   return subcompositor;
 }
@@ -562,9 +572,16 @@ SubcompositorUpdateBoundsForInsert (Subcompositor *subcompositor,
 #ifndef TEST
 
 void
-SubcompositorSetTarget (Subcompositor *compositor, Picture picture)
+SubcompositorSetTarget (Subcompositor *compositor,
+			RenderTarget *target_in)
 {
-  compositor->target = picture;
+  if (target_in)
+    {
+      compositor->target = *target_in;
+      SetTargetAttached (compositor);
+    }
+  else
+    compositor->state &= SubcompositorIsTargetAttached;
 
   /* We don't know if the new picture has the previous state left
      over.  */
@@ -1171,6 +1188,19 @@ main (int argc, char **argv)
    the target drawable.  Afterwards, the damage region of each
    inferior is cleared, and the process can begin again.
 
+   However, under some situations, the contents of the target drawable
+   may reflect what was drawn two or three invocations of
+   SubcompositorUpdate ago.  To enable efficient updates when that is
+   the case, the subcompositor will keep track of the global damage
+   regions of the past two updates, and intersect the resulting global
+   damage region of each invocation with the appropriate number of
+   previous regions.
+
+   For simplicity's sake, the update inferior is reset to the first
+   view in the subcompositor's inferior list whenever the global
+   damage region is intersected with the damage region of a previous
+   update.
+
    Such computation is not reliable, however, if the size or position
    of a view changes.  In the interest of keeping thing simple, every
    inferior is composited onto the target drawable whenever a view
@@ -1560,21 +1590,10 @@ GetTxTy (int scale)
   return 1.0 / (-scale + 1);
 }
 
-static XTransform
-ViewGetTransform (View *view)
+static void
+ViewApplyTransform (View *view, RenderBuffer buffer)
 {
-  XTransform transform;
-  double transform_value;
-
-  /* Perform scaling in the transform matrix.  */
-
-  memset (&transform, 0, sizeof transform);
-  transform_value = GetTxTy (view->scale);
-  transform.matrix[0][0] = XDoubleToFixed (transform_value);
-  transform.matrix[1][1] = XDoubleToFixed (transform_value);
-  transform.matrix[2][2] = XDoubleToFixed (1);
-
-  return transform;
+  RenderApplyTransform (buffer, GetTxTy (view->scale));
 }
 
 /* TODO: the callers of this can be optimized by setting the picture
@@ -1625,31 +1644,9 @@ static void
 FillBoxesWithTransparency (Subcompositor *subcompositor,
 			   pixman_box32_t *boxes, int nboxes)
 {
-  XRectangle *rects;
-  static XRenderColor color;
-  int i;
-  Picture picture;
-
-  picture = subcompositor->target;
-
-  if (nboxes < 256)
-    rects = alloca (sizeof *rects * nboxes);
-  else
-    rects = XLMalloc (sizeof *rects * nboxes);
-
-  for (i = 0; i < nboxes; ++i)
-    {
-      rects[i].x = BoxStartX (boxes[i]) - subcompositor->min_x;
-      rects[i].y = BoxStartY (boxes[i]) - subcompositor->min_y;
-      rects[i].width = BoxWidth (boxes[i]);
-      rects[i].height = BoxHeight (boxes[i]);
-    }
-
-  XRenderFillRectangles (compositor.display, PictOpClear, picture,
-			 &color, rects, nboxes);
-
-  if (nboxes >= 256)
-    XLFree (rects);
+  RenderFillBoxesWithTransparency (subcompositor->target, boxes,
+				   nboxes, subcompositor->min_x,
+				   subcompositor->min_y);
 }
 
 static Bool
@@ -1684,6 +1681,52 @@ SubcompositorIsEmpty (Subcompositor *subcompositor)
 	  && subcompositor->min_y == subcompositor->max_y);
 }
 
+static void
+StorePreviousDamage (Subcompositor *subcompositor,
+		     pixman_region32_t *update_region)
+{
+  pixman_region32_t *prior;
+
+  if (renderer_flags & NeverAges)
+    /* Aging never happens, so recording prior damage is
+       unnecessary.  */
+    return;
+
+  /* Move last_damage to prior_damage if it already exists, and find
+     something to hold more damage and set it as last_damage.  There
+     is no need to do this if the render target age never exceeds
+     0.  */
+
+  if (!subcompositor->last_damage)
+    subcompositor->last_damage = &subcompositor->prior_damage[0];
+  else if (!subcompositor->before_damage)
+    {
+      subcompositor->before_damage = subcompositor->last_damage;
+      subcompositor->last_damage = &subcompositor->prior_damage[1];
+    }
+  else
+    {
+      prior = subcompositor->before_damage;
+      subcompositor->before_damage = subcompositor->last_damage;
+      subcompositor->last_damage = prior;
+    }
+
+  /* NULL means use the bounds of the subcompositor.  */
+  if (!update_region)
+    {
+      pixman_region32_fini (subcompositor->last_damage);
+      pixman_region32_init_rect (subcompositor->last_damage,
+				 subcompositor->min_x,
+				 subcompositor->min_y,
+				 subcompositor->max_x,
+				 subcompositor->max_y);
+    }
+  else
+    /* Copy the update region to last_damage.  */
+    pixman_region32_copy (subcompositor->last_damage,
+			  update_region);
+}
+
 void
 SubcompositorUpdate (Subcompositor *subcompositor)
 {
@@ -1692,13 +1735,14 @@ SubcompositorUpdate (Subcompositor *subcompositor)
   View *start, *original_start, *view, *first;
   List *list;
   pixman_box32_t *boxes, *extents, temp_boxes;
-  int nboxes, i, op, tx, ty;
-  Picture picture;
-  XTransform transform;
+  int nboxes, i, tx, ty;
+  Operation op;
+  RenderBuffer buffer;
   int min_x, min_y;
+  int age;
 
   /* Just return if no target was specified.  */
-  if (subcompositor->target == None)
+  if (!IsTargetAttached (subcompositor))
     return;
 
   /* Likewise if the subcompositor is "frozen".  */
@@ -1717,6 +1761,31 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 
   start = subcompositor->inferiors->next->view;
   original_start = subcompositor->inferiors->next->view;
+  age = RenderTargetAge (subcompositor->target);
+
+  /* If there is not enough prior damage available to satisfy age, set
+     it to -1.  */
+
+  if (age > 0 && !subcompositor->last_damage)
+    age = -1;
+
+  if (age > 2 && !subcompositor->before_damage)
+    age = -1;
+
+  /* If the subcompositor is garbaged, clear all prior damage.  */
+  if (IsGarbaged (subcompositor))
+    {
+      if (subcompositor->last_damage)
+	pixman_region32_clear (subcompositor->last_damage);
+
+      if (subcompositor->before_damage)
+	pixman_region32_clear (subcompositor->before_damage);
+
+      /* Reset these fields to NULL, so we do not try to use them
+	 later on.  */
+      subcompositor->last_damage = NULL;
+      subcompositor->before_damage = NULL;
+    }
 
   /* Clear the "is partially mapped" flag.  It will be set later on if
      there is actually a partially mapped view.  */
@@ -1727,7 +1796,17 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 				min_x, min_y, subcompositor->max_x,
 				subcompositor->max_y);
 
-  if (!IsGarbaged (subcompositor))
+  /* Note the size of this subcompositor, so the viewport can be set
+     accordingly.  */
+  RenderNoteTargetSize (subcompositor->target,
+			subcompositor->max_x - min_x + 1,
+		        subcompositor->max_y - min_y + 1);
+
+  if (!IsGarbaged (subcompositor)
+      /* If the target contents are too old or invalid, we go down the
+	 usual IsGarbaged code path, except we do not recompute the
+	 input or opaque regions unless they are dirty.  */
+      && (age >= 0 && age < 3))
     {
       start = NULL;
       original_start = NULL;
@@ -1793,8 +1872,10 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 					&update_region, &temp);
 
 	      /* This view will obscure all preceding damaged areas,
-		 so make start here.  */
-	      if (!pixman_region32_not_empty (&update_region))
+		 so make start here.  This optimization is disabled if
+		 the target contents are too old, as prior damage
+		 could reveal contents below.  */
+	      if (!pixman_region32_not_empty (&update_region) && !age)
 		{
 		  start = list->view;
 
@@ -1834,6 +1915,14 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 
 	  if (pixman_region32_not_empty (&list->view->damage))
 	    {
+	      /* Update the attached buffer from the damage.  This is
+		 only required on some backends, where we have to
+		 upload data from a shared memory buffer to the
+		 graphics hardware.  */
+
+	      buffer = XLRenderBufferFromBuffer (view->buffer);
+	      RenderUpdateBufferForDamage (buffer, &list->view->damage);
+
 	      /* Translate the region into the subcompositor
 		 coordinate space.  */
 	      pixman_region32_translate (&list->view->damage,
@@ -1906,13 +1995,48 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 	}
 
       pixman_region32_fini (&start_opaque);
+
+      /* First store previous damage.  */
+      StorePreviousDamage (subcompositor, &update_region);
+
+      /* Now, apply any prior damage that might be required.  */
+      if (age > 0)
+	pixman_region32_union (&update_region, &update_region,
+			       /* This is checked to exist upon
+				  entering this code path.  */
+			       subcompositor->last_damage);
+
+      if (age > 1)
+	pixman_region32_union (&update_region, &update_region,
+			       /* This is checked to exist upon
+				  entering this code path.  */
+			       subcompositor->before_damage);
     }
   else
     {
       /* To save from iterating over all the views twice, perform the
 	 input and opaque region updates in the draw loop instead.  */
-      pixman_region32_init (&total_opaque);
-      pixman_region32_init (&total_input);
+
+      if (IsGarbaged (subcompositor))
+	{
+	  pixman_region32_init (&total_opaque);
+	  pixman_region32_init (&total_input);
+	}
+      else
+	{
+	  /* Otherwise, we are in the IsGarbaged code because the
+	     target contents are too old.  Only initialize the opaque
+	     and input regions if they are dirty.  */
+
+	  if (IsOpaqueDirty (subcompositor))
+	    pixman_region32_init (&total_opaque);
+
+	  if (IsInputDirty (subcompositor))
+	    pixman_region32_init (&total_input);
+	}
+
+      /* Either way, put something in the prior damage ring.  */
+      StorePreviousDamage (subcompositor, NULL);
     }
 
   /* If there's nothing to do, return.  */
@@ -1924,6 +2048,10 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 
   list = start->link;
   first = NULL;
+
+  /* Begin rendering.  This is unnecessary on XRender, but required on
+     EGL to make the surface current and set the viewport.  */
+  RenderStartRender (subcompositor->target);
 
   do
     {
@@ -1947,7 +2075,24 @@ SubcompositorUpdate (Subcompositor *subcompositor)
       if (!view->buffer)
 	goto next_1;
 
-      picture = XLPictureFromBuffer (view->buffer);
+      buffer = XLRenderBufferFromBuffer (view->buffer);
+
+      if (IsGarbaged (subcompositor))
+	/* Update the attached buffer from the damage.  This is only
+	   required on some backends, where we have to upload data
+	   from a shared memory buffer to the graphics hardware.
+
+	   As the damage cannot be trusted while the subcompositor is
+	   update, pass NULL; this tells the renderer to update the
+	   entire buffer.
+
+	   Note that if the subcompositor is not garbaged, then this
+	   has already been done.  */
+	RenderUpdateBufferForDamage (buffer, NULL);
+      else if (age < 0 || age > 3)
+	/* The target contents are too old, but the damage can be
+	   trusted.  */
+	RenderUpdateBufferForDamage (buffer, &view->damage);
 
       if (!first)
 	{
@@ -1955,7 +2100,7 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 	     with PictOpSrc so that transparency is applied correctly,
 	     if it contains the entire update region.  */
 
-	  if (IsGarbaged (subcompositor))
+	  if (IsGarbaged (subcompositor) || age < 0 || age > 3)
 	    {
 	      extents = &temp_boxes;
 
@@ -1971,14 +2116,14 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 
 	  if (ViewContainsExtents (view, extents))
 	    /* The update region is contained by the entire view, so
-	       use PictOpSrc.  */
-	    op = PictOpSrc;
+	       use source.  */
+	    op = OperationSource;
 	  else
 	    {
 	      /* Otherwise, fill the whole update region with
 		 transparency.  */
 
-	      if (IsGarbaged (subcompositor))
+	      if (IsGarbaged (subcompositor) || age < 0 || age > 3)
 		{
 		  /* Use the entire subcompositor bounds if
 		     garbaged.  */
@@ -1993,24 +2138,19 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 	      FillBoxesWithTransparency (subcompositor,
 					 boxes, nboxes);
 
-	      /* And use PictOpOver as usual.  */
-	      op = PictOpOver;
+	      /* And use over as usual.  */
+	      op = OperationOver;
 	    }
 	}
       else
-	op = PictOpOver;
+	op = OperationOver;
 
       first = view;
 
       if (ViewHaveTransform (view))
-	{
-	  transform = ViewGetTransform (view);
+	ViewApplyTransform (view, buffer);
 
-	  XRenderSetPictureTransform (compositor.display, picture,
-				      &transform);
-	}
-
-      if (!IsGarbaged (subcompositor))
+      if (!IsGarbaged (subcompositor) && (age >= 0 && age < 3))
 	{
 	  /* First, obtain a new region that is the intersection of
 	     the view with the global update region.  */
@@ -2023,20 +2163,17 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 	  boxes = pixman_region32_rectangles (&temp, &nboxes);
 
 	  for (i = 0; i < nboxes; ++i)
-	    XRenderComposite (compositor.display, op, picture,
-			      None, subcompositor->target,
-			      /* src-x.  */
-			      BoxStartX (boxes[i]) - view->abs_x,
-			      /* src-y.  */
-			      BoxStartY (boxes[i]) - view->abs_y,
-			      /* mask-x, mask-y.  */
-			      0, 0,
-			      /* dst-x.  */
-			      BoxStartX (boxes[i]) - min_x + tx,
-			      /* dst-y.  */
-			      BoxStartY (boxes[i]) - min_y + ty,
-			      /* width, height.  */
-			      BoxWidth (boxes[i]), BoxHeight (boxes[i]));
+	    RenderComposite (buffer, subcompositor->target, op,
+			     /* src-x.  */
+			     BoxStartX (boxes[i]) - view->abs_x,
+			     /* src-y.  */
+			     BoxStartY (boxes[i]) - view->abs_y,
+			     /* dst-x.  */
+			     BoxStartX (boxes[i]) - min_x + tx,
+			     /* dst-y.  */
+			     BoxStartY (boxes[i]) - min_y + ty,
+			     /* width, height.  */
+			     BoxWidth (boxes[i]), BoxHeight (boxes[i]));
 	}
       else
 	{
@@ -2045,26 +2182,29 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 	     earlier, since the compositor was garbaged.  */
 	  pixman_region32_clear (&view->damage);
 
-	  /* If the subcompositor is garbaged, composite the entire view
-	     to the right location.  */
-	  XRenderComposite (compositor.display, op, picture,
-			    None, subcompositor->target,
-			    /* src-x, src-y.  */
-			    0, 0,
-			    /* mask-x, mask-y.  */
-			    0, 0,
-			    /* dst-x.  */
-			    view->abs_x - min_x + tx,
-			    /* dst-y.  */
-			    view->abs_y - min_y + ty,
-			    /* width.  */
-			    ViewWidth (view),
-			    /* height.  */
-			    ViewHeight (view));
+	  /* If the subcompositor is garbaged, composite the entire
+	     view to the right location.  */
+	  RenderComposite (buffer, subcompositor->target, op,
+			   /* src-x, src-y.  */
+			   0, 0,
+			   /* dst-x.  */
+			   view->abs_x - min_x + tx,
+			   /* dst-y.  */
+			   view->abs_y - min_y + ty,
+			   /* width.  */
+			   ViewWidth (view),
+			   /* height.  */
+			   ViewHeight (view));
 
 	  /* Also adjust the opaque and input regions here.  */
 
-	  if (pixman_region32_not_empty (&view->opaque))
+	  if (pixman_region32_not_empty (&view->opaque)
+	      /* If the subcompositor is garbaged, the opaque region
+		 must always be updated.  But if we are here because
+		 the target is too old, it must only be updated if the
+		 opaque region is also dirty.  */
+	      && (IsGarbaged (subcompositor)
+		  || IsOpaqueDirty (subcompositor)))
 	    {
 	      /* Translate the region into the global coordinate
 		 space.  */
@@ -2084,7 +2224,10 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 					 -list->view->abs_y);
 	    }
 
-	  if (pixman_region32_not_empty (&view->input))
+	  if (pixman_region32_not_empty (&view->input)
+	      /* Ditto for the input region.  */
+	      && (IsGarbaged (subcompositor)
+		  || IsInputDirty (subcompositor)))
 	    {
 	      /* Translate the region into the global coordinate
 		 space.  */
@@ -2105,45 +2248,58 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 	}
 
       if (ViewHaveTransform (view))
-	XRenderSetPictureTransform (compositor.display, picture,
-				    &identity_transform);
+	RenderResetTransform (buffer);
 
     next_1:
       list = list->next;
     }
   while (list != subcompositor->inferiors);
 
+  /* Swap changes to display.  */
+  RenderFinishRender (subcompositor->target);
+
  complete:
 
-  if (IsGarbaged (subcompositor))
+  if (IsGarbaged (subcompositor)
+      || ((age < 0 || age > 3)
+	  && (IsInputDirty (subcompositor)
+	      || IsOpaqueDirty (subcompositor))))
     {
-      /* The opaque region changed, so run any callbacks.  */
-      if (subcompositor->opaque_change)
+      if (IsGarbaged (subcompositor)
+	  || IsOpaqueDirty (subcompositor))
 	{
-	  /* Translate this to appear in the "virtual" coordinate
-	     space.  */
-	  pixman_region32_translate (&total_opaque, -min_x, -min_y);
+	  /* The opaque region changed, so run any callbacks.  */
+	  if (subcompositor->opaque_change)
+	    {
+	      /* Translate this to appear in the "virtual" coordinate
+		 space.  */
+	      pixman_region32_translate (&total_opaque, -min_x, -min_y);
 
-	  subcompositor->opaque_change (subcompositor,
-					subcompositor->opaque_change_data,
-					&total_opaque);
+	      subcompositor->opaque_change (subcompositor,
+					    subcompositor->opaque_change_data,
+					    &total_opaque);
+	    }
+
+	  pixman_region32_fini (&total_opaque);
 	}
 
-      pixman_region32_fini (&total_opaque);
-
-      /* The input region changed, so run any callbacks.  */
-      if (subcompositor->input_change)
+      if (IsGarbaged (subcompositor)
+	  || IsInputDirty (subcompositor))
 	{
-	  /* Translate this to appear in the "virtual" coordinate
-	     space.  */
-	  pixman_region32_translate (&total_input, -min_x, -min_y);
+	  /* The input region changed, so run any callbacks.  */
+	  if (subcompositor->input_change)
+	    {
+	      /* Translate this to appear in the "virtual" coordinate
+		 space.  */
+	      pixman_region32_translate (&total_input, -min_x, -min_y);
 
-	  subcompositor->input_change (subcompositor,
-				       subcompositor->input_change_data,
-				       &total_input);
+	      subcompositor->input_change (subcompositor,
+					   subcompositor->input_change_data,
+					   &total_input);
+	    }
+
+	  pixman_region32_fini (&total_input);
 	}
-
-      pixman_region32_fini (&total_input);
     }
 
   pixman_region32_fini (&temp);
@@ -2163,17 +2319,17 @@ SubcompositorExpose (Subcompositor *subcompositor, XEvent *event)
   View *view;
   int x, y, width, height, nboxes, min_x, min_y, tx, ty;
   pixman_box32_t extents, *boxes;
-  int op, i;
+  int i;
+  Operation op;
   pixman_region32_t temp;
-  Picture picture;
-  XTransform transform;
+  RenderBuffer buffer;
 
   /* Graphics exposures are not yet handled.  */
   if (event->type == GraphicsExpose)
     return;
 
   /* No target?  No update.  */
-  if (subcompositor->target == None)
+  if (!IsTargetAttached (subcompositor))
     return;
 
   x = event->xexpose.x + subcompositor->min_x;
@@ -2200,6 +2356,10 @@ SubcompositorExpose (Subcompositor *subcompositor, XEvent *event)
 
   list = subcompositor->inferiors;
 
+  /* Begin rendering.  This is unnecessary on XRender, but required on
+     EGL to make the surface current and set the viewport.  */
+  RenderStartRender (subcompositor->target);
+
   do
     {
       if (!list->view)
@@ -2217,7 +2377,7 @@ SubcompositorExpose (Subcompositor *subcompositor, XEvent *event)
       /* If the first mapped view contains everything, draw it with
 	 PictOpSrc.  */
       if (!view && ViewContainsExtents (list->view, &extents))
-	op = PictOpSrc;
+	op = OperationSource;
       else
 	{
 	  /* Otherwise, fill the region with transparency for the
@@ -2227,7 +2387,7 @@ SubcompositorExpose (Subcompositor *subcompositor, XEvent *event)
 	    FillBoxesWithTransparency (subcompositor,
 				       &extents, 1);
 
-	  op = PictOpOver;
+	  op = OperationOver;
 	}
 
       view = list->view;
@@ -2240,38 +2400,31 @@ SubcompositorExpose (Subcompositor *subcompositor, XEvent *event)
 				      ViewHeight (view));
 
       /* Composite the contents according to OP.  */
-      picture = XLPictureFromBuffer (view->buffer);
+      buffer = XLRenderBufferFromBuffer (view->buffer);
       boxes = pixman_region32_rectangles (&temp, &nboxes);
 
-      if (ViewHaveTransform (view))
-	{
-	  /* Set up transforms if necessary.  */
-	  transform = ViewGetTransform (view);
+      /* Update the attached buffer from any damage.  */
+      RenderUpdateBufferForDamage (buffer, &list->view->damage);
 
-	  XRenderSetPictureTransform (compositor.display, picture,
-				      &transform);
-	}
+      if (ViewHaveTransform (view))
+	ViewApplyTransform (view, buffer);
 
       for (i = 0; i < nboxes; ++i)
-	XRenderComposite (compositor.display, op, picture,
-			  None, subcompositor->target,
-			  /* src-x.  */
-			  BoxStartX (boxes[i]) - view->abs_x,
-			  /* src-y.  */
-			  BoxStartY (boxes[i]) - view->abs_y,
-			  /* mask-x, mask-y.  */
-			  0, 0,
-			  /* dst-x.  */
-			  BoxStartX (boxes[i]) - min_x + tx,
-			  /* dst-y.  */
-			  BoxStartY (boxes[i]) - min_y + ty,
-			  /* width, height.  */
-			  BoxWidth (boxes[i]), BoxHeight (boxes[i]));
+	RenderComposite (buffer, subcompositor->target, op,
+			 /* src-x.  */
+			 BoxStartX (boxes[i]) - view->abs_x,
+			 /* src-y.  */
+			 BoxStartY (boxes[i]) - view->abs_y,
+			 /* dst-x.  */
+			 BoxStartX (boxes[i]) - min_x + tx,
+			 /* dst-y.  */
+			 BoxStartY (boxes[i]) - min_y + ty,
+			 /* width, height.  */
+			 BoxWidth (boxes[i]), BoxHeight (boxes[i]));
 
       /* Undo transforms that were applied.  */
       if (ViewHaveTransform (view))
-	XRenderSetPictureTransform (compositor.display, picture,
-				    &identity_transform);
+	RenderResetTransform (buffer);
 
       /* Free the scratch region used to compute the intersection.  */
       pixman_region32_fini (&temp);
@@ -2281,6 +2434,9 @@ SubcompositorExpose (Subcompositor *subcompositor, XEvent *event)
       list = list->next;
     }
   while (list != subcompositor->inferiors);
+
+  /* Swap changes to display.  */
+  RenderFinishRender (subcompositor->target);
 }
 
 void
@@ -2308,6 +2464,10 @@ SubcompositorFree (Subcompositor *subcompositor)
 
   XLFree (subcompositor->children);
   XLFree (subcompositor->inferiors);
+
+  /* Finalize the buffers used to store previous damage.  */
+  pixman_region32_fini (&subcompositor->prior_damage[0]);
+  pixman_region32_fini (&subcompositor->prior_damage[1]);
 
   XLFree (subcompositor);
 }
@@ -2401,9 +2561,7 @@ ViewGetParent (View *view)
 void
 SubcompositorInit (void)
 {
-  identity_transform.matrix[0][0] = 1;
-  identity_transform.matrix[1][1] = 1;
-  identity_transform.matrix[2][2] = 1;
+  /* Nothing to do here... */
 }
 
 int

@@ -21,11 +21,8 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
-#include <unistd.h>
 
 #include <sys/mman.h>
-#include <sys/fcntl.h>
-#include <sys/stat.h>
 
 #include "compositor.h"
 
@@ -52,23 +49,11 @@ typedef struct _Buffer
   /* The ExtBuffer associated with this buffer.  */
   ExtBuffer buffer;
 
-  /* The pixmap associated with this buffer.  */
-  Pixmap pixmap;
-
-  /* The picture associated with this buffer.  */
-  Picture picture;
+  /* The rendering buffer associated with this buffer.  */
+  RenderBuffer render_buffer;
 
   /* The width and height of this buffer.  */
   unsigned int width, height;
-
-  /* The stride of this buffer.  */
-  int stride;
-
-  /* The offset of this buffer.  */
-  int offset;
-
-  /* The format of this buffer.  */
-  uint32_t format;
 
   /* The wl_resource corresponding to this buffer.  */
   struct wl_resource *resource;
@@ -93,6 +78,14 @@ DereferencePool (Pool *pool)
     return;
 
   munmap (pool->data, pool->size);
+
+  /* Cancel the busfault trap.  */
+
+  if (pool->data != (void *) -1
+      /* If the pool is of size 0, no busfault was installed.  */
+      && pool->size)
+    XLRemoveBusfault (pool->data);
+
   close (pool->fd);
   XLFree (pool);
 }
@@ -115,8 +108,7 @@ DereferenceBuffer (Buffer *buffer)
   if (--buffer->refcount)
     return;
 
-  XRenderFreePicture (compositor.display, buffer->picture);
-  XFreePixmap (compositor.display, buffer->pixmap);
+  RenderFreeShmBuffer (buffer->render_buffer);
   DereferencePool (buffer->pool);
 
   ExtBufferDestroy (&buffer->buffer);
@@ -142,16 +134,10 @@ DereferenceBufferFunc (ExtBuffer *buffer)
   DereferenceBuffer ((Buffer *) buffer);
 }
 
-static Picture
-GetPictureFunc (ExtBuffer *buffer)
+static RenderBuffer
+GetBufferFunc (ExtBuffer *buffer)
 {
-  return ((Buffer *) buffer)->picture;
-}
-
-static Pixmap
-GetPixmapFunc (ExtBuffer *buffer)
-{
-  return ((Buffer *) buffer)->pixmap;
+  return ((Buffer *) buffer)->render_buffer;
 }
 
 static unsigned int
@@ -175,20 +161,7 @@ DestroyBuffer (struct wl_client *client, struct wl_resource *resource)
 static void
 PrintBuffer (Buffer *buffer)
 {
-  int x, y;
-  char *base;
-  unsigned int *base32;
-
-  for (y = 0; y < buffer->height; ++y)
-    {
-      base = buffer->pool->data;
-      base += buffer->stride * y;
-      base32 = (unsigned int *) base;
-
-      for (x = 0; x < buffer->width; ++x)
-	fprintf (stderr, "#x%8x ", base32[x]);
-      fprintf (stderr, "\n");
-    }
+  /* Not implemented.  */
 }
 
 static void
@@ -197,37 +170,6 @@ PrintBufferFunc (ExtBuffer *buffer)
   PrintBuffer ((Buffer *) buffer);
 }
 
-static int
-DepthForFormat (uint32_t format)
-{
-  switch (format)
-    {
-    case WL_SHM_FORMAT_ARGB8888:
-      return 32;
-
-    case WL_SHM_FORMAT_XRGB8888:
-      return 24;
-
-    default:
-      return 0;
-    }
-}
-
-static XRenderPictFormat *
-PictFormatForFormat (uint32_t format)
-{
-  switch (format)
-    {
-    case WL_SHM_FORMAT_ARGB8888:
-      return compositor.argb_format;
-
-    case WL_SHM_FORMAT_XRGB8888:
-      return compositor.xrgb_format;
-
-    default:
-      return 0;
-    }
-}
 
 static void
 HandleBufferResourceDestroy (struct wl_resource *resource)
@@ -245,22 +187,35 @@ static const struct wl_buffer_interface wl_shm_buffer_impl =
     .destroy = DestroyBuffer,
   };
 
+static Bool
+IsFormatSupported (uint32_t format)
+{
+  ShmFormat *formats;
+  int nformats, i;
+
+  formats = RenderGetShmFormats (&nformats);
+
+  for (i = 0; i < nformats; ++i)
+    {
+      if (formats[i].format == format)
+	return True;
+    }
+
+  return False;
+}
+
 static void
 CreateBuffer (struct wl_client *client, struct wl_resource *resource,
               uint32_t id, int32_t offset, int32_t width, int32_t height,
 	      int32_t stride, uint32_t format)
 {
-  XRenderPictureAttributes picture_attrs;
   Pool *pool;
   Buffer *buffer;
-  xcb_shm_seg_t seg;
-  Pixmap pixmap;
-  Picture picture;
-  int fd, depth;
+  RenderBuffer render_buffer;
+  SharedMemoryAttributes attrs;
+  Bool failure;
 
-  depth = DepthForFormat (format);
-
-  if (!depth)
+  if (!IsFormatSupported (format))
     {
       wl_resource_post_error (resource, WL_SHM_ERROR_INVALID_FORMAT,
 			      "the specified format is not supported");
@@ -269,9 +224,8 @@ CreateBuffer (struct wl_client *client, struct wl_resource *resource,
 
   pool = wl_resource_get_user_data (resource);
 
-  if (pool->size < offset || stride != width * 4
-      || offset + stride * height > pool->size
-      || offset < 0)
+  if (!RenderValidateShmParams (format, width, height,
+				offset, stride, pool->size))
     {
       wl_resource_post_error (resource, WL_SHM_ERROR_INVALID_STRIDE,
 			      "invalid offset or stride, or pool too small");
@@ -314,46 +268,43 @@ CreateBuffer (struct wl_client *client, struct wl_resource *resource,
       return;
     }
 
-  /* XCB closes fds after sending them.  */
-  fd = fcntl (pool->fd, F_DUPFD_CLOEXEC, 0);
+  attrs.format = format;
+  attrs.offset = offset;
+  attrs.width = width;
+  attrs.height = height;
+  attrs.stride = stride;
+  attrs.fd = pool->fd;
 
-  if (fd < 0)
+  /* Pass a reference instead of the pointer itself.  The pool will
+     stay valid as long as the buffer is still alive, and the data
+     pointer can change if the client resizes the pool.  */
+  attrs.data = &pool->data;
+  attrs.pool_size = pool->size;
+
+  /* Now, create the renderer buffer.  */
+  failure = False;
+  render_buffer = RenderBufferFromShm (&attrs, &failure);
+
+  /* If a platform specific error happened, fail now.  */
+  if (failure)
     {
       wl_resource_destroy (buffer->resource);
       XLFree (buffer);
       wl_resource_post_error (resource, WL_SHM_ERROR_INVALID_FD,
-			      "fcntl: %s", strerror (errno));
+			      "unknown error creating buffer");
       return;
     }
 
-  seg = xcb_generate_id (compositor.conn);
-  pixmap = xcb_generate_id (compositor.conn);
-
-  xcb_shm_attach_fd (compositor.conn, seg, fd, false);
-  xcb_shm_create_pixmap (compositor.conn, pixmap,
-			 DefaultRootWindow (compositor.display),
-			 width, height, depth, seg, offset);
-  xcb_shm_detach (compositor.conn, seg);
-
-  picture = XRenderCreatePicture (compositor.display, pixmap,
-				  PictFormatForFormat (format),
-				  0, &picture_attrs);
-
-  buffer->pixmap = pixmap;
-  buffer->picture = picture;
+  buffer->render_buffer = render_buffer;
   buffer->width = width;
   buffer->height = height;
-  buffer->stride = stride;
-  buffer->offset = offset;
-  buffer->format = format;
   buffer->pool = pool;
   buffer->refcount = 1;
 
   /* Initialize function pointers.  */
   buffer->buffer.funcs.retain = RetainBufferFunc;
   buffer->buffer.funcs.dereference = DereferenceBufferFunc;
-  buffer->buffer.funcs.get_picture = GetPictureFunc;
-  buffer->buffer.funcs.get_pixmap = GetPixmapFunc;
+  buffer->buffer.funcs.get_buffer = GetBufferFunc;
   buffer->buffer.funcs.width = WidthFunc;
   buffer->buffer.funcs.height = HeightFunc;
   buffer->buffer.funcs.release = ReleaseBufferFunc;
@@ -390,6 +341,19 @@ ResizePool (struct wl_client *client, struct wl_resource *resource,
   void *data;
 
   pool = wl_resource_get_user_data (resource);
+
+  if (size == pool->size)
+    /* There is no need to do anything, since the pool is still the
+       same size.  */
+    return;
+
+  if (size < pool->size)
+    {
+      wl_resource_post_error (resource, WL_SHM_ERROR_INVALID_FD,
+			      "shared memory pools cannot be shrunk");
+      return;
+    }
+
   data = mremap (pool->data, pool->size, size, MREMAP_MAYMOVE);
 
   if (data == MAP_FAILED)
@@ -399,8 +363,17 @@ ResizePool (struct wl_client *client, struct wl_resource *resource,
       return;
     }
 
+  /* Now cancel the existing bus fault handler, should it have been
+     installed.  */
+  if (pool->size)
+    XLRemoveBusfault (pool->data);
+
   pool->size = size;
   pool->data = data;
+
+  /* And add a new handler.  */
+  if (pool->size)
+    XLRecordBusfault (pool->data, pool->size);
 }
 
 static const struct wl_shm_pool_interface wl_shm_pool_impl =
@@ -417,9 +390,8 @@ HandleResourceDestroy (struct wl_resource *resource)
 }
 
 static void
-CreatePool (struct wl_client *client,
-	    struct wl_resource *resource,
-	    uint32_t id, int fd, int size)
+CreatePool (struct wl_client *client, struct wl_resource *resource,
+	    uint32_t id, int32_t fd, int32_t size)
 {
   Pool *pool;
 
@@ -459,6 +431,13 @@ CreatePool (struct wl_client *client,
 				  pool, HandlePoolResourceDestroy);
 
   pool->size = size;
+
+  /* Begin trapping SIGBUS from this pool.  The client may truncate
+     the file without telling us, in which case accessing its contents
+     will cause crashes.  */
+  if (pool->size)
+    XLRecordBusfault (pool->data, pool->size);
+
   pool->fd = fd;
   pool->refcount = 1;
 
@@ -473,10 +452,13 @@ static const struct wl_shm_interface wl_shm_impl =
 static void
 PostFormats (struct wl_resource *resource)
 {
-  /* TODO: don't hard-code visuals and be slightly more versatile.  */
+  ShmFormat *formats;
+  int nformats, i;
 
-  wl_shm_send_format (resource, WL_SHM_FORMAT_XRGB8888);
-  wl_shm_send_format (resource, WL_SHM_FORMAT_ARGB8888);
+  formats = RenderGetShmFormats (&nformats);
+
+  for (i = 0; i < nformats; ++i)
+    wl_shm_send_format (resource, formats[i].format);
 }
 
 static void
@@ -544,40 +526,6 @@ InitRender (void)
 void
 XLInitShm (void)
 {
-  xcb_shm_query_version_reply_t *reply;
-  xcb_shm_query_version_cookie_t cookie;
-
-  /* This shouldn't be freed.  */
-  const xcb_query_extension_reply_t *ext;
-
-  ext = xcb_get_extension_data (compositor.conn, &xcb_shm_id);
-
-  if (!ext || !ext->present)
-    {
-      fprintf (stderr, "The MIT-SHM extension is not supported by this X server.\n");
-      exit (1);
-    }
-
-  cookie = xcb_shm_query_version (compositor.conn);
-  reply = xcb_shm_query_version_reply (compositor.conn,
-				       cookie, NULL);
-
-  if (!reply)
-    {
-      fprintf (stderr, "The MIT-SHM extension on this X server is too old.\n");
-      exit (1);
-    }
-  else if (reply->major_version < 1
-	   || (reply->major_version == 1
-	       && reply->minor_version < 2))
-    {
-      fprintf (stderr, "The MIT-SHM extension on this X server is too old"
-	       " to support POSIX shared memory.\n");
-      exit (1);
-    }
-
-  free (reply);
-
   InitRender ();
 
   global_shm = wl_global_create (compositor.wl_display,

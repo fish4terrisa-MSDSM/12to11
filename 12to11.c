@@ -28,35 +28,6 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 /* Globals.  */
 Compositor compositor;
 
-static Visual *
-PickVisual (int *depth)
-{
-  int n_visuals;
-  XVisualInfo vinfo, *visuals;
-  Visual *selection;
-
-  vinfo.screen = DefaultScreen (compositor.display);
-  vinfo.class = TrueColor;
-  vinfo.depth = 32;
-
-  visuals = XGetVisualInfo (compositor.display, (VisualScreenMask
-						 | VisualClassMask
-						 | VisualDepthMask),
-			    &vinfo, &n_visuals);
-
-  if (n_visuals)
-    {
-      selection = visuals[0].visual;
-      *depth = visuals[0].depth;
-      XFree (visuals);
-
-      return selection;
-    }
-
-  fprintf (stderr, "A 32-bit TrueColor visual was not found\n");
-  exit (1);
-}
-
 static Colormap
 MakeColormap (void)
 {
@@ -129,8 +100,6 @@ XLMain (int argc, char **argv)
   compositor.wl_socket = socket;
   compositor.wl_event_loop
     = wl_display_get_event_loop (wl_display);
-  compositor.visual = PickVisual (&compositor.n_planes);
-  compositor.colormap = MakeColormap ();
 
   InitXErrors ();
   SubcompositorInit ();
@@ -138,6 +107,15 @@ XLMain (int argc, char **argv)
 
   XLInitTimers ();
   XLInitAtoms ();
+
+  /* Initialize renderers immediately after timers and atoms are set
+     up.  */
+  InitRenderers ();
+
+  /* Set up the colormap.  Initializing renderers should also cause
+     the visual to be set.  */
+  compositor.colormap = MakeColormap ();
+
   XLInitRROutputs ();
   XLInitCompositor ();
   XLInitSurfaces ();

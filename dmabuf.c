@@ -43,33 +43,9 @@ typedef struct _FormatModifierPair FormatModifierPair;
 
 enum
   {
-    IsUsed = 1,
+    IsUsed	   = 1,
+    IsCallbackData = (1 << 2),
   };
-
-struct _DrmFormatInfo
-{
-  /* The DRM format code.  */
-  uint32_t format_code;
-
-  /* The X Windows depth.  */
-  int depth;
-
-  /* The X Windows green, red, blue, and alpha masks.  */
-  int red, green, blue, alpha;
-
-  /* The number of bits per pixel.  */
-  int bits_per_pixel;
-
-  /* PictFormat associated with this format, or NULL if none were
-     found.  */
-  XRenderPictFormat *format;
-
-  /* List of supported screen modifiers.  */
-  uint64_t *supported_modifiers;
-
-  /* Number of supported screen modifiers.  */
-  int n_supported_modifiers;
-};
 
 struct _TemporarySetEntry
 {
@@ -92,18 +68,8 @@ struct _BufferParams
   /* The struct wl_resource associated with this object.  */
   struct wl_resource *resource;
 
-  /* Possible link to a global list of buffer params pending
-     release.  */
-  BufferParams *next, *last;
-
-  /* The XID of the buffer that will be created.  */
-  Pixmap pixmap;
-
   /* The width and height of the buffer that will be created.  */
   int width, height;
-
-  /* The DRM format.  */
-  uint32_t drm_format;
 };
 
 struct _Buffer
@@ -111,11 +77,8 @@ struct _Buffer
   /* The ExtBuffer associated with this buffer.  */
   ExtBuffer buffer;
 
-  /* The pixmap associated with this buffer.  */
-  Pixmap pixmap;
-
-  /* The picture associated with this buffer.  */
-  Picture picture;
+  /* The RenderBuffer associated with this buffer.  */
+  RenderBuffer render_buffer;
 
   /* The width and height of this buffer.  */
   unsigned int width, height;
@@ -142,68 +105,6 @@ struct _FormatModifierPair
 /* The wl_global associated with linux-dmabuf-unstable-v1.  */
 static struct wl_global *global_dmabuf;
 
-/* List of BufferParams pending success.  */
-static BufferParams pending_success;
-
-/* The id of the next round trip event.  */
-static uint64_t next_roundtrip_id;
-
-/* A window used to receive round trip events.  */
-static Window round_trip_window;
-
-/* List of all supported DRM formats.  */
-static DrmFormatInfo all_formats[] =
-  {
-    {
-      .format_code = DRM_FORMAT_ARGB8888,
-      .depth = 32,
-      .red = 0xff0000,
-      .green = 0xff00,
-      .blue = 0xff,
-      .alpha = 0xff000000,
-      .bits_per_pixel = 32,
-    },
-    {
-      .format_code = DRM_FORMAT_XRGB8888,
-      .depth = 24,
-      .red = 0xff0000,
-      .green = 0xff00,
-      .blue = 0xff,
-      .alpha = 0,
-      .bits_per_pixel = 32,
-    },
-    {
-      .format_code = DRM_FORMAT_XBGR8888,
-      .depth = 24,
-      .blue = 0xff0000,
-      .green = 0xff00,
-      .red = 0xff,
-      .alpha = 0,
-      .bits_per_pixel = 32,
-    },
-    {
-      .format_code = DRM_FORMAT_ABGR8888,
-      .depth = 32,
-      .blue = 0xff0000,
-      .green = 0xff00,
-      .red = 0xff,
-      .alpha = 0xff000000,
-      .bits_per_pixel = 32,
-    },
-    {
-      .format_code = DRM_FORMAT_BGRA8888,
-      .depth = 32,
-      .blue = 0xff000000,
-      .green = 0xff0000,
-      .red = 0xff00,
-      .alpha = 0xff,
-      .bits_per_pixel = 32,
-    },
-  };
-
-/* The opcode of the DRI3 extension.  */
-static int dri3_opcode;
-
 /* File descriptor for the format table.  */
 static int format_table_fd;
 
@@ -213,6 +114,12 @@ static ssize_t format_table_size;
 /* Device node of the DRM device.  TODO: make this
    output-specific.  */
 static dev_t drm_device_node;
+
+/* DRM formats supported by the renderer.  */
+static DrmFormat *supported_formats;
+
+/* Number of formats.  */
+static int n_drm_formats;
 
 static void
 CloseFdsEarly (BufferParams *params)
@@ -234,14 +141,9 @@ ReleaseBufferParams (BufferParams *params)
   if (!(params->flags & IsUsed))
     CloseFdsEarly (params);
 
-  /* If params is linked into the list of buffers pending success,
-     remove it.  */
-
-  if (params->last)
-    {
-      params->next->last = params->last;
-      params->last->next = params->next;
-    }
+  /* params should not be destroyed if it is being used as callback
+     data.  */
+  XLAssert (!(params->flags & IsCallbackData));
 
   XLFree (params);
 }
@@ -256,7 +158,9 @@ HandleParamsResourceDestroy (struct wl_resource *resource)
   /* First, clear params->resource.  */
   params->resource = NULL;
 
-  if (params->next)
+  if (params->flags & IsCallbackData)
+    /* If params is callback data, simply clear params->resource, and
+       wait for a callback to be called.  */
     return;
 
   /* Next, destroy the params now, unless we are waiting for a buffer
@@ -351,118 +255,13 @@ Add (struct wl_client *client, struct wl_resource *resource, int32_t fd,
 }
 
 static void
-ForceRoundTrip (void)
-{
-  uint64_t id;
-  XEvent event;
-
-  /* Send an event with a monotonically increasing identifier to
-     ourselves.
-
-     Once the last event is received, create the actual buffers for
-     each buffer resource for which error handlers have not run.  */
-
-  id = next_roundtrip_id++;
-
-  memset (&event, 0, sizeof event);
-
-  event.xclient.type = ClientMessage;
-  event.xclient.window = round_trip_window;
-  event.xclient.message_type = _XL_DMA_BUF_CREATED;
-  event.xclient.format = 32;
-
-  event.xclient.data.l[0] = id >> 31 >> 1;
-  event.xclient.data.l[1] = id & 0xffffffff;
-
-  XSendEvent (compositor.display, round_trip_window,
-	      False, NoEventMask, &event);
-}
-
-static int
-DepthForFormat (uint32_t drm_format, int *bits_per_pixel)
-{
-  int i;
-
-  for (i = 0; i < ArrayElements (all_formats); ++i)
-    {
-      if (all_formats[i].format_code == drm_format
-	  && all_formats[i].format)
-	{
-	  *bits_per_pixel = all_formats[i].bits_per_pixel;
-
-	  return all_formats[i].depth;
-	}
-    }
-
-  return -1;
-}
-
-Bool
-XLHandleErrorForDmabuf (XErrorEvent *error)
-{
-  BufferParams *params, *next;
-
-  if (error->request_code == dri3_opcode
-      && error->minor_code == xDRI3BuffersFromPixmap)
-    {
-      /* Something chouldn't be created.  Find what failed and unlink
-	 it.  */
-
-      next = pending_success.next;
-
-      while (next != &pending_success)
-	{
-	  params = next;
-	  next = next->next;
-
-	  if (params->pixmap == error->resourceid)
-	    {
-	      /* Unlink params.  */
-	      params->next->last = params->last;
-	      params->last->next = params->next;
-
-	      params->next = NULL;
-	      params->last = NULL;
-
-	      /* Tell the client that buffer creation failed.  It will
-		 then delete the object.  */
-	      zwp_linux_buffer_params_v1_send_failed (params->resource);
-
-	      break;
-	    }
-	}
-
-      return True;
-    }
-
-  return False;
-}
-
-static XRenderPictFormat *
-PictFormatForFormat (uint32_t drm_format)
-{
-  int i;
-
-  for (i = 0; i < ArrayElements (all_formats); ++i)
-    {
-      if (all_formats[i].format_code == drm_format
-	  && all_formats[i].format)
-	return all_formats[i].format;
-    }
-
-  /* This shouldn't happen, since the format was already verified in
-     Create.  */
-  abort ();
-}
-
-static void
 DestroyBacking (Buffer *buffer)
 {
   if (--buffer->refcount)
     return;
 
-  XRenderFreePicture (compositor.display, buffer->picture);
-  XFreePixmap (compositor.display, buffer->pixmap);
+  /* Free the renderer-specific dmabuf buffer.  */
+  RenderFreeDmabufBuffer (buffer->render_buffer);
 
   ExtBufferDestroy (&buffer->buffer);
   XLFree (buffer);
@@ -508,24 +307,6 @@ DereferenceBufferFunc (ExtBuffer *buffer)
   DestroyBacking (dmabuf_buffer);
 }
 
-static Picture
-GetPictureFunc (ExtBuffer *buffer)
-{
-  Buffer *dmabuf_buffer;
-
-  dmabuf_buffer = (Buffer *) buffer;
-  return dmabuf_buffer->picture;
-}
-
-static Pixmap
-GetPixmapFunc (ExtBuffer *buffer)
-{
-  Buffer *dmabuf_buffer;
-
-  dmabuf_buffer = (Buffer *) buffer;
-  return dmabuf_buffer->pixmap;
-}
-
 static unsigned int
 WidthFunc (ExtBuffer *buffer)
 {
@@ -551,20 +332,28 @@ ReleaseBufferFunc (ExtBuffer *buffer)
     wl_buffer_send_release (((Buffer *) buffer)->resource);
 }
 
+static RenderBuffer
+GetBufferFunc (ExtBuffer *buffer)
+{
+  Buffer *dmabuf_buffer;
+
+  dmabuf_buffer = (Buffer *) buffer;
+  return dmabuf_buffer->render_buffer;
+}
+
 static Buffer *
-CreateBufferFor (BufferParams *params, uint32_t id)
+CreateBufferFor (BufferParams *params, RenderBuffer render_buffer,
+		 uint32_t id)
 {
   Buffer *buffer;
-  Picture picture;
   struct wl_client *client;
-  XRenderPictureAttributes picture_attrs;
 
   buffer = XLSafeMalloc (sizeof *buffer);
   client = wl_resource_get_client (params->resource);
 
   if (!buffer)
     {
-      XFreePixmap (compositor.display, params->pixmap);
+      RenderFreeDmabufBuffer (render_buffer);
       zwp_linux_buffer_params_v1_send_failed (params->resource);
 
       return NULL;
@@ -576,18 +365,14 @@ CreateBufferFor (BufferParams *params, uint32_t id)
 
   if (!buffer->resource)
     {
-      XFreePixmap (compositor.display, params->pixmap);
+      RenderFreeDmabufBuffer (render_buffer);
       XLFree (buffer);
       zwp_linux_buffer_params_v1_send_failed (params->resource);
 
       return NULL;
     }
 
-  picture = XRenderCreatePicture (compositor.display, params->pixmap,
-				  PictFormatForFormat (params->drm_format),
-				  0, &picture_attrs);
-  buffer->pixmap = params->pixmap;
-  buffer->picture = picture;
+  buffer->render_buffer = render_buffer;
   buffer->width = params->width;
   buffer->height = params->height;
   buffer->destroy_listeners = NULL;
@@ -595,8 +380,7 @@ CreateBufferFor (BufferParams *params, uint32_t id)
   /* Initialize function pointers.  */
   buffer->buffer.funcs.retain = RetainBufferFunc;
   buffer->buffer.funcs.dereference = DereferenceBufferFunc;
-  buffer->buffer.funcs.get_picture = GetPictureFunc;
-  buffer->buffer.funcs.get_pixmap = GetPixmapFunc;
+  buffer->buffer.funcs.get_buffer = GetBufferFunc;
   buffer->buffer.funcs.width = WidthFunc;
   buffer->buffer.funcs.height = HeightFunc;
   buffer->buffer.funcs.release = ReleaseBufferFunc;
@@ -610,274 +394,385 @@ CreateBufferFor (BufferParams *params, uint32_t id)
   return buffer;
 }
 
-static void
-FinishBufferCreation (void)
+#define ModifierHigh(mod)	((uint64_t) (mod) >> 31 >> 1)
+#define ModifierLow(mod)	((uint64_t) (mod) & 0xffffffff)
+
+static Bool
+IsFormatSupported (uint32_t format, uint32_t mod_hi, uint32_t mod_low)
 {
-  BufferParams *params, *next;
-  Buffer *buffer;
+  int i;
 
-  next = pending_success.next;
-
-  while (next != &pending_success)
+  for (i = 0; i < n_drm_formats; ++i)
     {
-      params = next;
-      next = next->next;
-
-      if (params->resource)
-	{
-	  buffer = CreateBufferFor (params, 0);
-
-	  /* Send the buffer to the client, unless creation
-	     failed.  */
-	  if (buffer)
-	    zwp_linux_buffer_params_v1_send_created (params->resource,
-						     buffer->resource);
-
-	  /* Unlink params, since it's no longer pending creation.  */
-	  params->next->last = params->last;
-	  params->last->next = params->next;
-
-	  params->next = NULL;
-	  params->last = NULL;
-	}
-      else
-	{
-	  /* The resource is no longer present, so just delete it.  */
-	  XFreePixmap (compositor.display, params->pixmap);
-	  ReleaseBufferParams (params);
-	}
-    }
-}
-
-Bool
-XLHandleOneXEventForDmabuf (XEvent *event)
-{
-  uint64_t id, low, high;
-
-  if (event->type == ClientMessage
-      && event->xclient.message_type == _XL_DMA_BUF_CREATED)
-    {
-      /* Values are masked against 0xffffffff, as Xlib sign-extends
-	 those longs.  */
-      high = event->xclient.data.l[0] & 0xffffffff;
-      low = event->xclient.data.l[1] & 0xffffffff;
-      id = low | (high << 32);
-
-      /* Ignore the message if the id is too old.  */
-      if (id < next_roundtrip_id)
-	{
-	  /* Otherwise, it means buffer creation was successful.
-	     Complete all pending buffer creation.  */
-
-	  FinishBufferCreation ();
-	}
-
-      return True;
+      if (format == supported_formats[i].drm_format
+	  /* Also check that the modifiers have been announced as
+	     supported.  */
+	  && ModifierHigh (supported_formats[i].drm_modifier) == mod_hi
+	  && ModifierLow (supported_formats[i].drm_modifier) == mod_low)
+	/* A match was found, so this format is supported.  */
+	return True;
     }
 
+  /* No match was found, so complain that the format is invalid.  This
+     does not catch non-obvious errors, such as unsupported flags,
+     which may cause buffer creation to fail after on.  */
   return False;
 }
 
-#define CreateHeader									\
-  BufferParams *params;									\
-  int num_buffers, i, depth, bpp;							\
-  uint32_t mod_high, mod_low, all_flags;						\
-  int32_t *allfds;									\
-											\
-  params = wl_resource_get_user_data (resource);					\
-											\
-  if (params->flags & IsUsed)								\
-    {											\
-      wl_resource_post_error (resource,							\
-			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_ALREADY_USED,		\
-			      "the given params resource has already been used");	\
-      return;										\
-    }											\
-											\
-  /* Find the depth and bpp corresponding to the format.  */				\
-  depth = DepthForFormat (format, &bpp);						\
-											\
-  /* Now mark the params resource as inert.  */						\
-  params->flags |= IsUsed;								\
-											\
-  /* Retrieve how many buffers are attached to the temporary set, and			\
-     any set modifiers.  */								\
-  num_buffers = ExistingModifier (params, &mod_high, &mod_low);				\
-											\
-  if (!num_buffers)									\
-    {											\
-      wl_resource_post_error (resource,							\
-			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE,		\
-			      "no fds were attached to this resource's temporary set");	\
-      goto inert_error;									\
-    }											\
-											\
-  if (params->entries[0].fd == -1)							\
-    {											\
-      wl_resource_post_error (resource,							\
-			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE,		\
-			      "no fd attached for plane 0 in the temporary set");	\
-      goto inert_error;									\
-    }											\
-											\
-  if ((params->entries[3].fd >= 0 || params->entries[2].fd >= 0)			\
-      && (params->entries[2].fd == -1 || params->entries[1].fd == -1))			\
-    {											\
-      wl_resource_post_error (resource,							\
-			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE,		\
-			      "gap in planes attached to temporary set");		\
-      goto inert_error;									\
-    }											\
-											\
-  if (width < 0 || height < 0 || width > 65535 || height > 65535)			\
-    {											\
-      wl_resource_post_error (resource,							\
-			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_OUT_OF_BOUNDS,		\
-			      "size out of bounds for X server");			\
-      goto inert_error;									\
-    }											\
-											\
-  if (depth == -1)									\
-    {											\
-      if (wl_resource_get_version (resource) >= 4)					\
-	wl_resource_post_error (resource,						\
-				ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT,	\
-				"invalid format specified for version 4 resource");	\
-      else										\
-	zwp_linux_buffer_params_v1_send_failed (resource);				\
-											\
-      goto inert_error;									\
-    }											\
-											\
-  all_flags = (ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_Y_INVERT				\
-	       | ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_INTERLACED				\
-	       | ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_BOTTOM_FIRST);			\
-											\
-  if (flags & ~all_flags)								\
-    {											\
-      wl_resource_post_error (resource,							\
-			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT, 		\
-			      "invalid dmabuf flags: %u", flags);			\
-      goto inert_error;									\
-    }											\
-											\
-  if (flags)										\
-    {											\
-      /* Flags are not supported by wlroots, so I guess we don't have			\
-	 to either.  */									\
-      zwp_linux_buffer_params_v1_send_failed (resource);				\
-      goto inert_error;									\
-    }											\
-											\
-  /* Copy the file descriptors into a buffer.  At this point, we know			\
-     there are no gaps in params->entries.  */						\
-  allfds = alloca (sizeof *allfds * num_buffers);					\
-											\
-  for (i = 0; i < num_buffers; ++i)							\
-    allfds[i] = params->entries[i].fd;							\
-											\
-  /* Make the request, and then link the buffer params object onto the			\
-     list of pending buffers.  We don't know if the creation will be			\
-     rejected by the X server, so we first arrange to catch all errors			\
-     from DRI3PixmapFromBuffer(s), and send the create event the next			\
-     time we know that a roundtrip has happened without any errors			\
-     being raised.  */									\
-											\
-  params->width = width;								\
-  params->height = height;								\
-  params->drm_format = format;								\
-											\
-  params->pixmap = xcb_generate_id (compositor.conn)
+static void
+CreateSucceeded (RenderBuffer render_buffer, void *data)
+{
+  BufferParams *params;
+  Buffer *buffer;
 
+  /* Buffer creation was successful.  If the resource was already
+     destroyed, then simply destroy buffer and free params.
+     Otherwise, send the created buffer to the client.  */
 
-#define CreateFooter							\
-   inert_error:								\
-  /* We also have to close each added fd here, since XCB hasn't done	\
-     that for us.  */							\
-									\
-  CloseFdsEarly (params)
+  params = data;
+
+  if (!params->resource)
+    {
+      RenderFreeDmabufBuffer (render_buffer);
+
+      /* Now, release the buffer params.  Since the callback has been
+	 run, it is no longer callback data.  */
+      params->flags &= ~IsCallbackData;
+      ReleaseBufferParams (params);
+
+      return;
+    }
+
+  /* Mark the params object as no longer being callback data.  */
+  params->flags &= ~IsCallbackData;
+
+  /* Create the buffer.  */
+  buffer = CreateBufferFor (params, render_buffer, 0);
+
+  /* If buffer is NULL, then the failure message will already have
+     been sent.  */
+  if (!buffer)
+    return;
+
+  /* Send the buffer to the client.  */
+  zwp_linux_buffer_params_v1_send_created (params->resource,
+					   buffer->resource);
+}
+
+static void
+CreateFailed (void *data)
+{
+  BufferParams *params;
+
+  /* Creation failed.  If no resource is attached, simply free params.
+     Otherwise, send failed and wait for the client to destroy it.  */
+  params = data;
+
+  params->flags &= ~IsCallbackData;
+
+  if (!params->resource)
+    ReleaseBufferParams (params);
+  else
+    zwp_linux_buffer_params_v1_send_failed (params->resource);
+}
 
 static void
 Create (struct wl_client *client, struct wl_resource *resource, int32_t width,
 	int32_t height, uint32_t format, uint32_t flags)
 {
-  CreateHeader;
+  BufferParams *params;
+  DmaBufAttributes attributes;
+  int num_buffers, i;
+  uint32_t mod_high, mod_low;
+  uint32_t all_flags;
 
-  params->next = pending_success.next;
-  params->last = &pending_success;
-  pending_success.next->last = params;
-  pending_success.next = params;
+  params = wl_resource_get_user_data (resource);
 
-  /* Now, create the buffers.  XCB will close the file descriptor for
-     us once the output buffer is flushed.  */
-  xcb_dri3_pixmap_from_buffers (compositor.conn, params->pixmap,
-				DefaultRootWindow (compositor.display),
-				num_buffers, params->width, params->height,
-				params->entries[0].offset,
-				params->entries[0].stride,
-				params->entries[1].offset,
-				params->entries[1].stride,
-				params->entries[2].offset,
-				params->entries[2].stride,
-				params->entries[3].offset,
-				params->entries[3].stride, depth, bpp,
-				(uint64_t) mod_high << 31 | mod_low, allfds);
+  if (params->flags & IsUsed)
+    {
+      wl_resource_post_error (resource,
+			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_ALREADY_USED,
+			      "the given params resource has already been used.");
+      return;
+    }
 
-  /* And force a roundtrip event.  */
-  ForceRoundTrip ();
+  /* Now mark the params resource as inert.  */
+  params->flags |= IsUsed;
 
+  /* And find out how many buffers are attached to the temporary set,
+     along with which modifiers are set.  */
+  num_buffers = ExistingModifier (params, &mod_high, &mod_low);
+
+  if (!num_buffers)
+    {
+      wl_resource_post_error (resource,
+			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE,
+			      "no fds were attached to this resource's temporary set");
+      goto inert_error;
+    }
+
+  if (params->entries[0].fd == -1)
+    {
+      wl_resource_post_error (resource,
+			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE,
+			      "no fd attached for plane 0 in the temporary set");
+      goto inert_error;
+    }
+
+  if ((params->entries[3].fd >= 0 || params->entries[2].fd >= 0)
+      && (params->entries[2].fd == -1 || params->entries[1].fd == -1))
+    {
+      wl_resource_post_error (resource,
+			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE,
+			      "gap in planes attached to temporary set");
+      goto inert_error;
+    }
+
+  if (width < 0 || height < 0 || width > 65535 || height > 65535)
+    {
+      wl_resource_post_error (resource,
+			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_OUT_OF_BOUNDS,
+			      "size out of bounds for X server");
+      goto inert_error;
+    }
+
+  /* Check that the client did not define any invalid flags.  */
+
+  all_flags = (ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_Y_INVERT
+	       | ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_INTERLACED
+	       | ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_BOTTOM_FIRST);
+
+  if (flags & ~all_flags)
+    {
+      wl_resource_post_error (resource,
+			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT,
+			      "invalid dmabuf flags: %u", flags);
+      goto inert_error;
+    }
+
+  /* Now, see if the format and modifier pair specified is supported.
+     If it is not, post an error for version 4 resources, and fail
+     creation for earlier ones.  */
+  if (!IsFormatSupported (format, mod_high, mod_low))
+    {
+      if (wl_resource_get_version (resource) >= 4)
+	wl_resource_post_error (resource,
+				ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT,
+				"invalid format/modifiers specified for version 4"
+				" resource");
+      else
+	zwp_linux_buffer_params_v1_send_failed (resource);
+
+      goto inert_error;
+    }
+
+  /* Clear the buffer attributes structure.  It has to be initialized
+     even if not completely used.  */
+
+  memset (&attributes, 0, sizeof attributes);
+
+  /* Copy the file descriptors and other plane-specific information
+     into the buffer attributes structure.  They are not closed here;
+     the renderer should do that itself upon both success and
+     failure.  */
+
+  for (i = 0; i < num_buffers; ++i)
+    {
+      attributes.fds[i] = params->entries[i].fd;
+      attributes.strides[i] = params->entries[i].stride;
+      attributes.offsets[i] = params->entries[i].offset;
+    }
+
+  /* Provide the specified modifier in the buffer attributes
+     structure.  */
+  attributes.modifier = ((uint64_t) mod_high << 32) | mod_low;
+
+  /* Set the number of planes specified.  */
+  attributes.n_planes = num_buffers;
+
+  /* And the dimensions of the buffer.  */
+  attributes.width = width;
+  attributes.height = height;
+
+  /* The format.  */
+  attributes.drm_format = format;
+
+  /* The flags.  */
+  attributes.flags = flags;
+
+  /* Set params->width and params->height.  They are used by
+     CreateBufferFor.  */
+  params->width = width;
+  params->height = height;
+
+  /* Mark params as callback and post asynchronous creation.  This is
+     so that the parameters will not be destroyed until one of the
+     callback functions are called.  */
+  params->flags |= IsCallbackData;
+
+  /* Post asynchronous creation and return.  */
+  RenderBufferFromDmaBufAsync (&attributes, CreateSucceeded,
+			       CreateFailed, params);
   return;
 
-  CreateFooter;
+ inert_error:
+  /* We must also close every file descriptor attached here, as XCB
+     has not done that for us yet.  */
+  CloseFdsEarly (params);
 }
 
 static void
 CreateImmed (struct wl_client *client, struct wl_resource *resource, uint32_t id,
 	     int32_t width, int32_t height, uint32_t format, uint32_t flags)
 {
-  xcb_void_cookie_t check_cookie;
-  xcb_generic_error_t *error;
+  BufferParams *params;
+  DmaBufAttributes attributes;
+  Bool error;
+  int num_buffers, i;
+  uint32_t mod_high, mod_low;
+  uint32_t all_flags;
+  RenderBuffer buffer;
 
-  CreateHeader;
+  params = wl_resource_get_user_data (resource);
 
-  /* Instead of creating buffers asynchronously, check for failures
-     immediately.  */
-
-  check_cookie
-    = xcb_dri3_pixmap_from_buffers_checked (compositor.conn, params->pixmap,
-					    DefaultRootWindow (compositor.display),
-					    num_buffers, params->width, params->height,
-					    params->entries[0].offset,
-					    params->entries[0].stride,
-					    params->entries[1].offset,
-					    params->entries[1].stride,
-					    params->entries[2].offset,
-					    params->entries[2].stride,
-					    params->entries[3].offset,
-					    params->entries[3].stride, depth, bpp,
-					    (uint64_t) mod_high << 31 | mod_low, allfds);
-  error = xcb_request_check (compositor.conn, check_cookie);
-
-  /* A platform-specific error occured creating this buffer.
-     It is easiest to implement this by sending INVALID_WL_BUFFER.  */
-  if (error)
+  if (params->flags & IsUsed)
     {
       wl_resource_post_error (resource,
-			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_WL_BUFFER,
-			      "platform specific error: response code %u, error code %u,"
-			      " serial %u, xid %u, minor %u, major %u", error->response_type,
-			      error->error_code, error->sequence, error->resource_id,
-			      error->minor_code, error->major_code);
-      free (error);
+			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_ALREADY_USED,
+			      "the given params resource has already been used.");
+      return;
+    }
+
+  /* Now mark the params resource as inert.  */
+  params->flags |= IsUsed;
+
+  /* And find out how many buffers are attached to the temporary set,
+     along with which modifiers are set.  */
+  num_buffers = ExistingModifier (params, &mod_high, &mod_low);
+
+  if (!num_buffers)
+    {
+      wl_resource_post_error (resource,
+			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE,
+			      "no fds were attached to this resource's temporary set");
+      goto inert_error;
+    }
+
+  if (params->entries[0].fd == -1)
+    {
+      wl_resource_post_error (resource,
+			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE,
+			      "no fd attached for plane 0 in the temporary set");
+      goto inert_error;
+    }
+
+  if ((params->entries[3].fd >= 0 || params->entries[2].fd >= 0)
+      && (params->entries[2].fd == -1 || params->entries[1].fd == -1))
+    {
+      wl_resource_post_error (resource,
+			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE,
+			      "gap in planes attached to temporary set");
+      goto inert_error;
+    }
+
+  if (width < 0 || height < 0 || width > 65535 || height > 65535)
+    {
+      wl_resource_post_error (resource,
+			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_OUT_OF_BOUNDS,
+			      "size out of bounds for X server");
+      goto inert_error;
+    }
+
+  /* Check that the client did not define any invalid flags.  */
+
+  all_flags = (ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_Y_INVERT
+	       | ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_INTERLACED
+	       | ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_BOTTOM_FIRST);
+
+  if (flags & ~all_flags)
+    {
+      wl_resource_post_error (resource,
+			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT,
+			      "invalid dmabuf flags: %u", flags);
+      goto inert_error;
+    }
+
+  /* Now, see if the format and modifier pair specified is supported.
+     If it is not, post an error for version 4 resources, and fail
+     creation for earlier ones.  */
+  if (!IsFormatSupported (format, mod_high, mod_low))
+    {
+      if (wl_resource_get_version (resource) >= 4)
+	wl_resource_post_error (resource,
+				ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT,
+				"invalid format/modifiers specified for version 4"
+				" resource");
+      else
+	zwp_linux_buffer_params_v1_send_failed (resource);
+
+      goto inert_error;
+    }
+
+  /* Clear the buffer attributes structure.  It has to be initialized
+     even if not completely used.  */
+
+  memset (&attributes, 0, sizeof attributes);
+
+  /* Copy the file descriptors and other plane-specific information
+     into the buffer attributes structure.  They are not closed here;
+     the renderer should do that itself upon both success and
+     failure.  */
+
+  for (i = 0; i < num_buffers; ++i)
+    {
+      attributes.fds[i] = params->entries[i].fd;
+      attributes.strides[i] = params->entries[i].stride;
+      attributes.offsets[i] = params->entries[i].offset;
+    }
+
+  /* Provide the specified modifier in the buffer attributes
+     structure.  */
+  attributes.modifier = ((uint64_t) mod_high << 32) | mod_low;
+
+  /* Set the number of planes specified.  */
+  attributes.n_planes = num_buffers;
+
+  /* And the dimensions of the buffer.  */
+  attributes.width = width;
+  attributes.height = height;
+
+  /* The format.  */
+  attributes.drm_format = format;
+
+  /* The flags.  */
+  attributes.flags = flags;
+
+  /* Set params->width and params->height.  They are used by
+     CreateBufferFor.  */
+  params->width = width;
+  params->height = height;
+
+  /* Now, try to create the buffer.  Send failed should it actually
+     fail.  */
+  error = False;
+  buffer = RenderBufferFromDmaBuf (&attributes, &error);
+
+  if (error)
+    {
+      /* The fds should have been closed by the renderer.  */
+      zwp_linux_buffer_params_v1_send_failed (resource);
     }
   else
-    /* Otherwise, the fds were successfully imported into the X
-       server.  */
-    CreateBufferFor (params, id);
+    /* Otherwise, buffer creation was successful.  Create the buffer
+       for the id.  */
+    CreateBufferFor (params, buffer, id);
 
   return;
 
-  CreateFooter;
+ inert_error:
+  /* We must also close every file descriptor attached here, as XCB
+     has not done that for us yet.  */
+  CloseFdsEarly (params);
 }
 
 static struct zwp_linux_buffer_params_v1_interface zwp_linux_buffer_params_v1_impl =
@@ -1035,157 +930,33 @@ static struct zwp_linux_dmabuf_v1_interface zwp_linux_dmabuf_v1_impl =
     .get_surface_feedback = GetSurfaceFeedback,
   };
 
-static DrmFormatInfo *
-FindFormatMatching (XRenderPictFormat *format)
-{
-  unsigned long alpha, red, green, blue;
-  int i;
-
-  if (format->type != PictTypeDirect)
-    /* No DRM formats are colormapped.  */
-    return NULL;
-
-  alpha = format->direct.alphaMask << format->direct.alpha;
-  red = format->direct.redMask << format->direct.red;
-  green = format->direct.greenMask << format->direct.green;
-  blue = format->direct.blueMask << format->direct.blue;
-
-  for (i = 0; i < ArrayElements (all_formats); ++i)
-    {
-      if (all_formats[i].depth == format->depth
-	  && all_formats[i].red == red
-	  && all_formats[i].green == green
-	  && all_formats[i].blue == blue
-	  && all_formats[i].alpha == alpha)
-	return &all_formats[i];
-    }
-
-  return NULL;
-}
-
-static void
-FindSupportedModifiers (void)
-{
-  Window root_window;
-  xcb_dri3_get_supported_modifiers_cookie_t *cookies;
-  xcb_dri3_get_supported_modifiers_reply_t *reply;
-  int i, length;
-  uint64_t *mods;
-
-  cookies = alloca (sizeof *cookies * ArrayElements (all_formats));
-  root_window = DefaultRootWindow (compositor.display);
-
-  for (i = 0; i < ArrayElements (all_formats); ++i)
-    {
-      if (all_formats[i].format)
-	cookies[i]
-	  = xcb_dri3_get_supported_modifiers (compositor.conn,
-					      root_window, all_formats[i].depth,
-					      all_formats[i].bits_per_pixel);
-    }
-
-  for (i = 0; i < ArrayElements (all_formats); ++i)
-    {
-      if (!all_formats[i].format)
-	continue;
-
-      reply = xcb_dri3_get_supported_modifiers_reply (compositor.conn,
-						      cookies[i], NULL);
-
-      if (!reply)
-	continue;
-
-      mods
-	= xcb_dri3_get_supported_modifiers_screen_modifiers (reply);
-      length
-	= xcb_dri3_get_supported_modifiers_screen_modifiers_length (reply);
-
-      all_formats[i].supported_modifiers = XLMalloc (sizeof *mods * length);
-      all_formats[i].n_supported_modifiers = length;
-
-      memcpy (all_formats[i].supported_modifiers, mods,
-	      sizeof *mods * length);
-      free (reply);
-    }
-}
-
-static Bool
-FindSupportedFormats (void)
-{
-  int count;
-  XRenderPictFormat *format;
-  DrmFormatInfo *info;
-  Bool supported;
-
-  count = 0;
-  supported = False;
-
-  do
-    {
-      format = XRenderFindFormat (compositor.display, 0,
-				  NULL, count);
-      count++;
-
-      if (!format)
-	break;
-
-      info = FindFormatMatching (format);
-
-      if (info && !info->format)
-	info->format = format;
-
-      if (info)
-	supported = True;
-    }
-  while (format);
-
-  return supported;
-}
-
-#define ModifierHigh(mod)	((uint64_t) (mod) >> 31 >> 1)
-#define ModifierLow(mod)	((uint64_t) (mod) & 0xffffffff)
-#define Mod(format, i)		((format)->supported_modifiers[i])
-
-static void
-SendModifiers (struct wl_resource *resource, DrmFormatInfo *format)
-{
-  int i;
-
-  for (i = 0; i < format->n_supported_modifiers; ++i)
-    zwp_linux_dmabuf_v1_send_modifier (resource, format->format_code,
-				       ModifierHigh (Mod (format, i)),
-				       ModifierLow (Mod (format, i)));
-}
-
 static void
 SendSupportedFormats (struct wl_resource *resource)
 {
   int i;
-  uint64_t invalid;
+  uint64_t modifier;
 
-  invalid = DRM_FORMAT_MOD_INVALID;
-
-  for (i = 0; i < ArrayElements (all_formats); ++i)
+  for (i = 0; i < n_drm_formats; ++i)
     {
-      /* We consider all formats for which picture formats exist as
-	 supported.  Unfortunately, it seems that the formats DRI3 is
-	 willing to support slightly differs, so trying to create
-	 buffers for some of these formats may fail later.  */
-      if (all_formats[i].format)
+      if (wl_resource_get_version (resource) < 3)
 	{
-	  if (wl_resource_get_version (resource) < 3)
-	    /* Send a legacy format message.  */
-	    zwp_linux_dmabuf_v1_send_format (resource,
-					     all_formats[i].format_code);
-	  else
-	    {
-	      zwp_linux_dmabuf_v1_send_modifier (resource,
-						 all_formats[i].format_code,
-						 ModifierHigh (invalid),
-						 ModifierLow (invalid));
+	  /* Send a legacy format message, but only as long as the
+	     format uses the default (invalid) modifier.  */
 
-	      SendModifiers (resource, &all_formats[i]);
-	    }
+	  if (supported_formats[i].drm_modifier == DRM_FORMAT_MOD_INVALID)
+	    zwp_linux_dmabuf_v1_send_format (resource,
+					     supported_formats[i].drm_format);
+	}
+      else
+	{
+	  /* This client supports modifiers, so send everything.  */
+
+	  modifier = supported_formats[i].drm_modifier;
+
+	  zwp_linux_dmabuf_v1_send_modifier (resource,
+					     supported_formats[i].drm_format,
+					     ModifierHigh (modifier),
+					     ModifierLow (modifier));
 	}
     }
 }
@@ -1208,65 +979,27 @@ HandleBind (struct wl_client *client, void *data,
   wl_resource_set_implementation (resource, &zwp_linux_dmabuf_v1_impl,
 				  NULL, NULL);
 
-  SendSupportedFormats (resource);
+  if (version < 4)
+    /* Versions later than 4 use the format table.  */
+    SendSupportedFormats (resource);
 }
 
 static Bool
 InitDrmDevice (void)
 {
-  xcb_dri3_open_cookie_t cookie;
-  xcb_dri3_open_reply_t *reply;
-  int *fds, fd;
-  struct stat dev_stat;
+  Bool error;
 
-  /* TODO: if this ever calls exec, set FD_CLOEXEC.  TODO TODO
-     implement multiple providers.  */
-  cookie = xcb_dri3_open (compositor.conn,
-			  DefaultRootWindow (compositor.display),
-			  None);
-  reply = xcb_dri3_open_reply (compositor.conn, cookie, NULL);
+  error = False;
 
-  if (!reply)
-    return False;
-
-  fds = xcb_dri3_open_reply_fds (compositor.conn, reply);
-
-  if (!fds)
-    {
-      free (reply);
-      return False;
-    }
-
-  fd = fds[0];
-
-  if (fstat (fd, &dev_stat) != 0)
-    {
-      close (fd);
-      free (reply);
-
-      return False;
-    }
-
-  if (dev_stat.st_rdev)
-    drm_device_node = dev_stat.st_rdev;
-  else
-    {
-      close (fd);
-      free (reply);
-
-      return False;
-    }
-
-  close (fd);
-  free (reply);
-
-  return True;
+  /* This can either be a master node or a render node.  */
+  drm_device_node = RenderGetRenderDevice (&error);
+  return !error;
 }
 
 static ssize_t
 WriteFormatTable (void)
 {
-  int fd, i, m;
+  int fd, i;
   ssize_t written;
   FormatModifierPair pair;
 
@@ -1285,21 +1018,17 @@ WriteFormatTable (void)
     {
       fprintf (stderr, "Failed to allocate format table fd. "
 	       "Hardware acceleration will probably be unavailable.\n");
-      return 1;
+      return -1;
     }
 
   written = 0;
 
   /* Write each format-modifier pair.  */
-  for (i = 0; i < ArrayElements (all_formats); ++i)
+  for (i = 0; i < n_drm_formats; ++i)
     {
-      if (!all_formats[i].format)
-	continue;
-
-      /* First, send the default implicit modifier pair.  */
-      pair.format = all_formats[i].format_code;
+      pair.format = supported_formats[i].drm_format;
       pair.padding = 0;
-      pair.modifier = DRM_FORMAT_MOD_INVALID;
+      pair.modifier = supported_formats[i].drm_modifier;
 
       if (write (fd, &pair, sizeof pair) != sizeof pair)
 	/* Writing the modifier pair failed.  Punt.  */
@@ -1307,18 +1036,6 @@ WriteFormatTable (void)
 
       /* Now tell the caller how much was written.  */
       written += sizeof pair;
-
-      /* Next, write all the modifier pairs.  */
-      for (m = 0; m < all_formats[i].n_supported_modifiers; ++m)
-	{
-	  pair.modifier = all_formats[i].supported_modifiers[m];
-
-	  if (write (fd, &pair, sizeof pair) != sizeof pair)
-	    /* Writing this pair failed, punt.  */
-	    goto cancel;
-
-	  written += sizeof pair;
-	}
     }
 
   format_table_fd = fd;
@@ -1329,32 +1046,30 @@ WriteFormatTable (void)
   return -1;
 }
 
-static void
-ReallyInitDmabuf (void)
+static Bool
+ReadSupportedFormats (void)
 {
-  XSetWindowAttributes attrs;
-  size_t size;
+  /* Read supported formats from the renderer.  If none are supported,
+     don't initialize dmabuf.  */
+  supported_formats = RenderGetDrmFormats (&n_drm_formats);
 
-  if (!FindSupportedFormats ())
-    {
-      fprintf (stderr, "No supported picture formats were found."
-	       " Hardware acceleration will not be available.\n");
-      return;
-    }
+  return n_drm_formats > 0;
+}
 
-  /* Now look up which modifiers are supported for what formats.  */
-  FindSupportedModifiers ();
+void
+XLInitDmabuf (void)
+{
+  ssize_t size;
+
+  /* First, initialize supported formats.  */
+  if (!ReadSupportedFormats ())
+    return;
 
   /* And try to create the format table.  */
   size = WriteFormatTable ();
 
   /* Create an unmapped, InputOnly window, that is used to receive
      roundtrip events.  */
-  attrs.override_redirect = True;
-  round_trip_window = XCreateWindow (compositor.display,
-				     DefaultRootWindow (compositor.display),
-				     -1, -1, 1, 1, 0, CopyFromParent, InputOnly,
-				     CopyFromParent, CWOverrideRedirect, &attrs);
 
   global_dmabuf = wl_global_create (compositor.wl_display,
 				    &zwp_linux_dmabuf_v1_interface,
@@ -1365,44 +1080,4 @@ ReallyInitDmabuf (void)
 
   /* If the format table was successfully created, set its size.  */
   format_table_size = size;
-
-  /* Initialize the sentinel node for buffer creation.  */
-  pending_success.next = &pending_success;
-  pending_success.last = &pending_success;
-}
-
-void
-XLInitDmabuf (void)
-{
-  xcb_dri3_query_version_cookie_t cookie;
-  xcb_dri3_query_version_reply_t *reply;
-  const xcb_query_extension_reply_t *ext;
-
-  ext = xcb_get_extension_data (compositor.conn, &xcb_dri3_id);
-  reply = NULL;
-
-  if (ext && ext->present)
-    {
-      cookie = xcb_dri3_query_version (compositor.conn, 1, 2);
-      reply = xcb_dri3_query_version_reply (compositor.conn, cookie,
-					    NULL);
-
-      if (!reply)
-	goto error;
-
-      if (reply->major_version < 1
-	  || (reply->major_version == 1
-	      && reply->minor_version < 2))
-	goto error;
-
-      dri3_opcode = ext->major_opcode;
-      ReallyInitDmabuf ();
-    }
-  else
-  error:
-    fprintf (stderr, "Warning: the X server does not support a new enough version of"
-	     " the DRI3 extension.\nHardware acceleration will not be available.\n");
-
-  if (reply)
-    free (reply);
 }

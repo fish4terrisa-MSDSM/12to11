@@ -67,6 +67,18 @@ variable, if set, forces ConfigureNotify events from the window
 manager to be handled directly, without waiting some time for a
 corresponding _NET_WM_STATE event to arrive.  This is only
 useful for debugging the window resizing logic.
+.PP
+The
+.B RENDERER
+variable, if set, controls the rendering backend used by the
+protocol translator.  When set to
+.I help
+it prints a list of available rendering backends instead.
+.PP
+The
+.B RENDER_VISUAL
+variable, if set to a number, contains the ID of the visual used
+when the EGL rendering backend is in use.
 .SH BUGS
 There is a hard to catch bug where Wayland programs leaving the
 fullscreen or maximized state may abruptly return to their maximized

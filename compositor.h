@@ -94,6 +94,271 @@ typedef struct _PDataSource PDataSource;
 
 extern Compositor compositor;
 
+/* Defined in renderer.c.  */
+
+typedef struct _RenderFuncs RenderFuncs;
+typedef struct _BufferFuncs BufferFuncs;
+
+typedef union _RenderTarget RenderTarget;
+typedef union _RenderBuffer RenderBuffer;
+
+typedef struct _DmaBufAttributes DmaBufAttributes;
+typedef struct _SharedMemoryAttributes SharedMemoryAttributes;
+
+typedef struct _DrmFormat DrmFormat;
+typedef struct _ShmFormat ShmFormat;
+
+typedef enum _Operation Operation;
+
+typedef void (*DmaBufSuccessFunc) (RenderBuffer, void *);
+typedef void (*DmaBufFailureFunc) (void *);
+
+enum _Operation
+  {
+    OperationOver,
+    OperationSource,
+  };
+
+struct _SharedMemoryAttributes
+{
+  /* The format of the buffer.  */
+  uint32_t format;
+
+  /* The offset, width, height, and stride of the buffer.  */
+  int32_t offset, width, height, stride;
+
+  /* The pool file descriptor.  */
+  int fd;
+
+  /* Pointer to a pointer to the pool data.  */
+  void **data;
+
+  /* Size of the pool.  */
+  size_t pool_size;
+};
+
+struct _DmaBufAttributes
+{
+  /* The file descriptors.  They should be closed by the time the
+     callback returns.  */
+  int fds[4];
+
+  /* The modifier.  */
+  uint64_t modifier;
+
+  /* Strides.  */
+  unsigned int strides[4];
+
+  /* Offsets.  */
+  unsigned int offsets[4];
+
+  /* The number of planes set.  */
+  int n_planes;
+
+  /* The width and height of the buffer.  */
+  int width, height;
+
+  /* Flags.  */
+  int flags;
+
+  /* The DRM format of the buffer.  */
+  uint32_t drm_format;
+};
+
+union _RenderTarget
+{
+  /* The XID of the target resource, if that is what it is.  */
+  XID xid;
+
+  /* The pointer to the target, if that is what it is.  */
+  void *pointer;
+};
+
+union _RenderBuffer
+{
+  /* The XID of the buffer resource, if that is what it is.  */
+  XID xid;
+
+  /* The pointer to the buffer, if that is what it is.  */
+  void *pointer;
+};
+
+enum
+  {
+    /* The render target always preserves previously drawn contents;
+       IOW, target_age always returns 0.  */
+    NeverAges = 1,
+  };
+
+struct _RenderFuncs
+{
+  /* Initialize the visual and depth.  */
+  Bool (*init_render_funcs) (void);
+
+  /* Create a rendering target for the given window.  */
+  RenderTarget (*target_from_window) (Window);
+
+  /* Create a rendering target for the given pixmap.  */
+  RenderTarget (*target_from_pixmap) (Pixmap);
+
+  /* Set the target width and height.  This can be NULL.  */
+  void (*note_target_size) (RenderTarget, int, int);
+
+  /* Get an XRender Picture from the given rendering target.  The
+     picture should only be used to create a cursor, and must be
+     destroyed by calling FreePictureFromTarget immediately
+     afterwards.  */
+  Picture (*picture_from_target) (RenderTarget);
+
+  /* Free a picture created that way.  */
+  void (*free_picture_from_target) (Picture);
+
+  /* Destroy the given rendering target.  */
+  void (*destroy_render_target) (RenderTarget);
+
+  /* Begin rendering.  This can be NULL, but if not, must be called
+     before any drawing operations.  */
+  void (*start_render) (RenderTarget);
+
+  /* Fill the target with transparency in the given rectangles.  */
+  void (*fill_boxes_with_transparency) (RenderTarget, pixman_box32_t *, int,
+					int, int);
+
+  /* Clear the given rectangle.  */
+  void (*clear_rectangle) (RenderTarget, int, int, int, int);
+
+  /* Apply a projective transform to the given buffer.  The first
+     argument is a scale factor.  */
+  void (*apply_transform) (RenderBuffer, double);
+
+  /* Composite width, height, from the given buffer onto the given
+     target, at x, y.  The arguments are: buffer, target, operation,
+     source_x, source_y, x, y, width, height.  */
+  void (*composite) (RenderBuffer, RenderTarget, Operation, int, int,
+		     int, int, int, int);
+
+  /* Reset the transform for the given buffer.  */
+  void (*reset_transform) (RenderBuffer);
+
+  /* Finish rendering, and swap changes to display.  May be NULL.  */
+  void (*finish_render) (RenderTarget);
+
+  /* Return the age of the target.  Value is a number not less than
+     -1, describing the "age" of the contents of the target.
+
+     -1 means the buffer contains no valid contents, and must be
+      redrawn from scratch.  0 means the buffer contains the contents
+      at the time of the last call to `finish_render', 1 means the
+      buffer contains the contents at the time of the second last
+      call to `finish_render', and so on.
+
+      Note that when a render target is first created, the renderer
+      may chose to return 0 instead of 1.  */
+  int (*target_age) (RenderTarget);
+
+  /* Some flags.  NeverAges means targets always preserve contents
+     that were previously drawn.  */
+  int flags;
+};
+
+struct _DrmFormat
+{
+  /* The supported DRM format.  */
+  uint32_t drm_format;
+
+  /* The supported modifier.  */
+  uint64_t drm_modifier;
+
+  /* Backend specific flags associated with this DRM format.  */
+  int flags;
+};
+
+struct _ShmFormat
+{
+  /* The Wayland type code of the format.  */
+  uint32_t format;
+};
+
+struct _BufferFuncs
+{
+  /* Get DRM formats and modifiers supported by this renderer.  Return
+     0 formats if nothing is supported.  */
+  DrmFormat *(*get_drm_formats) (int *);
+
+  /* Get the DRM device node.  */
+  dev_t (*get_render_device) (Bool *);
+
+  /* Get SHM formats supported by this renderer.  */
+  ShmFormat *(*get_shm_formats) (int *);
+
+  /* Create a buffer from the given dma-buf attributes.  */
+  RenderBuffer (*buffer_from_dma_buf) (DmaBufAttributes *, Bool *);
+
+  /* Create a buffer from the given dma-buf attributes
+     asynchronously.  */
+  void (*buffer_from_dma_buf_async) (DmaBufAttributes *, DmaBufSuccessFunc,
+				     DmaBufFailureFunc, void *);
+
+  /* Create a buffer from the given shared memory attributes.  */
+  RenderBuffer (*buffer_from_shm) (SharedMemoryAttributes *, Bool *);
+
+  /* Validate the shared memory attributes passed as args.  Return
+     false if they are not valid.  */
+  Bool (*validate_shm_params) (uint32_t, uint32_t, uint32_t, int32_t,
+			       int32_t, size_t);
+
+  /* Free a buffer created from shared memory.  */
+  void (*free_shm_buffer) (RenderBuffer);
+
+  /* Free a dma-buf buffer.  */
+  void (*free_dmabuf_buffer) (RenderBuffer);
+
+  /* Notice that the given buffer has been damaged.  May be NULL.  If
+     the given NULL damage, assume that the entire buffer has been
+     damaged.  Must be called at least once before any rendering can
+     be performed on the buffer.  */
+  void (*update_buffer_for_damage) (RenderBuffer, pixman_region32_t *);
+
+  /* Called during renderer initialization.  */
+  void (*init_buffer_funcs) (void);
+};
+
+extern int renderer_flags;
+
+extern void RegisterStaticRenderer (const char *, RenderFuncs *,
+				    BufferFuncs *);
+extern void InitRenderers (void);
+
+extern RenderTarget RenderTargetFromWindow (Window);
+extern RenderTarget RenderTargetFromPixmap (Pixmap);
+extern void RenderNoteTargetSize (RenderTarget, int, int);
+extern Picture RenderPictureFromTarget (RenderTarget);
+extern void RenderFreePictureFromTarget (Picture);
+extern void RenderDestroyRenderTarget (RenderTarget);
+extern void RenderStartRender (RenderTarget);
+extern void RenderFillBoxesWithTransparency (RenderTarget, pixman_box32_t *,
+					     int, int, int);
+extern void RenderClearRectangle (RenderTarget, int, int, int, int);
+extern void RenderApplyTransform (RenderBuffer, double);
+extern void RenderComposite (RenderBuffer, RenderTarget, Operation, int,
+			     int, int, int, int, int);
+extern void RenderResetTransform (RenderBuffer);
+extern void RenderFinishRender (RenderTarget);
+extern int RenderTargetAge (RenderTarget);
+
+extern DrmFormat *RenderGetDrmFormats (int *);
+extern dev_t RenderGetRenderDevice (Bool *);
+extern ShmFormat *RenderGetShmFormats (int *);
+extern RenderBuffer RenderBufferFromDmaBuf (DmaBufAttributes *, Bool *);
+extern void RenderBufferFromDmaBufAsync (DmaBufAttributes *, DmaBufSuccessFunc,
+					 DmaBufFailureFunc, void *);
+extern RenderBuffer RenderBufferFromShm (SharedMemoryAttributes *, Bool *);
+extern Bool RenderValidateShmParams (uint32_t, uint32_t, uint32_t, int32_t,
+				     int32_t, size_t);
+extern void RenderFreeShmBuffer (RenderBuffer);
+extern void RenderFreeDmabufBuffer (RenderBuffer);
+extern void RenderUpdateBufferForDamage (RenderBuffer, pixman_region32_t *);
+
 /* Defined in run.c.  */
 
 typedef struct _PollFd WriteFd;
@@ -189,6 +454,9 @@ extern Time XLGetServerTimeRoundtrip (void);
 extern RootWindowSelection *XLSelectInputFromRootWindow (unsigned long);
 extern void XLDeselectInputFromRootWindow (RootWindowSelection *);
 
+extern void XLRecordBusfault (void *, size_t);
+extern void XLRemoveBusfault (void *);
+
 /* Defined in compositor.c.  */
 
 extern void XLInitCompositor (void);
@@ -209,8 +477,7 @@ struct _ExtBufferFuncs
 {
   void (*retain) (ExtBuffer *);
   void (*dereference) (ExtBuffer *);
-  Picture (*get_picture) (ExtBuffer *);
-  Pixmap (*get_pixmap) (ExtBuffer *);
+  RenderBuffer (*get_buffer) (ExtBuffer *);
   unsigned int (*width) (ExtBuffer *);
   unsigned int (*height) (ExtBuffer *);
   void (*release) (ExtBuffer *);
@@ -228,8 +495,7 @@ struct _ExtBuffer
 
 extern void XLRetainBuffer (ExtBuffer *);
 extern void XLDereferenceBuffer (ExtBuffer *);
-extern Picture XLPictureFromBuffer (ExtBuffer *);
-extern Pixmap XLPixmapFromBuffer (ExtBuffer *);
+extern RenderBuffer XLRenderBufferFromBuffer (ExtBuffer *);
 extern unsigned int XLBufferWidth (ExtBuffer *);
 extern unsigned int XLBufferHeight (ExtBuffer *);
 extern void XLReleaseBuffer (ExtBuffer *);
@@ -255,7 +521,7 @@ extern void SubcompositorInit (void);
 extern Subcompositor *MakeSubcompositor (void);
 extern View *MakeView (void);
 
-extern void SubcompositorSetTarget (Subcompositor *, Picture);
+extern void SubcompositorSetTarget (Subcompositor *, RenderTarget *);
 extern void SubcompositorInsert (Subcompositor *, View *);
 extern void SubcompositorInsertBefore (Subcompositor *, View *, View *);
 extern void SubcompositorInsertAfter (Subcompositor *, View *, View *);
@@ -883,8 +1149,6 @@ extern Cursor InitDefaultCursor (void);
 /* Defined in dmabuf.c.  */
 
 extern void XLInitDmabuf (void);
-extern Bool XLHandleErrorForDmabuf (XErrorEvent *);
-extern Bool XLHandleOneXEventForDmabuf (XEvent *);
 
 /* Defined in select.c.  */
 
@@ -985,6 +1249,20 @@ extern Bool XLPDataSourceHasTarget (PDataSource *, const char *);
 extern int XLPDataSourceTargetCount (PDataSource *);
 extern void XLPDataSourceGetTargets (PDataSource *, Atom *);
 
+/* Defined in picture_renderer.c.  */
+
+extern Bool HandleErrorForPictureRenderer (XErrorEvent *);
+extern Bool HandleOneXEventForPictureRenderer (XEvent *);
+extern void InitPictureRenderer (void);
+
+#ifdef HaveEglSupport
+
+/* Defined in egl.c.  */
+
+extern void InitEgl (void);
+
+#endif
+
 /* Utility functions that don't belong in a specific file.  */
 
 #define ArrayElements(arr) (sizeof (arr) / sizeof (arr)[0])
@@ -998,6 +1276,12 @@ extern void XLPDataSourceGetTargets (PDataSource *, Atom *);
 #define BoxHeight(box)	(BoxEndY (box) - BoxStartY (box) + 1)
 
 #define SafeCmp(n1, n2) (((n1) > (n2)) - ((n1) < (n2)))
+
+#if __GNUC__ >= 7
+#define Fallthrough __attribute__ ((fallthrough))
+#else
+#define Fallthrough ((void) 0)
+#endif
 
 /* Taken from intprops.h in gnulib.  */
 

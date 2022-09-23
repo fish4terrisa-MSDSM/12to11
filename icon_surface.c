@@ -42,8 +42,8 @@ struct _IconSurface
   /* The window used by this role.  */
   Window window;
 
-  /* The picture associated with this role.  */
-  Picture picture;
+  /* The rendering target associated with this role.  */
+  RenderTarget target;
 
   /* The subcompositor associated with this role.  */
   Subcompositor *subcompositor;
@@ -87,7 +87,7 @@ ReleaseBacking (IconSurface *icon)
     return;
 
   /* Release all allocated resources.  */
-  XRenderFreePicture (compositor.display, icon->picture);
+  RenderDestroyRenderTarget (icon->target);
   XDestroyWindow (compositor.display, icon->window);
 
   /* And the association.  */
@@ -372,7 +372,6 @@ XLGetIconSurface (Surface *surface)
 {
   IconSurface *role;
   XSetWindowAttributes attrs;
-  XRenderPictureAttributes picture_attrs;
   unsigned int flags;
 
   role = XLCalloc (1, sizeof *role);
@@ -410,20 +409,15 @@ XLGetIconSurface (Surface *surface)
 		   PropModeReplace,
 		   (unsigned char *) &_NET_WM_WINDOW_TYPE_DND, 1);
 
-  /* Create a picture associated with the window.  */
-  role->picture = XRenderCreatePicture (compositor.display,
-					role->window,
-					/* TODO: get this from the
-					   visual instead.  */
-					compositor.argb_format,
-					0, &picture_attrs);
+  /* Create a target associated with the window.  */
+  role->target = RenderTargetFromWindow (role->window);
 
   /* Create a subcompositor associated with the window.  */
   role->subcompositor = MakeSubcompositor ();
   role->clock = XLMakeFrameClockForWindow (role->window);
 
   /* Set the subcompositor target and some callbacks.  */
-  SubcompositorSetTarget (role->subcompositor, role->picture);
+  SubcompositorSetTarget (role->subcompositor, &role->target);
   SubcompositorSetBoundsCallback (role->subcompositor,
 				  NoteBounds, role);
 
