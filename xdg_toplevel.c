@@ -1520,6 +1520,21 @@ SetParent (struct wl_client *client, struct wl_resource *resource,
     UpdateParent (child, NULL);
   else
     UpdateParent (child, parent);
+
+  /* Now, verify that no circular loop has formed in the window
+     hierarchy.  */
+
+  parent = child->transient_for;
+  for (; parent; parent = parent->transient_for)
+    {
+      /* If parent becomes child again, then we know there is a
+	 circular reference somewhere.  In that case, post a fatal
+	 protocol error.  */
+
+      if (child == parent)
+	wl_resource_post_error (resource, XDG_TOPLEVEL_ERROR_INVALID_PARENT,
+				"trying to set parent in a circular fashion");
+    }
 }
 
 static void

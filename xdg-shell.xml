@@ -608,6 +608,8 @@
     <enum name="error">
       <entry name="invalid_resize_edge" value="0" summary="provided value is
         not a valid variant of the resize_edge enum"/>
+      <entry name="invalid_parent" value="1"
+        summary="invalid parent toplevel"/>
     </enum>
 
     <request name="set_parent">
@@ -628,6 +630,10 @@
 	the now-unmapped surface. If the now-unmapped surface has no parent,
 	its children's parent is unset. If the now-unmapped surface becomes
 	mapped again, its parent-child relationship is not restored.
+
+	The parent toplevel must not be one of the child toplevel's
+	descendants, and the parent must be different from the child toplevel,
+	otherwise the invalid_parent protocol error is raised.
       </description>
       <arg name="parent" type="object" interface="xdg_toplevel" allow-null="true"/>
     </request>

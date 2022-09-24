@@ -350,12 +350,7 @@ Commit (Role *role, Surface *surface, XdgRoleImplementation *impl)
   popup = PopupFromRoleImpl (impl);
 
   if (popup->state & StatePendingPosition)
-    {
-      popup->x = popup->pending_x;
-      popup->y = popup->pending_y;
-
-      MoveWindow (popup);
-    }
+    MoveWindow (popup);
 
   popup->state &= ~StatePendingPosition;
 
@@ -395,7 +390,11 @@ AckConfigure (Role *role, XdgRoleImplementation *impl, uint32_t serial)
       popup->x = popup->pending_x;
       popup->y = popup->pending_y;
 
+      /* The position has been acked.  Clear that flag.  */
       popup->state &= ~StateAckPosition;
+
+      /* Set a new flag which tells commit to move the popup.  */
+      popup->state |= StatePendingPosition;
       popup->position_serial = 0;
     }
 }
