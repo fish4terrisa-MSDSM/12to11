@@ -653,7 +653,7 @@ SavePendingState (Surface *surface)
 	  && (surface->cached_state.buffer
 	      != surface->current_state.buffer))
 	{
-	  if (surface->role)
+	  if (surface->role && !(renderer_flags & ImmediateRelease))
 	    surface->role->funcs.release_buffer (surface, surface->role,
 						 surface->cached_state.buffer);
 	  else
@@ -721,6 +721,41 @@ SavePendingState (Surface *surface)
 }
 
 static void
+TryEarlyRelease (Surface *surface)
+{
+  ExtBuffer *buffer;
+  RenderBuffer render_buffer;
+
+  /* The rendering backend may have copied the contents of, i.e., a
+     shared memory buffer to a backing texture.  In that case buffers
+     can be released immediately after commit.  Programs such as GTK
+     also rely on the compositor performing such an optimization, or
+     else they will constantly create new buffers to back their back
+     buffer contents.  */
+
+  buffer = surface->current_state.buffer;
+
+  if (!buffer)
+    return;
+
+  /* Get the render buffer.  */
+  render_buffer = XLRenderBufferFromBuffer (buffer);
+
+  /* Don't release immediately if not okay.  */
+  if (!RenderCanReleaseNow (render_buffer))
+    return;
+
+  /* Release the buffer now.  */
+  if (surface->role && !(renderer_flags & ImmediateRelease))
+    surface->role->funcs.release_buffer (surface, surface->role, buffer);
+  else
+    XLReleaseBuffer (buffer);
+
+  /* Set the flag saying that the buffer has been released.  */
+  surface->current_state.pending |= BufferAlreadyReleased;
+}
+
+static void
 InternalCommit (Surface *surface, State *pending)
 {
   FrameCallback *start, *end;
@@ -728,14 +763,21 @@ InternalCommit (Surface *surface, State *pending)
   if (pending->pending & PendingBuffer)
     {
       if ((surface->current_state.buffer != pending->buffer)
+	  /* The buffer may already released if its contents were
+	     copied, i.e. uploaded to a texture, during updates.  */
+	  && !(surface->current_state.pending & BufferAlreadyReleased)
 	  && surface->current_state.buffer)
 	{
-	  if (surface->role)
+	  if (surface->role && !(renderer_flags & ImmediateRelease))
 	    surface->role->funcs.release_buffer (surface, surface->role,
 						 surface->current_state.buffer);
 	  else
 	    XLReleaseBuffer (surface->current_state.buffer);
 	}
+
+      /* Clear this flag now, since the attached buffer has
+	 changed.  */
+      surface->current_state.pending &= ~BufferAlreadyReleased;
 
       if (pending->buffer)
 	{
@@ -812,6 +854,8 @@ InternalCommit (Surface *surface, State *pending)
 	}
     }
 
+  /* Run commit callbacks.  This tells synchronous subsurfaces to
+     update.  */
   RunCommitCallbacks (surface);
 
   if (surface->subsurfaces)
@@ -829,6 +873,11 @@ InternalCommit (Surface *surface, State *pending)
 
   surface->role->funcs.commit (surface, surface->role);
   pending->pending = PendingNone;
+
+  /* Release the attached buffer if possible.  The role may have
+     called SubcompositorUpdate, leading to the buffer contents being
+     copied.  */
+  TryEarlyRelease (surface);
 }
 
 static void

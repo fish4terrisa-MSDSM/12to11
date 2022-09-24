@@ -1913,16 +1913,20 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 					 -list->view->abs_y);
 	    }
 
+	  /* Update the attached buffer from the damage.  This is only
+	     required on some backends, where we have to upload data
+	     from a shared memory buffer to the graphics hardware.
+
+	     The update is performed even when there is no damage,
+	     because the initial data might need to be uploaded.
+	     However, the function does not perform partial updates
+	     when the damage region is empty.  */
+
+	  buffer = XLRenderBufferFromBuffer (view->buffer);
+	  RenderUpdateBufferForDamage (buffer, &list->view->damage);
+
 	  if (pixman_region32_not_empty (&list->view->damage))
 	    {
-	      /* Update the attached buffer from the damage.  This is
-		 only required on some backends, where we have to
-		 upload data from a shared memory buffer to the
-		 graphics hardware.  */
-
-	      buffer = XLRenderBufferFromBuffer (view->buffer);
-	      RenderUpdateBufferForDamage (buffer, &list->view->damage);
-
 	      /* Translate the region into the subcompositor
 		 coordinate space.  */
 	      pixman_region32_translate (&list->view->damage,

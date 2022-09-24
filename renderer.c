@@ -233,6 +233,12 @@ RenderUpdateBufferForDamage (RenderBuffer buffer, pixman_region32_t *damage)
   buffer_funcs.update_buffer_for_damage (buffer, damage);
 }
 
+Bool
+RenderCanReleaseNow (RenderBuffer buffer)
+{
+  return buffer_funcs.can_release_now (buffer);
+}
+
 void
 RegisterStaticRenderer (const char *name,
 			RenderFuncs *render_funcs,
@@ -260,6 +266,12 @@ InstallRenderer (Renderer *renderer)
   if (!render_funcs.init_render_funcs ())
     /* If this returns false, then the renderer cannot be used.  */
     return False;
+
+  /* Next, initialize the colormap before init_buffer_funcs.  */
+  compositor.colormap
+    = XCreateColormap (compositor.display,
+		       DefaultRootWindow (compositor.display),
+		       compositor.visual, AllocNone);
 
   buffer_funcs.init_buffer_funcs ();
 

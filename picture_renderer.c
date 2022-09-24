@@ -418,17 +418,41 @@ FindSupportedFormats (void)
   return supported;
 }
 
+static Window
+MakeCheckWindow (void)
+{
+  XSetWindowAttributes attrs;
+  unsigned long flags;
+
+  /* Make an override-redirect window to use as the icon surface.  */
+  flags = (CWColormap | CWBorderPixel | CWEventMask
+	   | CWOverrideRedirect);
+  attrs.colormap = compositor.colormap;
+  attrs.border_pixel = border_pixel;
+  attrs.event_mask = (ExposureMask | StructureNotifyMask);
+  attrs.override_redirect = 1;
+
+  return XCreateWindow (compositor.display,
+			DefaultRootWindow (compositor.display),
+			0, 0, 1, 1, 0, compositor.n_planes,
+			InputOutput, compositor.visual, flags,
+			&attrs);
+}
+
 static void
 FindSupportedModifiers (int *pair_count_return)
 {
-  Window root_window;
+  Window check_window;
   xcb_dri3_get_supported_modifiers_cookie_t *cookies;
   xcb_dri3_get_supported_modifiers_reply_t *reply;
   int i, length, pair_count;
   uint64_t *mods;
 
   cookies = alloca (sizeof *cookies * ArrayElements (all_formats));
-  root_window = DefaultRootWindow (compositor.display);
+
+  /* Create a temporary window similar to ones surfaces will use to
+     determine which modifiers are supported.  */
+  check_window = MakeCheckWindow ();
   pair_count = 0;
 
   for (i = 0; i < ArrayElements (all_formats); ++i)
@@ -437,7 +461,7 @@ FindSupportedModifiers (int *pair_count_return)
 	{
 	  cookies[i]
 	    = xcb_dri3_get_supported_modifiers (compositor.conn,
-						root_window, all_formats[i].depth,
+						check_window, all_formats[i].depth,
 						all_formats[i].bits_per_pixel);
 
 	  /* pair_count is the number of format-modifier pairs that
@@ -446,6 +470,9 @@ FindSupportedModifiers (int *pair_count_return)
 	  pair_count += 1;
 	}
     }
+
+  /* Delete the temporary window used to query for modifiers.  */
+  XDestroyWindow (compositor.display, check_window);
 
   for (i = 0; i < ArrayElements (all_formats); ++i)
     {
@@ -1042,6 +1069,12 @@ InitBufferFuncs (void)
     free (reply);
 }
 
+static Bool
+CanReleaseNow (RenderBuffer buffer)
+{
+  return False;
+}
+
 static BufferFuncs picture_buffer_funcs =
   {
     .get_drm_formats = GetDrmFormats,
@@ -1053,6 +1086,7 @@ static BufferFuncs picture_buffer_funcs =
     .validate_shm_params = ValidateShmParams,
     .free_shm_buffer = FreeShmBuffer,
     .free_dmabuf_buffer = FreeDmabufBuffer,
+    .can_release_now = CanReleaseNow,
     .init_buffer_funcs = InitBufferFuncs,
   };
 

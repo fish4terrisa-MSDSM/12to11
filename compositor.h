@@ -187,7 +187,9 @@ enum
   {
     /* The render target always preserves previously drawn contents;
        IOW, target_age always returns 0.  */
-    NeverAges = 1,
+    NeverAges	     = 1,
+    /* Buffers attached can always be immediately released.  */
+    ImmediateRelease = 1 << 2,
   };
 
 struct _RenderFuncs
@@ -319,6 +321,10 @@ struct _BufferFuncs
      be performed on the buffer.  */
   void (*update_buffer_for_damage) (RenderBuffer, pixman_region32_t *);
 
+  /* Return whether or not the buffer contents can be released early,
+     by being copied to an offscreen buffer.  */
+  Bool (*can_release_now) (RenderBuffer);
+
   /* Called during renderer initialization.  */
   void (*init_buffer_funcs) (void);
 };
@@ -358,6 +364,7 @@ extern Bool RenderValidateShmParams (uint32_t, uint32_t, uint32_t, int32_t,
 extern void RenderFreeShmBuffer (RenderBuffer);
 extern void RenderFreeDmabufBuffer (RenderBuffer);
 extern void RenderUpdateBufferForDamage (RenderBuffer, pixman_region32_t *);
+extern Bool RenderCanReleaseNow (RenderBuffer);
 
 /* Defined in run.c.  */
 
@@ -614,6 +621,10 @@ enum
     PendingFrameCallbacks = (1 << 6),
     PendingBufferScale	  = (1 << 7),
     PendingAttachments	  = (1 << 8),
+
+    /* Flags here are stored in `pending' of the current state for
+       space reasons.  */
+    BufferAlreadyReleased = (1 << 19),
   };
 
 struct _FrameCallback
@@ -642,7 +653,8 @@ struct _State
   /* The currently attached buffer.  */
   ExtBuffer *buffer;
 
-  /* What part of this state has been changed.  */
+  /* What part of this state has been changed, and some more
+     flags.  */
   int pending;
 
   /* The scale of this buffer.  */

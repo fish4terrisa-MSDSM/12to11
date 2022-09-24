@@ -23,7 +23,7 @@ main (void)
 void
 main (void)
 {
-  gl_FragColor = vec4 (0.0, 0.0, 0.0, 1.0);
+  gl_FragColor = vec4 (0.0, 0.0, 0.0, 0.0);
 }
 //==
 
@@ -44,12 +44,20 @@ main (void)
 precision mediump float;
 uniform sampler2D texture;
 uniform float scale;
+uniform bool invert_y;
 varying vec2 v_texcoord;
 
 void
 main (void)
 {
-  gl_FragColor = texture2D (texture, v_texcoord / scale);
+  vec2 texcoord;
+
+  texcoord = v_texcoord / scale;
+
+  if (invert_y)
+    texcoord = vec2 (texcoord.x, 1.0 - texcoord.y);
+
+  gl_FragColor = texture2D (texture, texcoord);
 }
 //==
 
@@ -57,13 +65,21 @@ main (void)
 precision mediump float;
 uniform sampler2D texture;
 uniform float scale;
+uniform bool invert_y;
 varying vec2 v_texcoord;
 
 void
 main (void)
 {
+  vec2 texcoord;
+
+  texcoord = v_texcoord / scale;
+
+  if (invert_y)
+    texcoord = vec2 (texcoord.x, 1.0 - texcoord.y);
+
   gl_FragColor = vec4 (texture2D (texture,
-				  v_texcoord / scale).rgb,
+				  texcoord).rgb,
 		       1.0);
 }
 //==
@@ -74,11 +90,19 @@ main (void)
 precision mediump float;
 uniform samplerExternalOES texture;
 uniform float scale;
+uniform bool invert_y;
 varying vec2 v_texcoord;
 
 void
 main (void)
 {
-  gl_FragColor = texture2D (texture, v_texcoord / scale);
+  vec2 texcoord;
+
+  texcoord = v_texcoord / scale;
+
+  if (invert_y)
+    texcoord = vec2 (texcoord.x, 1.0 - texcoord.y);
+
+  gl_FragColor = texture2D (texture, texcoord);
 }
 //==

@@ -33,6 +33,8 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 
+#include "linux-dmabuf-unstable-v1.h"
+
 /* These are flags for the DrmFormats.  */
 
 enum
@@ -108,7 +110,9 @@ struct _FormatInfo
 enum
   {
     IsTextureGenerated = 1,
-    HasAlpha	       = 2,
+    HasAlpha	       = (1 << 2),
+    CanRelease	       = (1 << 3),
+    InvertY	       = (1 << 4),
   };
 
 struct _EglBuffer
@@ -180,6 +184,9 @@ struct _CompositeProgram
 
   /* The index of the scale uniform.  */
   GLuint scale;
+
+  /* The index of the invert_y uniform.  */
+  GLuint invert_y;
 };
 
 /* All known SHM formats.  */
@@ -714,6 +721,8 @@ EglCompileCompositeProgram (CompositeProgram *program,
 					  "texture");
   program->scale = glGetUniformLocation (program->program,
 					 "scale");
+  program->invert_y = glGetUniformLocation (program->program,
+					    "invert_y");
 
   /* Now delete the shaders.  */
   glDeleteShader (vertex);
@@ -1210,6 +1219,7 @@ Composite (RenderBuffer buffer, RenderTarget target,
 
   glUniform1i (program->texture, 0);
   glUniform1f (program->scale, egl_buffer->scale);
+  glUniform1i (program->invert_y, egl_buffer->flags & InvertY);
   glVertexAttribPointer (program->position, 2, GL_FLOAT,
 			 GL_FALSE, 0, verts);
   glVertexAttribPointer (program->texcoord, 2, GL_FLOAT,
@@ -1282,7 +1292,7 @@ static RenderFuncs egl_render_funcs =
     .reset_transform = ResetTransform,
     .finish_render = FinishRender,
     .target_age = TargetAge,
-    .flags = 0,
+    .flags = ImmediateRelease,
   };
 
 static DrmFormat *
@@ -1383,6 +1393,11 @@ BufferFromDmaBuf (DmaBufAttributes *attributes, Bool *error)
   if (!IQueryDmaBufModifiers
       && attributes->modifier != DRM_FORMAT_MOD_INVALID)
     goto error;
+
+  /* Set invert_y based on flags.  */
+  if (attributes->flags
+      & ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_Y_INVERT)
+    buffer->flags |= InvertY;
 
   /* Otherwise, import the buffer now.  */
   attribs[i++] = EGL_WIDTH;
@@ -1836,6 +1851,10 @@ UpdateTexture (EglBuffer *buffer)
 
       /* Unset the row length.  */
       glPixelStorei (GL_UNPACK_ROW_LENGTH_EXT, 0);
+
+      /* The buffer's been copied to the texture.  It can now be
+	 released.  */
+      buffer->flags |= CanRelease;
     }
 
   /* Bind the target to nothing.  */
@@ -1909,6 +1928,10 @@ UpdateShmBufferIncrementally (EglBuffer *buffer, pixman_region32_t *damage)
 
   /* Unbind from the texturing target.  */
   glBindTexture (target, 0);
+
+  /* The buffer's been copied to the texture.  It can now be
+     released.  */
+  buffer->flags |= CanRelease;
 }
 
 static void
@@ -1949,7 +1972,7 @@ UpdateBuffer (RenderBuffer buffer, pixman_region32_t *damage)
       if (egl_buffer->u.type == ShmBuffer)
 	UpdateTexture (egl_buffer);
     }
-  else
+  else if (pixman_region32_not_empty (damage))
     {
       switch (egl_buffer->u.type)
 	{
@@ -1990,6 +2013,23 @@ UpdateBufferForDamage (RenderBuffer buffer, pixman_region32_t *damage)
     UpdateBuffer (buffer, damage);
 }
 
+static Bool
+CanReleaseNow (RenderBuffer buffer)
+{
+  EglBuffer *egl_buffer;
+  Bool rc;
+
+  egl_buffer = buffer.pointer;
+
+  /* Return if texture contents were copied.  */
+  rc = (egl_buffer->flags & CanRelease) != 0;
+
+  /* Clear that flag now.  */
+  egl_buffer->flags &= ~CanRelease;
+
+  return rc;
+}
+
 static BufferFuncs egl_buffer_funcs =
   {
     .get_drm_formats = GetDrmFormats,
@@ -2002,6 +2042,7 @@ static BufferFuncs egl_buffer_funcs =
     .free_shm_buffer = FreeShmBuffer,
     .free_dmabuf_buffer = FreeDmabufBuffer,
     .update_buffer_for_damage = UpdateBufferForDamage,
+    .can_release_now = CanReleaseNow,
     .init_buffer_funcs = InitBufferFuncs,
   };
 

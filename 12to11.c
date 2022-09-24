@@ -28,14 +28,6 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 /* Globals.  */
 Compositor compositor;
 
-static Colormap
-MakeColormap (void)
-{
-  return XCreateColormap (compositor.display,
-			  DefaultRootWindow (compositor.display),
-			  compositor.visual, AllocNone);
-}
-
 static void
 DetermineServerTime (void)
 {
@@ -111,10 +103,6 @@ XLMain (int argc, char **argv)
   /* Initialize renderers immediately after timers and atoms are set
      up.  */
   InitRenderers ();
-
-  /* Set up the colormap.  Initializing renderers should also cause
-     the visual to be set.  */
-  compositor.colormap = MakeColormap ();
 
   XLInitRROutputs ();
   XLInitCompositor ();
