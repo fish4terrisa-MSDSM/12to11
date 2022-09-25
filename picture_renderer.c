@@ -340,6 +340,38 @@ TargetAge (RenderTarget target)
   return 0;
 }
 
+/* At first glance, it seems like this should be easy to support using
+   DRI3 and synchronization extension fences.  Unfortunately, the
+   "fences" used by DRI3 are userspace fences implemented by the
+   xshmfence library, and not Android dma-fences, so there is no
+   straightforward implementation.  */
+
+static RenderFence
+ImportFdFence (int fd, Bool *error)
+{
+  *error = True;
+  return (RenderFence) (XID) None;
+}
+
+static void
+WaitFence (RenderFence fence)
+{
+  /* Unsupported.  */
+}
+
+static void
+DeleteFence (RenderFence fence)
+{
+  /* Unsupported.  */
+}
+
+static int
+GetFinishFence (Bool *error)
+{
+  *error = True;
+  return -1;
+}
+
 static RenderFuncs picture_render_funcs =
   {
     .init_render_funcs = InitRenderFuncs,
@@ -354,6 +386,10 @@ static RenderFuncs picture_render_funcs =
     .composite = Composite,
     .reset_transform = ResetTransform,
     .target_age = TargetAge,
+    .import_fd_fence = ImportFdFence,
+    .wait_fence = WaitFence,
+    .delete_fence = DeleteFence,
+    .get_finish_fence = GetFinishFence,
     .flags = NeverAges,
   };
 

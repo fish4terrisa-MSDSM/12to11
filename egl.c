@@ -321,6 +321,12 @@ static PFNEGLQUERYDISPLAYATTRIBEXTPROC IQueryDisplayAttrib;
 static PFNEGLQUERYDEVICESTRINGEXTPROC IQueryDeviceString;
 static PFNEGLQUERYDMABUFFORMATSEXTPROC IQueryDmaBufFormats;
 static PFNEGLQUERYDMABUFMODIFIERSEXTPROC IQueryDmaBufModifiers;
+static PFNEGLCREATESYNCKHRPROC ICreateSync;
+static PFNEGLDESTROYSYNCKHRPROC IDestroySync;
+static PFNEGLCLIENTWAITSYNCKHRPROC IClientWaitSync;
+static PFNEGLGETSYNCATTRIBKHRPROC IGetSyncAttrib;
+static PFNEGLWAITSYNCKHRPROC IWaitSync;
+static PFNEGLDUPNATIVEFENCEFDANDROIDPROC IDupNativeFenceFD;
 
 /* The EGL display handle.  */
 static EGLDisplay egl_display;
@@ -507,12 +513,24 @@ EglInitFuncs (void)
 	    "EGL_EXT_image_dma_buf_import_modifiers");
   LoadProc (QueryDmaBufModifiers, "EXT",
 	    "EGL_EXT_image_dma_buf_import_modifiers");
+
+  LoadProc (CreateSync, "KHR", "EGL_KHR_fence_sync");
+  LoadProc (DestroySync, "KHR", "EGL_KHR_fence_sync");
+  LoadProc (ClientWaitSync, "KHR", "EGL_KHR_fence_sync");
+  LoadProc (GetSyncAttrib, "KHR", "EGL_KHR_fence_sync");
+  LoadProc (WaitSync, "KHR", "EGL_KHR_wait_sync");
+  LoadProc (DupNativeFenceFD, "ANDROID", "EGL_ANDROID_native_fence_sync");
 }
 
 static void
 EglInitGlFuncs (void)
 {
   LoadProcGl (EGLImageTargetTexture2D, "OES", "GL_OES_EGL_image");
+
+  /* We treat eglWaitSyncKHR specially, since it only works if the
+     server client API also supports GL_OES_EGL_sync.  */
+  if (!HaveGlExtension ("GL_OES_EGL_sync"))
+    IWaitSync = NULL;
 }
 
 static Visual *
@@ -768,6 +786,9 @@ EglCompileShaders (void)
 			      composite_rectangle_fragment_shader_external);
 }
 
+/* Forward declaration.  */
+static void AddRenderFlag (int);
+
 static Bool
 EglInitDisplay (void)
 {
@@ -815,6 +836,11 @@ EglInitDisplay (void)
 
   CheckExtension (ICreateImage);
   CheckExtension (IDestroyImage);
+
+  /* If both EGL fences and EGL_ANDROID_native_fence_sync are
+     supported, enable explicit sync.  */
+  if (ICreateSync && IDupNativeFenceFD)
+    AddRenderFlag (SupportsExplicitSync);
 
   /* Otherwise, the display has been initialized.  */
   egl_major = major;
@@ -1275,6 +1301,105 @@ TargetAge (RenderTarget target)
   return -1;
 }
 
+static RenderFence
+ImportFdFence (int fd, Bool *error)
+{
+  EGLSyncKHR *fence;
+  EGLint attribs[3];
+
+  attribs[0] = EGL_SYNC_NATIVE_FENCE_FD_ANDROID;
+  attribs[1] = fd;
+  attribs[2] = EGL_NONE;
+
+  /* This fence is supposed to assume ownership over the given file
+     descriptor.  */
+  fence = ICreateSync (egl_display, EGL_SYNC_NATIVE_FENCE_ANDROID,
+		       attribs);
+
+  if (fence == EGL_NO_SYNC_KHR)
+    {
+      *error = True;
+      return (RenderFence) NULL;
+    }
+
+  return (RenderFence) (void *) fence;
+}
+
+static void
+WaitFence (RenderFence fence)
+{
+  /* N.B. that here egl_context must be current, which should always
+     be true.  */
+
+  if (IWaitSync)
+    /* This is more asynchronous, as it doesn't wait for the fence
+       on the CPU.  */
+    IWaitSync (egl_display, fence.pointer, 0);
+  else
+    /* But eglWaitSyncKHR isn't available everywhere.  */
+    IClientWaitSync (egl_display, fence.pointer, 0,
+		     EGL_FOREVER_KHR);
+
+  /* If either of these requests fail, simply proceed to read from the
+     protected data.  */
+}
+
+static void
+DeleteFence (RenderFence fence)
+{
+  if (!IDestroySync (egl_display, fence.pointer))
+    /* There is no way to continue without leaking memory, and this
+       shouldn't happen.  */
+    abort ();
+}
+
+static void
+HandleFenceReadable (int fd, void *data, ReadFd *readfd)
+{
+  XLRemoveReadFd (readfd);
+
+  /* Now destroy the native fence.  */
+  if (!IDestroySync (egl_display, data))
+    abort ();
+
+  /* And close the file descriptor.  */
+  close (fd);
+}
+
+static int
+GetFinishFence (Bool *error)
+{
+  EGLint attribs;
+  EGLSyncKHR *fence;
+  EGLint fd;
+
+  attribs = EGL_NONE;
+
+  /* Create the fence.  EGL_SYNC_CONDITION_KHR should default to
+     EGL_SYNC_PRIOR_COMMANDS_COMPLETE_KHR, meaning it will signal once
+     all prior drawing commands complete.  */
+  fence = ICreateSync (egl_display, EGL_SYNC_NATIVE_FENCE_ANDROID,
+		       &attribs);
+
+  if (fence == EGL_NO_SYNC_KHR)
+    {
+      *error = True;
+      return -1;
+    }
+
+  /* Obtain the file descriptor.  */
+  fd = IDupNativeFenceFD (egl_display, fence);
+
+  if (fd == -1)
+    *error = True;
+  else
+    /* Delete the fence after it is signalled.  Duplicate the fd, as
+       it will be closed by the caller.  */
+    XLAddReadFd (dup (fd), fence, HandleFenceReadable);
+
+  return fd;
+}
+
 static RenderFuncs egl_render_funcs =
   {
     .init_render_funcs = InitRenderFuncs,
@@ -1292,8 +1417,18 @@ static RenderFuncs egl_render_funcs =
     .reset_transform = ResetTransform,
     .finish_render = FinishRender,
     .target_age = TargetAge,
+    .import_fd_fence = ImportFdFence,
+    .wait_fence = WaitFence,
+    .delete_fence = DeleteFence,
+    .get_finish_fence = GetFinishFence,
     .flags = ImmediateRelease,
   };
+
+static void
+AddRenderFlag (int flags)
+{
+  egl_render_funcs.flags |= flags;
+}
 
 static DrmFormat *
 GetDrmFormats (int *num_formats)

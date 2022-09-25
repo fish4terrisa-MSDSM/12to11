@@ -17,25 +17,24 @@ LOCAL_LIBRARIES = $(XLIB) $(EXTENSIONLIB) $(XCBLIB) $(XCB) $(XCB_SHM)      \
 INCLUDES := $(DRMINCLUDES) $(PIXMANINCLUDES)
 
 SRCS = 12to11.c run.c alloc.c fns.c output.c compositor.c       \
-  xdg-shell.c surface.c region.c shm.c atoms.c subcompositor.c  \
-  positioner.c xdg_wm.c xdg_surface.c xdg_toplevel.c            \
-  frame_clock.c xerror.c ewmh.c timer.c subsurface.c seat.c     \
-  data_device.c xdg_popup.c linux-dmabuf-unstable-v1.c dmabuf.c \
-  buffer.c select.c xdata.c xsettings.c dnd.c icon_surface.c    \
-  primary-selection-unstable-v1.c primary_selection.c           \
-  renderer.c picture_renderer.c
+  surface.c region.c shm.c atoms.c subcompositor.c positioner.c \
+  xdg_wm.c xdg_surface.c xdg_toplevel.c frame_clock.c xerror.c  \
+  ewmh.c timer.c subsurface.c seat.c data_device.c xdg_popup.c  \
+  dmabuf.c buffer.c select.c xdata.c xsettings.c dnd.c          \
+  icon_surface.c primary_selection.c renderer.c                 \
+  picture_renderer.c explicit_synchronization.c
 
 OBJS = 12to11.o run.o alloc.o fns.o output.o compositor.o       \
-  xdg-shell.o surface.o region.o shm.o atoms.o subcompositor.o  \
-  positioner.o xdg_wm.o xdg_surface.o xdg_toplevel.o            \
-  frame_clock.o xerror.o ewmh.o timer.o subsurface.o seat.o     \
-  data_device.o xdg_popup.o linux-dmabuf-unstable-v1.o dmabuf.o \
-  buffer.o select.o xdata.o xsettings.o dnd.o icon_surface.o    \
-  primary-selection-unstable-v1.o primary_selection.o           \
-  renderer.o picture_renderer.o
+  surface.o region.o shm.o atoms.o subcompositor.o positioner.o \
+  xdg_wm.o xdg_surface.o xdg_toplevel.o frame_clock.o xerror.o  \
+  ewmh.o timer.o subsurface.o seat.o data_device.o xdg_popup.o  \
+  dmabuf.o buffer.o select.o xdata.o xsettings.o dnd.o          \
+  icon_surface.o primary_selection.o renderer.o                 \
+  picture_renderer.o explicit_synchronization.o
 
 GENHEADERS = transfer_atoms.h primary-selection-unstable-v1.h \
-  linux-dmabuf-unstable-v1.h xdg-shell.h
+  linux-dmabuf-unstable-v1.h xdg-shell.h                      \
+  linux-explicit-synchronization-unstable-v1.h
 
 #ifdef HaveEglSupport
 
@@ -94,37 +93,34 @@ transfer_atoms.h: short_types.txt mime0.awk mime1.awk mime2.awk mime3.awk \
 	awk -f mime3.awk short_types.txt >> $@
 	awk -f mime4.awk short_types.txt >> $@
 
+/* Now, define generated files.  */
+
+#define ScannerTarget(name)                                   @@\
+name.h: name.xml                                              @@\
+	$(WAYLAND_SCANNER) server-header $< $@                @@\
+                                                              @@\
+name.c: name.xml name.h                                       @@\
+	$(WAYLAND_SCANNER) private-code $< $@                 @@\
+                                                              @@\
+GENHEADERS := $(GENHEADERS) name.h                            @@\
+      OBJS := $(OBJS) name.o                                  @@\
+      SRCS := $(SRCS) name.c                                  @@\
+   GENSRCS := $(GENSRCS) name.c                               @@\
+
+ScannerTarget(linux-dmabuf-unstable-v1)
+ScannerTarget(xdg-shell)
+ScannerTarget(primary-selection-unstable-v1)
+ScannerTarget(linux-explicit-synchronization-unstable-v1)
+
+/* Make OBJS depend on scanner headers, and depend on both them and SRCS.  */
 $(OBJS): $(GENHEADERS)
 
 /* depend somehow does not depend on SRCS, even though some of OBJS
    are generated.  */
 depend:: $(GENHEADERS) $(SRCS)
 
-linux-dmabuf-unstable-v1.h: linux-dmabuf-unstable-v1.xml
-	$(WAYLAND_SCANNER) server-header $< $@
-
-linux-dmabuf-unstable-v1.c: linux-dmabuf-unstable-v1.xml \
-			    linux-dmabuf-unstable-v1.h
-	$(WAYLAND_SCANNER) private-code $< $@
-
-xdg-shell.h: xdg-shell.xml
-	$(WAYLAND_SCANNER) server-header $< $@
-
-xdg-shell.c: xdg-shell.xml xdg-shell.h
-	$(WAYLAND_SCANNER) private-code $< $@
-
-primary-selection-unstable-v1.h: primary-selection-unstable-v1.xml
-	$(WAYLAND_SCANNER) server-header $< $@
-
-primary-selection-unstable-v1.c: primary-selection-unstable-v1.xml \
-				 primary-selection-unstable-v1.h
-	$(WAYLAND_SCANNER) private-code $< $@
-
 cleandir::
-	$(RM) linux-dmabuf-unstable-v1.c linux-dmabuf-unstable-v1.h   \
-	      xdg-shell.c xdg-shell.h primary-selection-unstable-v1.c \
-	      primary-selection-unstable-v1.h
-	$(RM) transfer_atoms.h short_types.txt
+	$(RM) $(GENHEADERS) $(GENSRCS) transfer_atoms.h short_types.txt
 
 /* Undefine _BSD_SOURCE and _SVID_SOURCE, since both are deprecated
    and are also superseeded by _GNU_SOURCE.  */

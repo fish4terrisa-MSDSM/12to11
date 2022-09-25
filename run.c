@@ -37,7 +37,7 @@ struct _PollFd
 
   /* Callback run with the fd number and data when the fd becomes
      writable or readable.  */
-  void (*poll_callback) (int, void *);
+  void (*poll_callback) (int, void *, PollFd *);
 
   /* Data for the callback.  */
   void *data;
@@ -54,7 +54,8 @@ static int num_poll_fd;
 static PollFd poll_fds;
 
 WriteFd *
-XLAddWriteFd (int fd, void *data, void (*poll_callback) (int, void *))
+XLAddWriteFd (int fd, void *data, void (*poll_callback) (int, void *,
+							 WriteFd *))
 {
   WriteFd *record;
 
@@ -75,7 +76,8 @@ XLAddWriteFd (int fd, void *data, void (*poll_callback) (int, void *))
 }
 
 ReadFd *
-XLAddReadFd (int fd, void *data, void (*poll_callback) (int, void *))
+XLAddReadFd (int fd, void *data, void (*poll_callback) (int, void *,
+							ReadFd *))
 {
   WriteFd *record;
 
@@ -278,9 +280,9 @@ RunStep (void)
 	      /* Check that pollfds[j] is still valid, and wasn't
 		 removed while handling X events.  */
 	      && pollfds[j]->write_fd != -1)
-	    /* Then call the write callback.  */
+	    /* Then call the poll callback.  */
 	    pollfds[j]->poll_callback (pollfds[j]->write_fd,
-				       pollfds[j]->data);
+				       pollfds[j]->data, pollfds[j]);
 	}
     }
 }

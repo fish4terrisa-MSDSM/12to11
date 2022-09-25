@@ -162,6 +162,32 @@ RenderTargetAge (RenderTarget target)
   return render_funcs.target_age (target);
 }
 
+RenderFence
+RenderImportFdFence (int fd, Bool *error)
+{
+  /* Fence-related functions must be defined if
+     SupportExplicitSync is in flags.  */
+  return render_funcs.import_fd_fence (fd, error);
+}
+
+void
+RenderWaitFence (RenderFence fence)
+{
+  return render_funcs.wait_fence (fence);
+}
+
+void
+RenderDeleteFence (RenderFence fence)
+{
+  return render_funcs.delete_fence (fence);
+}
+
+int
+RenderGetFinishFence (Bool *error)
+{
+  return render_funcs.get_finish_fence (error);
+}
+
 DrmFormat *
 RenderGetDrmFormats (int *n_formats)
 {

@@ -300,6 +300,16 @@ ClearBuffer (State *state)
 }
 
 static void
+DoRelease (Surface *surface, ExtBuffer *buffer)
+{
+  /* Release the buffer now.  */
+  if (surface->role && !(renderer_flags & ImmediateRelease))
+    surface->role->funcs.release_buffer (surface, surface->role, buffer);
+  else
+    XLReleaseBuffer (buffer);
+}
+
+static void
 DestroySurface (struct wl_client *client,
 		struct wl_resource *resource)
 {
@@ -652,13 +662,7 @@ SavePendingState (Surface *surface)
 	     it is a mistake!  */
 	  && (surface->cached_state.buffer
 	      != surface->current_state.buffer))
-	{
-	  if (surface->role && !(renderer_flags & ImmediateRelease))
-	    surface->role->funcs.release_buffer (surface, surface->role,
-						 surface->cached_state.buffer);
-	  else
-	    XLReleaseBuffer (surface->cached_state.buffer);
-	}
+        DoRelease (surface, surface->cached_state.buffer);
 
       if (surface->pending_state.buffer)
 	{
@@ -745,11 +749,7 @@ TryEarlyRelease (Surface *surface)
   if (!RenderCanReleaseNow (render_buffer))
     return;
 
-  /* Release the buffer now.  */
-  if (surface->role && !(renderer_flags & ImmediateRelease))
-    surface->role->funcs.release_buffer (surface, surface->role, buffer);
-  else
-    XLReleaseBuffer (buffer);
+  DoRelease (surface, buffer);
 
   /* Set the flag saying that the buffer has been released.  */
   surface->current_state.pending |= BufferAlreadyReleased;
@@ -762,18 +762,12 @@ InternalCommit (Surface *surface, State *pending)
 
   if (pending->pending & PendingBuffer)
     {
-      if ((surface->current_state.buffer != pending->buffer)
-	  /* The buffer may already released if its contents were
-	     copied, i.e. uploaded to a texture, during updates.  */
-	  && !(surface->current_state.pending & BufferAlreadyReleased)
-	  && surface->current_state.buffer)
-	{
-	  if (surface->role && !(renderer_flags & ImmediateRelease))
-	    surface->role->funcs.release_buffer (surface, surface->role,
-						 surface->current_state.buffer);
-	  else
-	    XLReleaseBuffer (surface->current_state.buffer);
-	}
+      /* The buffer may already released if its contents were
+	 copied, i.e. uploaded to a texture, during updates.  */
+      if (!(surface->current_state.pending & BufferAlreadyReleased)
+	  && surface->current_state.buffer
+	  && surface->current_state.buffer != pending->buffer)
+	DoRelease (surface, surface->current_state.buffer);
 
       /* Clear this flag now, since the attached buffer has
 	 changed.  */
@@ -855,13 +849,17 @@ InternalCommit (Surface *surface, State *pending)
     }
 
   /* Run commit callbacks.  This tells synchronous subsurfaces to
-     update.  */
+     update, and tells explicit synchronization to wait for any sync
+     fence.  */
   RunCommitCallbacks (surface);
 
   if (surface->subsurfaces)
     /* Pending surface stacking actions are stored on the parent so
        they run in the right order.  */
     XLSubsurfaceHandleParentCommit (surface);
+
+  /* Wait for any sync fence to be triggered before proceeding.  */
+  XLWaitFence (surface);
 
   if (!surface->role)
     {
@@ -886,6 +884,24 @@ Commit (struct wl_client *client, struct wl_resource *resource)
   Surface *surface;
 
   surface = wl_resource_get_user_data (resource);
+
+  /* First, clear the acquire fence if it is set.  If a
+     synchronization object is attached, the following call will then
+     attach any new fence specified.  */
+
+  if (surface->acquire_fence != -1)
+    close (surface->acquire_fence);
+
+  /* Release any attached explicit synchronization release callback.
+     XXX: this is not right with synchronous subsurfaces?  */
+
+  if (surface->release)
+    XLSyncRelease (surface->release);
+
+  if (surface->synchronization)
+    /* This is done here so early commit hooks can be run for
+       i.e. synchronous subsurfaces.  */
+    XLSyncCommit (surface->synchronization);
 
   if (surface->role && surface->role->funcs.early_commit
       /* The role chose to postpone the commit for a later time.  */
@@ -1056,6 +1072,14 @@ HandleSurfaceDestroy (struct wl_resource *resource)
   /* Free the window scaling factor callback.  */
   XLRemoveScaleChangeCallback (surface->scale_callback_key);
 
+  /* If a release is attached, destroy it and its resource.  */
+  if (surface->release)
+    XLDestroyRelease (surface->release);
+
+  /* Likewise if a fence is attached.  */
+  if (surface->acquire_fence != -1)
+    close (surface->acquire_fence);
+
   FinalizeState (&surface->pending_state);
   FinalizeState (&surface->current_state);
   FinalizeState (&surface->cached_state);
@@ -1153,6 +1177,9 @@ XLCreateSurface (struct wl_client *client,
   /* Clear surface output coordinates.  */
   surface->output_x = INT_MIN;
   surface->output_y = INT_MIN;
+
+  /* Set the acquire fence fd to -1.  */
+  surface->acquire_fence = -1;
 }
 
 void

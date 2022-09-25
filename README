@@ -65,6 +65,10 @@ complete degree:
   'zwp_linux_dmabuf_v1',                        version:  4
   'zwp_primary_selection_device_manager_v1',    version:  1
 
+When built with EGL, the following Wayland protocol is also supported:
+
+  'zwp_linux_explicit_synchronization_v1',      version:  2
+
 With the main caveat being that zwp_linux_dmabuf_v1 has no real
 support for multiple-provider setups (help wanted).
 

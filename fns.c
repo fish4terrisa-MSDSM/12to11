@@ -726,7 +726,7 @@ MaybeInstallBusHandler (void)
   if (bus_handler_installed)
     return;
 
-  bus_handler_installed = 1;
+  bus_handler_installed = True;
   memset (&act, 0, sizeof act);
 
   /* Install a SIGBUS handler.  When a client truncates the file

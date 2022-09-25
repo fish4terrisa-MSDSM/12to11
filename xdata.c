@@ -431,7 +431,7 @@ MaybeFinishDelayedTransfer (ReadTransfer *transfer,
 }
 
 static void
-NoticeTransferWritable (int fd, void *data)
+NoticeTransferWritable (int fd, void *data, WriteFd *writefd)
 {
   ReadTransfer *transfer;
   TransferInfo *info;
@@ -1260,7 +1260,7 @@ TypeFromTarget (Atom target, Bool primary)
 }
 
 static void
-NoticeTransferReadable (int fd, void *data)
+NoticeTransferReadable (int fd, void *data, ReadFd *readfd)
 {
   WriteTransfer *transfer;
   WriteInfo *info;
@@ -1460,7 +1460,7 @@ GetClipboardCallback (WriteTransfer *transfer, Atom target,
 
 
 static void
-NoticeConversionTransferReadable (int fd, void *data)
+NoticeConversionTransferReadable (int fd, void *data, ReadFd *readfd)
 {
   WriteTransfer *transfer;
   ConversionWriteInfo *info;
@@ -1726,7 +1726,7 @@ FinishConversionTransfer (ReadTransfer *transfer, ConversionTransferInfo *info)
 }
 
 static void
-NoticeConversionTransferWritable (int fd, void *data)
+NoticeConversionTransferWritable (int fd, void *data, WriteFd *writefd)
 {
   ConversionTransferInfo *info;
   ssize_t written;

@@ -101,6 +101,7 @@ typedef struct _BufferFuncs BufferFuncs;
 
 typedef union _RenderTarget RenderTarget;
 typedef union _RenderBuffer RenderBuffer;
+typedef union _RenderFence RenderFence;
 
 typedef struct _DmaBufAttributes DmaBufAttributes;
 typedef struct _SharedMemoryAttributes SharedMemoryAttributes;
@@ -183,13 +184,24 @@ union _RenderBuffer
   void *pointer;
 };
 
+union _RenderFence
+{
+  /* The XID of the fence resource, if that is what it is.  */
+  XID xid;
+
+  /* The pointer to the fence, if that is what it is.  */
+  void *pointer;
+};
+
 enum
   {
     /* The render target always preserves previously drawn contents;
        IOW, target_age always returns 0.  */
-    NeverAges	     = 1,
+    NeverAges		 = 1,
     /* Buffers attached can always be immediately released.  */
-    ImmediateRelease = 1 << 2,
+    ImmediateRelease	 = 1 << 2,
+    /* The render target supports explicit synchronization.  */
+    SupportsExplicitSync = 1 << 3,
   };
 
 struct _RenderFuncs
@@ -257,6 +269,25 @@ struct _RenderFuncs
       Note that when a render target is first created, the renderer
       may chose to return 0 instead of 1.  */
   int (*target_age) (RenderTarget);
+
+  /* Create a rendering "fence" object, that serves to explicitly
+     specify the order of rendering requests between different
+     programs.  Fence-related functions must only be defined if
+     SupportsExplicitSync is set.  */
+  RenderFence (*import_fd_fence) (int, Bool *);
+
+  /* Wait for the given fence object.  This is guaranteed to make all
+     drawing commands execute after the fence has been triggered, but
+     does not typically block.  */
+  void (*wait_fence) (RenderFence);
+
+  /* Delete the given fence object.  */
+  void (*delete_fence) (RenderFence);
+
+  /* Get a file descriptor describing a fence that is triggered upon
+     the completion of all drawing commands made before it is
+     called.  */
+  int (*get_finish_fence) (Bool *);
 
   /* Some flags.  NeverAges means targets always preserve contents
      that were previously drawn.  */
@@ -351,6 +382,10 @@ extern void RenderComposite (RenderBuffer, RenderTarget, Operation, int,
 extern void RenderResetTransform (RenderBuffer);
 extern void RenderFinishRender (RenderTarget);
 extern int RenderTargetAge (RenderTarget);
+extern RenderFence RenderImportFdFence (int, Bool *);
+extern void RenderWaitFence (RenderFence);
+extern void RenderDeleteFence (RenderFence);
+extern int RenderGetFinishFence (Bool *);
 
 extern DrmFormat *RenderGetDrmFormats (int *);
 extern dev_t RenderGetRenderDevice (Bool *);
@@ -372,8 +407,8 @@ typedef struct _PollFd WriteFd;
 typedef struct _PollFd ReadFd;
 
 extern void XLRunCompositor (void);
-extern WriteFd *XLAddWriteFd (int, void *, void (*) (int, void *));
-extern ReadFd *XLAddReadFd (int, void *, void (*) (int, void *));
+extern WriteFd *XLAddWriteFd (int, void *, void (*) (int, void *, ReadFd *));
+extern ReadFd *XLAddReadFd (int, void *, void (*) (int, void *, ReadFd *));
 extern void XLRemoveWriteFd (WriteFd *);
 extern void XLRemoveReadFd (ReadFd *);
 
@@ -595,6 +630,11 @@ extern void ViewSetScale (View *, int);
 
 extern Subcompositor *ViewGetSubcompositor (View *);
 
+/* Forward declarations from explicit_synchronization.c.  */
+
+typedef struct _Synchronization Synchronization;
+typedef struct _SyncRelease SyncRelease;
+
 /* Defined in surface.c.  */
 
 typedef struct _State State;
@@ -783,6 +823,15 @@ struct _Surface
   /* X, Y of the last coordinates that were used to update this
      surface's entered outputs.  */
   int output_x, output_y;
+
+  /* The associated explicit synchronization resource, if any.  */
+  Synchronization *synchronization;
+
+  /* The associated sync release resource, if any.  */
+  SyncRelease *release;
+
+  /* The associated sync acquire fd, or -1.  */
+  int acquire_fence;
 };
 
 struct _RoleFuncs
@@ -1274,6 +1323,14 @@ extern void InitPictureRenderer (void);
 extern void InitEgl (void);
 
 #endif
+
+/* Defined in explicit_synchronization.c.  */
+
+extern void XLDestroyRelease (SyncRelease *);
+extern void XLSyncCommit (Synchronization *);
+extern void XLSyncRelease (SyncRelease *);
+extern void XLWaitFence (Surface *);
+extern void XLInitExplicitSynchronization (void);
 
 /* Utility functions that don't belong in a specific file.  */
 
