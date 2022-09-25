@@ -1727,6 +1727,29 @@ StorePreviousDamage (Subcompositor *subcompositor,
 			  update_region);
 }
 
+static Bool
+IntersectBoxes (pixman_box32_t *in, pixman_box32_t *other,
+		pixman_box32_t *out)
+{
+  pixman_box32_t a, b;
+
+  /* Take copies of all the boxes, since one of them might be out.  */
+  a = *in;
+  b = *other;
+
+  out->x1 = MAX (a.x1, b.x1);
+  out->y1 = MAX (a.y1, b.y1);
+
+  out->x2 = MIN (a.x2, b.x2);
+  out->y2 = MIN (a.y2, b.y2);
+
+  /* If the intersection is empty, return False.  */
+  if (out->x2 - out->x1 <= 0 || out->y2 - out->y1 <= 0)
+    return False;
+
+  return True;
+}
+
 void
 SubcompositorUpdate (Subcompositor *subcompositor)
 {
@@ -2156,28 +2179,36 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 
       if (!IsGarbaged (subcompositor) && (age >= 0 && age < 3))
 	{
-	  /* First, obtain a new region that is the intersection of
-	     the view with the global update region.  */
-	  pixman_region32_intersect_rect (&temp, &update_region,
-					  view->abs_x, view->abs_y,
-					  ViewWidth (view),
-					  ViewHeight (view));
-
-	  /* Next, composite every rectangle in that region.  */
-	  boxes = pixman_region32_rectangles (&temp, &nboxes);
+	  /* Next, composite every rectangle in the update region
+	     intersecting with the target.  */
+	  boxes = pixman_region32_rectangles (&update_region, &nboxes);
 
 	  for (i = 0; i < nboxes; ++i)
-	    RenderComposite (buffer, subcompositor->target, op,
-			     /* src-x.  */
-			     BoxStartX (boxes[i]) - view->abs_x,
-			     /* src-y.  */
-			     BoxStartY (boxes[i]) - view->abs_y,
-			     /* dst-x.  */
-			     BoxStartX (boxes[i]) - min_x + tx,
-			     /* dst-y.  */
-			     BoxStartY (boxes[i]) - min_y + ty,
-			     /* width, height.  */
-			     BoxWidth (boxes[i]), BoxHeight (boxes[i]));
+	    {
+	      /* Check if the rectangle is completely inside the
+		 region.  We used to take the intersection of the
+		 region, but that proved to be too slow.  */
+
+	      temp_boxes.x1 = view->abs_x;
+	      temp_boxes.y1 = view->abs_y;
+	      temp_boxes.x2 = view->abs_x + ViewWidth (view);
+	      temp_boxes.y2 = view->abs_y + ViewHeight (view);
+
+	      if (IntersectBoxes (&boxes[i], &temp_boxes, &temp_boxes))
+		RenderComposite (buffer, subcompositor->target, op,
+				 /* src-x.  */
+				 BoxStartX (temp_boxes) - view->abs_x,
+				 /* src-y.  */
+				 BoxStartY (temp_boxes) - view->abs_y,
+				 /* dst-x.  */
+				 BoxStartX (temp_boxes) - min_x + tx,
+				 /* dst-y.  */
+				 BoxStartY (temp_boxes) - min_y + ty,
+				 /* width.  */
+				 BoxWidth (temp_boxes),
+				 /* height.  */
+				 BoxHeight (temp_boxes));
+	    }
 	}
       else
 	{
