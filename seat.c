@@ -104,6 +104,7 @@ typedef struct _ScrollValuator ScrollValuator;
 typedef struct _DestroyListener DestroyListener;
 typedef struct _DeviceInfo DeviceInfo;
 typedef struct _ModifierChangeCallback ModifierChangeCallback;
+typedef struct _CursorRing CursorRing;
 
 typedef enum _ResizeEdge ResizeEdge;
 typedef enum _WhatEdge WhatEdge;
@@ -166,6 +167,24 @@ static int resize_edges[] =
     ResizeAxisMove,
   };
 
+#define CursorRingElements	2
+#define CursorRingBusy		3
+
+struct _CursorRing
+{
+  /* The width and height of the RenderTargets within.  */
+  int width, height;
+
+  /* Array of render targets.  */
+  RenderTarget targets[CursorRingElements];
+
+  /* Array of pixmaps.  */
+  Pixmap pixmaps[CursorRingElements];
+
+  /* Index of target being used.  -1 means nothing is being used.  */
+  short used;
+};
+
 struct _DestroyListener
 {
   /* Function called when seat is destroyed.  */
@@ -202,6 +221,10 @@ struct _SeatCursor
   /* Whether or not this cursor is currently keeping the cursor clock
      active.  */
   Bool holding_cursor_clock;
+
+  /* Ring of render targets for cursors.  This allows updating the
+     cursor while not creating a new render target each time.  */
+  CursorRing *cursor_ring;
 };
 
 struct _ResizeDoneCallback
@@ -650,6 +673,107 @@ RetainSeat (Seat *seat)
   seat->refcount++;
 }
 
+static CursorRing *
+MakeCursorRing (int width, int height)
+{
+  CursorRing *ring;
+
+  ring = XLCalloc (1, sizeof *ring);
+  ring->width = width;
+  ring->height = height;
+  ring->used = -1;
+
+  return ring;
+}
+
+static void
+MaybeCreateCursor (CursorRing *ring, int index)
+{
+  XLAssert (index < CursorRingElements);
+
+  /* If the cursor has already been created, return.  */
+  if (ring->pixmaps[index])
+    return;
+
+  ring->pixmaps[index]
+    = XCreatePixmap (compositor.display,
+		     DefaultRootWindow (compositor.display),
+		     ring->width, ring->height,
+		     compositor.n_planes);
+  ring->targets[index]
+    = RenderTargetFromPixmap (ring->pixmaps[index]);
+}
+
+static int
+GetUnusedCursor (CursorRing *ring)
+{
+  int i;
+
+  for (i = 0; i < CursorRingElements; ++i)
+    {
+      if (ring->used != i)
+	{
+	  /* Create the cursor contents if they have not yet been
+	     created.  */
+	  MaybeCreateCursor (ring, i);
+
+	  return i;
+	}
+    }
+
+  return CursorRingBusy;
+}
+
+static void
+FreeCursorRing (CursorRing *ring)
+{
+  int i;
+
+  for (i = 0; i < CursorRingElements; ++i)
+    {
+      if (!ring->pixmaps[i])
+	/* This element wasn't created.  */
+	continue;
+
+      /* Free the target and pixmap.  */
+      RenderDestroyRenderTarget (ring->targets[i]);
+      XFreePixmap (compositor.display, ring->pixmaps[i]);
+    }
+
+  /* Free the ring itself.  */
+  XLFree (ring);
+}
+
+static void
+ResizeCursorRing (CursorRing *ring, int width, int height)
+{
+  int i;
+
+  if (width == ring->width && height == ring->height)
+    return;
+
+  /* Destroy the pixmaps currently in the cursor ring.  */
+
+  for (i = 0; i < CursorRingElements; ++i)
+    {
+      if (!ring->pixmaps[i])
+	/* This element wasn't created.  */
+	continue;
+
+      /* Free the target and pixmap.  */
+      RenderDestroyRenderTarget (ring->targets[i]);
+      XFreePixmap (compositor.display, ring->pixmaps[i]);
+
+      /* Mark this element as free.  */
+      ring->pixmaps[i] = None;
+    }
+
+  /* Reinitialize the cursor ring with new data.  */
+  ring->width = width;
+  ring->height = height;
+  ring->used = -1;
+}
+
 static void
 UpdateCursorOutput (SeatCursor *cursor, int root_x, int root_y)
 {
@@ -737,6 +861,10 @@ FreeCursor (SeatCursor *cursor)
     XIDefineCursor (compositor.display,
 		    cursor->seat->master_pointer,
 		    window, InitDefaultCursor ());
+
+  /* And release the cursor ring.  */
+  if (cursor->cursor_ring)
+    FreeCursorRing (cursor->cursor_ring);
 
   /* Maybe release the cursor clock if it was active for this
      cursor.  */
@@ -912,10 +1040,10 @@ ApplyCursor (SeatCursor *cursor, RenderTarget target,
 static void
 UpdateCursorFromSubcompositor (SeatCursor *cursor)
 {
-  Pixmap pixmap;
   RenderTarget target;
   int min_x, min_y, max_x, max_y, width, height, x, y;
   Bool need_clear;
+  int index;
 
   /* First, compute the bounds of the subcompositor.  */
   SubcompositorBounds (cursor->subcompositor,
@@ -946,12 +1074,20 @@ UpdateCursorFromSubcompositor (SeatCursor *cursor)
   else
     need_clear = False;
 
-  /* This is unbelivably the only way to dynamically update the cursor
-     under X.  Rather inefficient with animated cursors.  */
-  pixmap = XCreatePixmap (compositor.display,
-			  DefaultRootWindow (compositor.display),
-			  width, height, compositor.n_planes);
-  target = RenderTargetFromPixmap (pixmap);
+  if (cursor->cursor_ring)
+    /* If the width or height of the cursor ring changed, resize its
+       contents.  */
+    ResizeCursorRing (cursor->cursor_ring, width, height);
+  else
+    /* Otherwise, there is not yet a cursor ring.  Create one.  */
+    cursor->cursor_ring = MakeCursorRing (width, height);
+
+  /* Get an unused cursor from the cursor ring.  */
+  index = GetUnusedCursor (cursor->cursor_ring);
+  XLAssert (index != CursorRingBusy);
+
+  /* Get the target and pixmap.  */
+  target = cursor->cursor_ring->targets[index];
 
   /* If the bounds extend beyond the subcompositor, clear the
      picture.  */
@@ -970,10 +1106,11 @@ UpdateCursorFromSubcompositor (SeatCursor *cursor)
   SubcompositorUpdate (cursor->subcompositor);
   SubcompositorSetTarget (cursor->subcompositor, NULL);
 
+  /* Apply the new cursor.  */
   ApplyCursor (cursor, target, min_x, min_y);
 
-  RenderDestroyRenderTarget (target);
-  XFreePixmap (compositor.display, pixmap);
+  /* Set it as the cursor being used.  */
+  cursor->cursor_ring->used = index;
 }
 
 static void
@@ -1000,6 +1137,10 @@ ApplyEmptyCursor (SeatCursor *cursor)
     XIDefineCursor (compositor.display,
 		    cursor->seat->master_pointer,
 		    window, InitDefaultCursor ());
+
+  if (cursor->cursor_ring)
+    /* This means no cursor in the ring is currently being used.  */
+    cursor->cursor_ring->used = -1;
 }
 
 static void
@@ -1071,6 +1212,7 @@ Subframe (Surface *surface, Role *role)
   RenderTarget target;
   Pixmap pixmap;
   int min_x, min_y, max_x, max_y, width, height, x, y;
+  int index;
   Bool need_clear;
   SeatCursor *cursor;
 
@@ -1110,12 +1252,24 @@ Subframe (Surface *surface, Role *role)
   else
     need_clear = False;
 
-  /* This is unbelivably the only way to dynamically update the cursor
-     under X.  Rather inefficient with animated cursors.  */
-  pixmap = XCreatePixmap (compositor.display,
-			  DefaultRootWindow (compositor.display),
-			  width, height, compositor.n_planes);
-  target = RenderTargetFromPixmap (pixmap);
+  if (cursor->cursor_ring)
+    /* If the width or height of the cursor ring changed, resize its
+       contents.  */
+    ResizeCursorRing (cursor->cursor_ring, width, height);
+  else
+    /* Otherwise, there is not yet a cursor ring.  Create one.  */
+    cursor->cursor_ring = MakeCursorRing (width, height);
+
+  /* Get an unused cursor from the cursor ring.  */
+  index = GetUnusedCursor (cursor->cursor_ring);
+  XLAssert (index != CursorRingBusy);
+
+  /* Set it as the cursor being used.  */
+  cursor->cursor_ring->used = index;
+
+  /* Get the target and pixmap.  */
+  target = cursor->cursor_ring->targets[index];
+  pixmap = cursor->cursor_ring->pixmaps[index];
 
   /* If the bounds extend beyond the subcompositor, clear the
      picture.  */
@@ -1159,18 +1313,11 @@ EndSubframe (Surface *surface, Role *role)
       /* Apply the cursor.  */
       ApplyCursor (cursor, cursor_subframe_target, min_x, min_y);
 
-      /* Then, free the temporary target.  */
-      RenderDestroyRenderTarget (cursor_subframe_target);
-
       /* Finally, clear the target.  */
       SubcompositorSetTarget (cursor->subcompositor, NULL);
     }
   else
     ApplyEmptyCursor (cursor);
-
-  if (cursor_subframe_pixmap)
-    XFreePixmap (compositor.display,
-		 cursor_subframe_pixmap);
 
   cursor_subframe_pixmap = None;
 }

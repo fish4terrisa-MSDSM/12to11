@@ -151,6 +151,7 @@ struct _EglBuffer
 enum
   {
     SwapPreservesContents = 1,
+    IsPixmap 		  = 2,
   };
 
 struct _EglTarget
@@ -941,6 +942,11 @@ TargetFromPixmap (Pixmap pixmap)
   target->surface = ICreatePlatformPixmapSurface (egl_display, egl_config,
 						  &pixmap, NULL);
 
+  /* Mark the target as being a pixmap surface.  EGL pixmap surfaces
+     are always single-buffered, so we have to call glFinish
+     manually.  */
+  target->flags |= IsPixmap;
+
   /* Try enabling EGL_BUFFER_PRESERVED to preserve the color buffer
      post swap.  */
   if (TryPreserveOnSwap (target->surface))
@@ -1275,8 +1281,11 @@ FinishRender (RenderTarget target)
 
   egl_target = target.pointer;
 
-  /* This should also do glFinish.  */
-  eglSwapBuffers (egl_display, egl_target->surface);
+  if (egl_target->flags & IsPixmap)
+    glFinish ();
+  else
+    /* This should also do glFinish.  */
+    eglSwapBuffers (egl_display, egl_target->surface);
 }
 
 static int

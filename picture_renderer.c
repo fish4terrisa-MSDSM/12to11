@@ -161,6 +161,12 @@ static Window round_trip_window;
 /* The opcode of the DRI3 extension.  */
 static int dri3_opcode;
 
+/* List of pixmap format values supported by the X server.  */
+static XPixmapFormatValues *x_formats;
+
+/* Number of those formats.  */
+static int num_x_formats;
+
 /* XRender and DRI3-based renderer.  A RenderTarget is just a
    Picture.  */
 
@@ -422,6 +428,21 @@ FindFormatMatching (XRenderPictFormat *format)
 }
 
 static Bool
+HavePixmapFormat (int depth, int bpp)
+{
+  int i;
+
+  for (i = 0; i < num_x_formats; ++i)
+    {
+      if (x_formats[i].depth == depth
+	  && x_formats[i].bits_per_pixel == bpp)
+	return True;
+    }
+
+  return False;
+}
+
+static Bool
 FindSupportedFormats (void)
 {
   int count;
@@ -442,6 +463,12 @@ FindSupportedFormats (void)
 	break;
 
       info = FindFormatMatching (format);
+
+      /* See if the info's depth and bpp are supported.  */
+      if (info
+	  && !HavePixmapFormat (info->depth,
+				info->bits_per_pixel))
+	continue;
 
       if (info && !info->format)
 	info->format = format;
@@ -921,14 +948,16 @@ BufferFromDmaBufAsync (DmaBufAttributes *attributes,
 }
 
 static int
-DepthForFormat (uint32_t format)
+DepthForFormat (uint32_t format, int *bpp)
 {
   switch (format)
     {
     case WL_SHM_FORMAT_ARGB8888:
+      *bpp = 32;
       return 32;
 
     case WL_SHM_FORMAT_XRGB8888:
+      *bpp = 32;
       return 24;
 
     default:
@@ -959,9 +988,9 @@ BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
   xcb_shm_seg_t seg;
   Pixmap pixmap;
   Picture picture;
-  int fd, depth, format;
+  int fd, depth, format, bpp;
 
-  depth = DepthForFormat (attributes->format);
+  depth = DepthForFormat (attributes->format, &bpp);
   format = attributes->format;
 
   /* Duplicate the fd, since XCB closes file descriptors after sending
@@ -996,13 +1025,59 @@ BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
   return (RenderBuffer) picture;
 }
 
+static int
+GetScanlinePad (int depth)
+{
+  int i;
+
+  for (i = 0; i < num_x_formats; ++i)
+    {
+      if (x_formats[i].depth == depth)
+	return x_formats[i].scanline_pad;
+    }
+
+  /* This should never happen in practice.  */
+  return -1;
+}
+
+/* Roundup rounds up NBYTES to PAD.  PAD is a value that can appear as
+   the scanline pad.  Macro borrowed from Xlib, as usual for everyone
+   working with such images.  */
+#define Roundup(nbytes, pad) ((((nbytes) + ((pad) - 1)) / (pad)) * ((pad) >> 3))
+
 static Bool
 ValidateShmParams (uint32_t format, uint32_t width, uint32_t height,
 		   int32_t offset, int32_t stride, size_t pool_size)
 {
-  if (pool_size < offset || stride != width * 4
-      || offset + stride * height > pool_size
-      || offset < 0)
+  int bpp, depth;
+  long wanted_stride;
+  size_t total_size;
+
+  /* Obtain the depth and bpp.  */
+  depth = DepthForFormat (format, &bpp);
+  XLAssert (depth != -1);
+
+  /* If any signed values are negative, return.  */
+  if (offset < 0 || stride < 0)
+    return False;
+
+  /* Obtain width * bpp padded to the scanline pad.  Xlib or the X
+     server do not try to handle overflow here... */
+  wanted_stride = Roundup (width * (long) bpp,
+			   GetScanlinePad (depth));
+
+  /* Assume that size_t can hold int32_t.  */
+  total_size = offset;
+
+  /* Calculate the total data size.  */
+  if (IntMultiplyWrapv (stride, height, &total_size))
+    return False;
+
+  if (IntAddWrapv (offset, total_size, &total_size))
+    return False;
+
+  /* Verify that the stride is correct and the image fits.  */
+  if (stride != wanted_stride || total_size > pool_size)
     return False;
 
   return True;
@@ -1058,6 +1133,22 @@ SetupMitShm (void)
     }
 
   free (reply);
+
+  /* Now check that the mandatory image formats are supported.  */
+
+  if (!HavePixmapFormat (24, 32))
+    {
+      fprintf (stderr, "X server does not support pixmap format"
+	       " of depth 24 with 32 bits per pixel\n");
+      exit (1);
+    }
+
+  if (!HavePixmapFormat (32, 32))
+    {
+      fprintf (stderr, "X server does not support pixmap format"
+	       " of depth 32 with 32 bits per pixel\n");
+      exit (1);
+    }
 }
 
 static void
@@ -1066,6 +1157,17 @@ InitBufferFuncs (void)
   xcb_dri3_query_version_cookie_t cookie;
   xcb_dri3_query_version_reply_t *reply;
   const xcb_query_extension_reply_t *ext;
+
+  /* Obtain the list of supported pixmap formats from the X
+     server.  */
+  x_formats = XListPixmapFormats (compositor.display, &num_x_formats);
+
+  if (!x_formats)
+    {
+      fprintf (stderr, "No pixmap formats could be retrieved from"
+	       " the X server\n");
+      return;
+    }
 
   /* Set up the MIT shared memory extension.  It is required to
      work.  */
