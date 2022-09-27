@@ -1582,30 +1582,26 @@ ViewSetScale (View *view, int scale)
 }
 
 static double
-GetTxTy (int scale)
+GetContentScale (int scale)
 {
   if (scale > 0)
-    return scale + 1;
+    return 1.0 / (scale + 1);
 
-  return 1.0 / (-scale + 1);
+  return -scale + 1;
 }
 
 static void
-ViewApplyTransform (View *view, RenderBuffer buffer)
+ViewComputeTransform (View *view, DrawParams *params)
 {
-  RenderApplyTransform (buffer, GetTxTy (view->scale));
-}
+  /* First, there is no transform.  */
+  params->flags = 0;
 
-/* TODO: the callers of this can be optimized by setting the picture
-   transform on the attached buffer if that buffer is not attached to
-   any other view.  */
-
-static Bool
-ViewHaveTransform (View *view)
-{
-  /* view->scale is the amount by which to scale _down_ the view.  If
-     it is 0, then no scaling will be performed.  */
-  return view->scale;
+  if (view->scale)
+    {
+      /* There is a scale, so set it.  */
+      params->flags |= ScaleSet;
+      params->scale = GetContentScale (view->scale);
+    }
 }
 
 void
@@ -1763,6 +1759,7 @@ SubcompositorUpdate (Subcompositor *subcompositor)
   RenderBuffer buffer;
   int min_x, min_y;
   int age;
+  DrawParams draw_params;
 
   /* Just return if no target was specified.  */
   if (!IsTargetAttached (subcompositor))
@@ -1946,7 +1943,8 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 	     when the damage region is empty.  */
 
 	  buffer = XLRenderBufferFromBuffer (view->buffer);
-	  RenderUpdateBufferForDamage (buffer, &list->view->damage);
+	  RenderUpdateBufferForDamage (buffer, &list->view->damage,
+				       GetContentScale (list->view->scale));
 
 	  if (pixman_region32_not_empty (&list->view->damage))
 	    {
@@ -2115,11 +2113,12 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 
 	   Note that if the subcompositor is not garbaged, then this
 	   has already been done.  */
-	RenderUpdateBufferForDamage (buffer, NULL);
+	RenderUpdateBufferForDamage (buffer, NULL, 0.0f);
       else if (age < 0 || age > 3)
 	/* The target contents are too old, but the damage can be
 	   trusted.  */
-	RenderUpdateBufferForDamage (buffer, &view->damage);
+	RenderUpdateBufferForDamage (buffer, &view->damage,
+				     GetContentScale (list->view->scale));
 
       if (!first)
 	{
@@ -2174,8 +2173,8 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 
       first = view;
 
-      if (ViewHaveTransform (view))
-	ViewApplyTransform (view, buffer);
+      /* Compute the transform and put it in draw_params.  */
+      ViewComputeTransform (view, &draw_params);
 
       if (!IsGarbaged (subcompositor) && (age >= 0 && age < 3))
 	{
@@ -2206,8 +2205,8 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 				 BoxStartY (temp_boxes) - min_y + ty,
 				 /* width.  */
 				 BoxWidth (temp_boxes),
-				 /* height.  */
-				 BoxHeight (temp_boxes));
+				 /* height, draw-params.  */
+				 BoxHeight (temp_boxes), &draw_params);
 	    }
 	}
       else
@@ -2228,8 +2227,8 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 			   view->abs_y - min_y + ty,
 			   /* width.  */
 			   ViewWidth (view),
-			   /* height.  */
-			   ViewHeight (view));
+			   /* height, draw-params.  */
+			   ViewHeight (view), &draw_params);
 
 	  /* Also adjust the opaque and input regions here.  */
 
@@ -2281,9 +2280,6 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 					 -list->view->abs_y);
 	    }
 	}
-
-      if (ViewHaveTransform (view))
-	RenderResetTransform (buffer);
 
     next_1:
       list = list->next;
@@ -2358,6 +2354,7 @@ SubcompositorExpose (Subcompositor *subcompositor, XEvent *event)
   Operation op;
   pixman_region32_t temp;
   RenderBuffer buffer;
+  DrawParams draw_params;
 
   /* Graphics exposures are not yet handled.  */
   if (event->type == GraphicsExpose)
@@ -2438,11 +2435,12 @@ SubcompositorExpose (Subcompositor *subcompositor, XEvent *event)
       buffer = XLRenderBufferFromBuffer (view->buffer);
       boxes = pixman_region32_rectangles (&temp, &nboxes);
 
-      /* Update the attached buffer from any damage.  */
-      RenderUpdateBufferForDamage (buffer, &list->view->damage);
+      /* Compute the transform.  */
+      ViewComputeTransform (view, &draw_params);
 
-      if (ViewHaveTransform (view))
-	ViewApplyTransform (view, buffer);
+      /* Update the attached buffer from any damage.  */
+      RenderUpdateBufferForDamage (buffer, &list->view->damage,
+				   GetContentScale (list->view->scale));
 
       for (i = 0; i < nboxes; ++i)
 	RenderComposite (buffer, subcompositor->target, op,
@@ -2455,11 +2453,9 @@ SubcompositorExpose (Subcompositor *subcompositor, XEvent *event)
 			 /* dst-y.  */
 			 BoxStartY (boxes[i]) - min_y + ty,
 			 /* width, height.  */
-			 BoxWidth (boxes[i]), BoxHeight (boxes[i]));
-
-      /* Undo transforms that were applied.  */
-      if (ViewHaveTransform (view))
-	RenderResetTransform (buffer);
+			 BoxWidth (boxes[i]), BoxHeight (boxes[i]),
+			 /* draw-params.  */
+			 &draw_params);
 
       /* Free the scratch region used to compute the intersection.  */
       pixman_region32_fini (&temp);

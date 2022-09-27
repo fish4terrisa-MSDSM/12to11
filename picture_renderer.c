@@ -35,6 +35,17 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 typedef struct _DrmFormatInfo DrmFormatInfo;
 typedef struct _DmaBufRecord DmaBufRecord;
 
+typedef struct _PictureBuffer PictureBuffer;
+
+struct _PictureBuffer
+{
+  /* The XID of the picture.  */
+  Picture picture;
+
+  /* The last draw params associated with the picture.  */
+  DrawParams params;
+};
+
 struct _DrmFormatInfo
 {
   /* The DRM format code.  */
@@ -290,21 +301,6 @@ ClearRectangle (RenderTarget target, int x, int y, int width, int height)
 			target.xid, &color, x, y, width, height);
 }
 
-static void
-ApplyTransform (RenderBuffer buffer, double divisor)
-{
-  XTransform transform;
-
-  memset (&transform, 0, sizeof transform);
-
-  transform.matrix[0][0] = XDoubleToFixed (divisor);
-  transform.matrix[1][1] = XDoubleToFixed (divisor);
-  transform.matrix[2][2] = XDoubleToFixed (1);
-
-  XRenderSetPictureTransform (compositor.display, buffer.xid,
-			      &transform);
-}
-
 static int
 ConvertOperation (Operation op)
 {
@@ -320,24 +316,68 @@ ConvertOperation (Operation op)
   abort ();
 }
 
+static double
+GetScale (DrawParams *params)
+{
+  if (params->flags & ScaleSet)
+    return params->scale;
+
+  return 1.0;
+}
+
+static void
+MaybeApplyTransform (PictureBuffer *buffer, DrawParams *params)
+{
+  XTransform transform;
+
+  if (GetScale (params) == GetScale (&buffer->params))
+    /* Nothing changed.  */
+    return;
+
+  /* Otherwise, compute and apply the new transform.  */
+  if (!params->flags)
+    /* No transform of any kind is set, use the identity matrix.  */
+    XRenderSetPictureTransform (compositor.display,
+				buffer->picture,
+				&identity_transform);
+  else
+    {
+      memset (&transform, 0, sizeof transform);
+
+      transform.matrix[0][0] = XDoubleToFixed (1.0 / params->scale);
+      transform.matrix[1][1] = XDoubleToFixed (1.0 / params->scale);
+      transform.matrix[2][2] = XDoubleToFixed (1);
+
+      XRenderSetPictureTransform (compositor.display,
+				  buffer->picture,
+				  &transform);
+    }
+
+  /* Save the parameters into buffer.  */
+  buffer->params = *params;
+}
+
 static void
 Composite (RenderBuffer buffer, RenderTarget target,
 	   Operation op, int src_x, int src_y, int x, int y,
-	   int width, int height)
+	   int width, int height, DrawParams *draw_params)
 {
+  PictureBuffer *picture_buffer;
+
+  picture_buffer = buffer.pointer;
+
+  /* Maybe set the transform if the parameters changed.  (draw_params
+     specifies a transform to apply to the buffer, not to the
+     target.)  */
+  MaybeApplyTransform (picture_buffer, draw_params);
+
+  /* Do the compositing.  */
   XRenderComposite (compositor.display, ConvertOperation (op),
-		    buffer.xid, None, target.xid,
+		    picture_buffer->picture, None, target.xid,
 		    /* src-x, src-y, mask-x, mask-y.  */
 		    src_x, src_y, 0, 0,
 		    /* dst-x, dst-y, width, height.  */
 		    x, y, width, height);
-}
-
-static void
-ResetTransform (RenderBuffer buffer)
-{
-  XRenderSetPictureTransform (compositor.display, buffer.xid,
-			      &identity_transform);
 }
 
 static int
@@ -388,9 +428,7 @@ static RenderFuncs picture_render_funcs =
     .destroy_render_target = DestroyRenderTarget,
     .fill_boxes_with_transparency = FillBoxesWithTransparency,
     .clear_rectangle = ClearRectangle,
-    .apply_transform = ApplyTransform,
     .composite = Composite,
-    .reset_transform = ResetTransform,
     .target_age = TargetAge,
     .import_fd_fence = ImportFdFence,
     .wait_fence = WaitFence,
@@ -746,6 +784,7 @@ BufferFromDmaBuf (DmaBufAttributes *attributes, Bool *error)
   xcb_generic_error_t *xerror;
   XRenderPictFormat *format;
   XRenderPictureAttributes picture_attrs;
+  PictureBuffer *buffer;
 
   /* Find the depth and bpp corresponding to the format.  */
   depth = DepthForDmabufFormat (attributes->drm_format, &bpp);
@@ -791,12 +830,16 @@ BufferFromDmaBuf (DmaBufAttributes *attributes, Bool *error)
 				  format, 0, &picture_attrs);
   XFreePixmap (compositor.display, pixmap);
 
-  return (RenderBuffer) picture;
+  /* Create the wrapper object.  */
+  buffer = XLCalloc (1, sizeof *buffer);
+  buffer->picture = picture;
+
+  return (RenderBuffer) (void *) buffer;
 
  error:
   CloseFileDescriptors (attributes);
   *error = True;
-  return (RenderBuffer) (XID) None;
+  return (RenderBuffer) NULL;
 }
 
 static void
@@ -832,6 +875,7 @@ FinishDmaBufRecord (DmaBufRecord *pending, Bool success)
 {
   Picture picture;
   XRenderPictureAttributes picture_attrs;
+  PictureBuffer *buffer;
 
   if (success)
     {
@@ -844,8 +888,12 @@ FinishDmaBufRecord (DmaBufRecord *pending, Bool success)
 				      &picture_attrs);
       XFreePixmap (compositor.display, pending->pixmap);
 
+      /* Create the wrapper structure.  */
+      buffer = XLCalloc (1, sizeof *buffer);
+      buffer->picture = picture;
+
       /* Call the creation success function with the new picture.  */
-      pending->success_func ((RenderBuffer) picture,
+      pending->success_func ((RenderBuffer) (void *) buffer,
 			     pending->data);
     }
   else
@@ -989,6 +1037,7 @@ BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
   Pixmap pixmap;
   Picture picture;
   int fd, depth, format, bpp;
+  PictureBuffer *buffer;
 
   depth = DepthForFormat (attributes->format, &bpp);
   format = attributes->format;
@@ -1000,7 +1049,7 @@ BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
   if (fd < 0)
     {
       *error = True;
-      return (RenderBuffer) (XID) None;
+      return (RenderBuffer) NULL;
     }
 
   /* Now, allocate the XIDs for the shm segment and pixmap.  */
@@ -1021,8 +1070,12 @@ BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
 				  0, &picture_attrs);
   XFreePixmap (compositor.display, pixmap);
 
+  /* Create the wrapper object.  */
+  buffer = XLCalloc (1, sizeof *buffer);
+  buffer->picture = picture;
+
   /* Return the picture.  */
-  return (RenderBuffer) picture;
+  return (RenderBuffer) (void *) buffer;
 }
 
 static int
@@ -1086,15 +1139,27 @@ ValidateShmParams (uint32_t format, uint32_t width, uint32_t height,
 static void
 FreeShmBuffer (RenderBuffer buffer)
 {
-  XRenderFreePicture (compositor.display, buffer.xid);
+  PictureBuffer *picture_buffer;
+
+  picture_buffer = buffer.pointer;
+
+  XRenderFreePicture (compositor.display,
+		      picture_buffer->picture);
+  XLFree (picture_buffer);
 }
 
 static void
 FreeDmabufBuffer (RenderBuffer buffer)
 {
+  PictureBuffer *picture_buffer;
+
+  picture_buffer = buffer.pointer;
+
   /* N.B. that the picture is the only reference to the pixmap
      here.  */
-  XRenderFreePicture (compositor.display, buffer.xid);
+  XRenderFreePicture (compositor.display,
+		      picture_buffer->picture);
+  XLFree (picture_buffer);
 }
 
 static void

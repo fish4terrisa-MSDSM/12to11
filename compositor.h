@@ -103,6 +103,8 @@ typedef union _RenderTarget RenderTarget;
 typedef union _RenderBuffer RenderBuffer;
 typedef union _RenderFence RenderFence;
 
+typedef struct _DrawParams DrawParams;
+
 typedef struct _DmaBufAttributes DmaBufAttributes;
 typedef struct _SharedMemoryAttributes SharedMemoryAttributes;
 
@@ -119,6 +121,21 @@ enum _Operation
     OperationOver,
     OperationSource,
   };
+
+enum
+  {
+    /* Scale has been set.  */
+    ScaleSet	   = 1,
+  };
+
+struct _DrawParams
+{
+  /* Which fields are set.  */
+  int flags;
+
+  /* A scale factor to apply to the buffer.  */
+  double scale;
+};
 
 struct _SharedMemoryAttributes
 {
@@ -241,18 +258,12 @@ struct _RenderFuncs
   /* Clear the given rectangle.  */
   void (*clear_rectangle) (RenderTarget, int, int, int, int);
 
-  /* Apply a projective transform to the given buffer.  The first
-     argument is a scale factor.  */
-  void (*apply_transform) (RenderBuffer, double);
-
   /* Composite width, height, from the given buffer onto the given
      target, at x, y.  The arguments are: buffer, target, operation,
-     source_x, source_y, x, y, width, height.  */
+     source_x, source_y, x, y, width, height, params.  params
+     describes how to transform the given buffer.  */
   void (*composite) (RenderBuffer, RenderTarget, Operation, int, int,
-		     int, int, int, int);
-
-  /* Reset the transform for the given buffer.  */
-  void (*reset_transform) (RenderBuffer);
+		     int, int, int, int, DrawParams *);
 
   /* Finish rendering, and swap changes to display.  May be NULL.  */
   void (*finish_render) (RenderTarget);
@@ -349,8 +360,10 @@ struct _BufferFuncs
   /* Notice that the given buffer has been damaged.  May be NULL.  If
      the given NULL damage, assume that the entire buffer has been
      damaged.  Must be called at least once before any rendering can
-     be performed on the buffer.  */
-  void (*update_buffer_for_damage) (RenderBuffer, pixman_region32_t *);
+     be performed on the buffer.  3rd arg is the scale by which to
+     divide the buffer.  */
+  void (*update_buffer_for_damage) (RenderBuffer, pixman_region32_t *,
+				    float);
 
   /* Return whether or not the buffer contents can be released early,
      by being copied to an offscreen buffer.  */
@@ -376,10 +389,8 @@ extern void RenderStartRender (RenderTarget);
 extern void RenderFillBoxesWithTransparency (RenderTarget, pixman_box32_t *,
 					     int, int, int);
 extern void RenderClearRectangle (RenderTarget, int, int, int, int);
-extern void RenderApplyTransform (RenderBuffer, double);
 extern void RenderComposite (RenderBuffer, RenderTarget, Operation, int,
-			     int, int, int, int, int);
-extern void RenderResetTransform (RenderBuffer);
+			     int, int, int, int, int, DrawParams *);
 extern void RenderFinishRender (RenderTarget);
 extern int RenderTargetAge (RenderTarget);
 extern RenderFence RenderImportFdFence (int, Bool *);
@@ -398,7 +409,8 @@ extern Bool RenderValidateShmParams (uint32_t, uint32_t, uint32_t, int32_t,
 				     int32_t, size_t);
 extern void RenderFreeShmBuffer (RenderBuffer);
 extern void RenderFreeDmabufBuffer (RenderBuffer);
-extern void RenderUpdateBufferForDamage (RenderBuffer, pixman_region32_t *);
+extern void RenderUpdateBufferForDamage (RenderBuffer, pixman_region32_t *,
+					 float);
 extern Bool RenderCanReleaseNow (RenderBuffer);
 
 /* Defined in run.c.  */
@@ -832,6 +844,10 @@ struct _Surface
 
   /* The associated sync acquire fd, or -1.  */
   int acquire_fence;
+
+  /* The scale factor used to convert from surface coordinates to
+     window coordinates.  */
+  double factor;
 };
 
 struct _RoleFuncs
@@ -851,6 +867,7 @@ struct _RoleFuncs
   void (*post_resize) (Surface *, Role *, int, int, int, int);
   void (*move_by) (Surface *, Role *, int, int);
   void (*rescale) (Surface *, Role *);
+  void (*parent_rescale) (Surface *, Role *);
   void (*note_desync_child) (Surface *, Role *);
   void (*note_child_synced) (Surface *, Role *);
 };

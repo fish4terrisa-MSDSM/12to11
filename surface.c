@@ -509,11 +509,92 @@ static void
 ApplyScale (Surface *surface)
 {
   int scale, effective;
+  double b, g, e, d;
+  XLList *subsurface;
+  Role *role;
 
   scale = surface->current_state.buffer_scale;
   effective = GetEffectiveScale (scale);
 
   ViewSetScale (surface->view, effective);
+
+  /* Now calculate the surface factor, a factor used to scale surface
+     coordinates to view (X window) coordinates.
+
+     The scale we want is the width of the view (area on the X screen)
+     divided by the surface width, which is the width of the buffer
+     after it has been shrunk B - 1 times, B being the buffer scale.
+
+     However, the size of the view is not available during computation.
+     So, computing the scale looks something like this:
+
+	 A = width of buffer <-------------+-- we must reduce these out
+	 B = buffer scale                  |
+	 C = width of view <---------------+
+	 L = surface width <---------------+
+	 G = global scale
+	 E = scale after accounting for difference between the global
+	     and buffer scales
+	 D = desired scale, otherwise C / surface width
+
+	 A = 2004
+	 B = 3
+	 G = 2
+
+	 L = A / B
+	 E = G - B
+
+     if E is not less than 0
+
+         E = E + 1
+
+     else
+
+         E = 1 / abs (E - 1)
+
+     finally
+
+	C = A * E
+	D = C / L
+
+	D = (A * E) / (A / B)
+	D = B * E
+
+  Phew.  */
+
+  b = scale;
+  g = global_scale_factor;
+  e = g - b;
+
+  if (e >= 0.0)
+    e = e + 1;
+  else
+    e = 1.0 / fabs (e - 1);
+
+  d = b * e;
+
+  if (surface->factor != d)
+    {
+      /* The scale factor changed.  */
+      surface->factor = d;
+
+      /* Notify all subsurfaces to move themselves to a more correct
+	 location.  */
+      subsurface = surface->subsurfaces;
+      for (; subsurface; subsurface = subsurface->next)
+	{
+	  /* Get the subsurface role.  */
+	  role = subsurface->data;
+
+	  /* Make sure it still has a surface, since it should not be
+	     in surface->subsurfaces otherwise.  */
+	  XLAssert (role->surface != NULL);
+
+	  /* Call the parent rescale hook.  */
+	  if (role->funcs.rescale)
+	    role->funcs.rescale (role->surface, role);
+	}
+    }
 }
 
 static void
@@ -530,7 +611,7 @@ ApplyOpaqueRegion (Surface *surface)
     {
       pixman_region32_init (&temp);
       XLScaleRegion (&temp, &surface->current_state.opaque,
-		     global_scale_factor, global_scale_factor);
+		     surface->factor, surface->factor);
       ViewSetOpaque (surface->view, &temp);
       pixman_region32_fini (&temp);
     }
@@ -550,7 +631,7 @@ ApplyInputRegion (Surface *surface)
     {
       pixman_region32_init (&temp);
       XLScaleRegion (&temp, &surface->current_state.input,
-		     global_scale_factor, global_scale_factor);
+		     surface->factor, surface->factor);
       ViewSetInput (surface->view, &temp);
       pixman_region32_fini (&temp);
     }
@@ -566,9 +647,9 @@ HandleScaleChanged (void *data, int new_scale)
 
   /* First, reapply various regions that depend on the surface
      scale.  */
+  ApplyScale (surface);
   ApplyInputRegion (surface);
   ApplyOpaqueRegion (surface);
-  ApplyScale (surface);
 
   /* Next, call any role-specific hooks.  */
   if (surface->role && surface->role->funcs.rescale)
@@ -639,7 +720,7 @@ ApplySurfaceDamage (Surface *surface)
     {
       pixman_region32_init (&temp);
       XLScaleRegion (&temp, &surface->current_state.surface,
-		     global_scale_factor, global_scale_factor);
+		     surface->factor, surface->factor);
       ViewDamage (surface->view, &temp);
       pixman_region32_fini (&temp);
     }
@@ -788,6 +869,12 @@ InternalCommit (Surface *surface, State *pending)
 	}
     }
 
+  if (pending->pending & PendingBufferScale)
+    {
+      surface->current_state.buffer_scale = pending->buffer_scale;
+      ApplyScale (surface);
+    }
+
   if (pending->pending & PendingInputRegion)
     {
       pixman_region32_copy (&surface->current_state.input,
@@ -800,12 +887,6 @@ InternalCommit (Surface *surface, State *pending)
       pixman_region32_copy (&surface->current_state.opaque,
 			    &pending->opaque);
       ApplyOpaqueRegion (surface);
-    }
-
-  if (pending->pending & PendingBufferScale)
-    {
-      surface->current_state.buffer_scale = pending->buffer_scale;
-      ApplyScale (surface);
     }
 
   if (pending->pending & PendingAttachments)
@@ -1151,12 +1232,12 @@ XLCreateSurface (struct wl_client *client,
   InitState (&surface->current_state);
   InitState (&surface->cached_state);
 
+  /* Apply the scale to initialize the default.  */
+  ApplyScale (surface);
+
   /* Now the default input has been initialized, so apply it to the
      view.  */
   ApplyInputRegion (surface);
-
-  /* Likewise for the scale.  */
-  ApplyScale (surface);
 
   /* Initially, allow surfaces to accept any kind of role.  */
   surface->role_type = AnythingType;

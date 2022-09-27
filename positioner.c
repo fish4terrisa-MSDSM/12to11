@@ -60,6 +60,9 @@ struct _Positioner
   int refcount;
 };
 
+/* Scale factor used during constraint adjustment calculation.  */
+static double scale_adjustment_factor;
+
 static void
 Destroy (struct wl_client *client, struct wl_resource *resource)
 {
@@ -502,7 +505,7 @@ TryFlipX (Positioner *positioner, int x, int width, int cx, int cwidth,
   CalculatePosition (&new, &new_x, NULL);
 
   /* Scale that position.  */
-  new_x *= global_scale_factor;
+  new_x *= scale_adjustment_factor;
 
   /* If new_x is still constrained, use the previous position.  */
   if (new_x + offset < cx
@@ -598,7 +601,7 @@ TryFlipY (Positioner *positioner, int y, int height, int cy, int cheight,
   CalculatePosition (&new, NULL, &new_y);
 
   /* Scale that position.  */
-  new_y *= global_scale_factor;
+  new_y *= scale_adjustment_factor;
 
   /* If new_y is still constrained, use the previous position.  */
   if (new_y + offset < cy
@@ -670,8 +673,8 @@ GetAdjustmentOffset (Role *parent, int *off_x, int *off_y)
 			       &parent_gy, NULL, NULL);
   XLXdgRoleCurrentRootPosition (parent, &root_x, &root_y);
 
-  *off_x = root_x + parent_gx * global_scale_factor;
-  *off_y = root_y + parent_gy * global_scale_factor;
+  *off_x = root_x + parent_gx * parent->surface->factor;
+  *off_y = root_y + parent_gy * parent->surface->factor;
 }
 
 static void
@@ -681,13 +684,17 @@ ApplyConstraintAdjustment (Positioner *positioner, Role *parent, int x,
 {
   int width, height, cx, cy, cwidth, cheight, off_x, off_y;
 
-  width = positioner->width * global_scale_factor;
-  height = positioner->height * global_scale_factor;
+  width = positioner->width * scale_adjustment_factor;
+  height = positioner->height * scale_adjustment_factor;
+
+  /* Set the factor describing how to convert surface coordinates to
+     window ones.  */
+  scale_adjustment_factor = parent->surface->factor;
 
   /* Constraint calculations are simplest if we use scaled
      coordinates, and then unscale them later.  */
-  x *= global_scale_factor;
-  y *= global_scale_factor;
+  x *= scale_adjustment_factor;
+  y *= scale_adjustment_factor;
 
   if (positioner->constraint_adjustment
       == XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_NONE)
@@ -733,10 +740,10 @@ ApplyConstraintAdjustment (Positioner *positioner, Role *parent, int x,
 		off_y, &y, &height);
 
  finish:
-  *x_out = x / global_scale_factor;
-  *y_out = y / global_scale_factor;
-  *width_out = width / global_scale_factor;
-  *height_out = height / global_scale_factor;
+  *x_out = x / scale_adjustment_factor;
+  *y_out = y / scale_adjustment_factor;
+  *width_out = width / scale_adjustment_factor;
+  *height_out = height / scale_adjustment_factor;
 }
 
 void

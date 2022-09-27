@@ -130,23 +130,12 @@ RenderClearRectangle (RenderTarget target, int x, int y, int width, int height)
 }
 
 void
-RenderApplyTransform (RenderBuffer buffer, double divisor)
-{
-  render_funcs.apply_transform (buffer, divisor);
-}
-
-void
 RenderComposite (RenderBuffer source, RenderTarget target, Operation op,
-		 int src_x, int src_y, int x, int y, int width, int height)
+		 int src_x, int src_y, int x, int y, int width, int height,
+		 DrawParams *draw_params)
 {
   render_funcs.composite (source, target, op, src_x, src_y, x, y,
-			  width, height);
-}
-
-void
-RenderResetTransform (RenderBuffer buffer)
-{
-  render_funcs.reset_transform (buffer);
+			  width, height, draw_params);
 }
 
 void
@@ -251,12 +240,13 @@ RenderFreeDmabufBuffer (RenderBuffer buffer)
 }
 
 void
-RenderUpdateBufferForDamage (RenderBuffer buffer, pixman_region32_t *damage)
+RenderUpdateBufferForDamage (RenderBuffer buffer, pixman_region32_t *damage,
+			     float scale)
 {
   if (!buffer_funcs.update_buffer_for_damage)
     return;
 
-  buffer_funcs.update_buffer_for_damage (buffer, damage);
+  buffer_funcs.update_buffer_for_damage (buffer, damage, scale);
 }
 
 Bool

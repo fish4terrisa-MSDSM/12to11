@@ -1167,8 +1167,8 @@ GetResizeDimensions (Surface *surface, Role *role, int *x_out,
 {
   XLXdgRoleGetCurrentGeometry (role, NULL, NULL, x_out, y_out);
 
-  *x_out *= global_scale_factor;
-  *y_out *= global_scale_factor;
+  *x_out *= surface->factor;
+  *y_out *= surface->factor;
 }
 
 static void
@@ -1467,7 +1467,10 @@ XLXdgRoleCalcNewWindowSize (Role *role, int width, int height,
 
   xdg_role = XdgRoleFromRole (role);
 
-  if (!xdg_role->current_state.window_geometry_width)
+  if (!xdg_role->current_state.window_geometry_width
+      /* If no surface exists, we might as well return immediately,
+	 since the scale factor will not be obtainable.  */
+      || !role->surface)
     {
       *new_width = width;
       *new_height = height;
@@ -1480,8 +1483,8 @@ XLXdgRoleCalcNewWindowSize (Role *role, int width, int height,
 
   /* Adjust the current_width and current_height by the global scale
      factor.  */
-  current_width = (max_x - min_x + 1) / global_scale_factor;
-  current_height = (max_y - min_y + 1) / global_scale_factor;
+  current_width = (max_x - min_x + 1) / role->surface->factor;
+  current_height = (max_y - min_y + 1) / role->surface->factor;
 
   XLXdgRoleGetCurrentGeometry (role, NULL, NULL, &geometry_width,
 			       &geometry_height);

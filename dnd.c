@@ -885,11 +885,24 @@ HandleMotion (Surface *toplevel, int x, int y, uint32_t action,
   /* Find the view underneath the subcompositor.  */
   view = SubcompositorLookupView (subcompositor, x, y,
 				  &x_off, &y_off);
-  child = ViewGetData (view);
+
+  if (view)
+    child = ViewGetData (view);
+  else
+    /* No child was found.  This should be impossible in theory, but
+       other clients don't respect the window shape when sending DND
+       events.  */
+    child = NULL;
 
   /* Compute the surface-relative coordinates and scale them.  */
-  *x_out = (x - x_off) / global_scale_factor;
-  *y_out = (y - y_off) / global_scale_factor;
+
+  if (child)
+    {
+      /* x_out and y_out are only used if dnd_state.child ends up
+	 non-NULL.  */
+      *x_out = (x - x_off) / child->factor;
+      *y_out = (y - y_off) / child->factor;
+    }
 
   if (dnd_state.child == child)
     /* If nothing changed, don't do anything.  */

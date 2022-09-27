@@ -278,6 +278,7 @@ MoveWindow (XdgPopup *popup)
   int root_x, root_y, parent_gx, parent_gy;
   int geometry_x, geometry_y, x, y;
   Window window;
+  double parent_scale, current_scale;
 
   /* No parent was specified.  */
   if (!popup->parent)
@@ -285,6 +286,14 @@ MoveWindow (XdgPopup *popup)
 
   if (!popup->role || !popup->parent)
     return;
+
+  if (!popup->role->surface || !popup->parent->surface)
+    /* No surface being available means we cannot obtain the window
+       scale.  */
+    return;
+
+  parent_scale = popup->parent->surface->factor;
+  current_scale = popup->role->surface->factor;
 
   window = XLWindowFromXdgRole (popup->role);
 
@@ -295,12 +304,18 @@ MoveWindow (XdgPopup *popup)
   XLXdgRoleCurrentRootPosition (popup->parent, &root_x,
 				&root_y);
 
-  parent_gx *= global_scale_factor;
-  parent_gy *= global_scale_factor;
-  geometry_x *= global_scale_factor;
-  geometry_y *= global_scale_factor;
-  x = popup->x * global_scale_factor;
-  y = popup->y * global_scale_factor;
+  /* Parent geometry is relative to the parent coordinate system.  */
+  parent_gx *= parent_scale;
+  parent_gy *= parent_scale;
+
+  /* geometry_x and geometry_y are relative to the local coordinate
+     system.  */
+  geometry_x *= current_scale;
+  geometry_y *= current_scale;
+
+  /* X and Y are relative to the parent coordinate system.  */
+  x = popup->x * parent_scale;
+  y = popup->y * parent_scale;
 
   XMoveWindow (compositor.display, window,
 	       x + root_x + parent_gx - geometry_x,

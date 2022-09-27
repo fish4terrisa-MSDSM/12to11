@@ -779,9 +779,10 @@ UpdateCursorOutput (SeatCursor *cursor, int root_x, int root_y)
 {
   int hotspot_x, hotspot_y;
 
-  /* Scale the hotspot coordinates up by the scale.  */
-  hotspot_x = cursor->hotspot_x * global_scale_factor;
-  hotspot_y = cursor->hotspot_y * global_scale_factor;
+  /* Scale the hotspot coordinates up by the scale factor specified in
+     the surface.  */
+  hotspot_x = cursor->hotspot_x * cursor->role.surface->factor;
+  hotspot_y = cursor->hotspot_y * cursor->role.surface->factor;
 
   /* We use a rectangle 1 pixel wide and tall, originating from the
      hotspot of the pointer.  */
@@ -991,20 +992,18 @@ ComputeHotspot (SeatCursor *cursor, int min_x, int min_y,
   int dx, dy;
   int hotspot_x, hotspot_y;
 
+  if (!cursor->role.surface)
+    return;
+
   /* Scale the hotspot coordinates up by the scale.  */
-  hotspot_x = cursor->hotspot_x * global_scale_factor;
-  hotspot_y = cursor->hotspot_y * global_scale_factor;
+  hotspot_x = cursor->hotspot_x * cursor->role.surface->factor;
+  hotspot_y = cursor->hotspot_y * cursor->role.surface->factor;
 
   /* Apply the surface offsets to the hotspot as well.  */
-  dx = dy = 0;
-
-  if (cursor->role.surface)
-    {
-      dx = (cursor->role.surface->current_state.x
-	    * global_scale_factor);
-      dy = (cursor->role.surface->current_state.y
-	    * global_scale_factor);
-    }
+  dx = (cursor->role.surface->current_state.x
+	* cursor->role.surface->factor);
+  dy = (cursor->role.surface->current_state.y
+	* cursor->role.surface->factor);
 
   *x = min_x + hotspot_x - dx;
   *y = min_y + hotspot_y - dy;
@@ -2369,7 +2368,7 @@ HandleResizeComplete (Seat *seat)
 /* Forward declarations.  */
 
 static int GetXButton (int);
-static void TransformToView (View *, double, double, double *, double *);
+static void TransformToSurface (Surface *, double, double, double *, double *);
 static void SendButton (Seat *, Surface *, Time, uint32_t, uint32_t,
 			double, double);
 
@@ -2421,8 +2420,8 @@ HandleRawButton (XIRawEvent *event)
 	    {
 	      /* Otherwise, the pointer is on a different screen!  */
 
-	      TransformToView (seat->last_seen_surface->view,
-			       win_x, win_y, &dispatch_x, &dispatch_y);
+	      TransformToSurface (seat->last_seen_surface,
+				  win_x, win_y, &dispatch_x, &dispatch_y);
 	      SendButton (seat, seat->last_seen_surface, event->time,
 			  button, WL_POINTER_BUTTON_STATE_RELEASED,
 			  dispatch_x, dispatch_y);
@@ -3258,11 +3257,15 @@ EnteredSurface (Seat *seat, Surface *surface, Time time,
 }
 
 static void
-TransformToView (View *view, double event_x, double event_y,
-		 double *view_x_out, double *view_y_out)
+TransformToSurface (Surface *surface, double event_x, double event_y,
+		    double *view_x_out, double *view_y_out)
 {
   int int_x, int_y, x, y;
   double view_x, view_y;
+  View *view;
+
+  /* Use the surface's view.  */
+  view = surface->view;
 
   /* Even though event_x and event_y are doubles, they cannot exceed
      65535.0, so this cannot overflow.  */
@@ -3277,8 +3280,8 @@ TransformToView (View *view, double event_x, double event_y,
 
   /* Finally, transform the coordinates by the global output
      scale.  */
-  *view_x_out = view_x / global_scale_factor;
-  *view_y_out = view_y / global_scale_factor;
+  *view_x_out = view_x / surface->factor;
+  *view_y_out = view_y / surface->factor;
 }
 
 static Bool
@@ -3411,9 +3414,7 @@ DispatchEntryExit (Subcompositor *subcompositor, XIEnterEvent *event)
 
     after_dispatch_set:
 
-      TransformToView (dispatch->view, event_x,
-		       event_y, &x, &y);
-
+      TransformToSurface (dispatch, event_x, event_y, &x, &y);
       EnteredSurface (seat, dispatch, event->time, x, y, False);
     }
 
@@ -3688,8 +3689,7 @@ DispatchMotion (Subcompositor *subcompositor, XIDeviceEvent *xev)
     /* Inside a surface; cancel external drag and drop.  */
     XLDoDragLeave (seat);
 
-  TransformToView (dispatch->view, event_x, event_y,
-		   &x, &y);
+  TransformToSurface (dispatch, event_x, event_y, &x, &y);
   EnteredSurface (seat, dispatch, xev->time, x, y, False);
 
   if (!HandleValuatorMotion (seat, dispatch, x, y, xev))
@@ -3753,8 +3753,8 @@ CancelGrab (Seat *seat, Time time, Window source,
 
 	  /* Finally, translate the coordinates to the target
 	     view.  */
-	  TransformToView (seat->pointer_unlock_surface->view,
-			   x, y, &x, &y);
+	  TransformToSurface (seat->pointer_unlock_surface,
+			      x, y, &x, &y);
 	}
     }
 
@@ -3925,8 +3925,8 @@ DispatchButton (Subcompositor *subcompositor, XIDeviceEvent *xev)
 
  after_dispatch_set:
 
-  TransformToView (dispatch->view, xev->event_x,
-		   xev->event_y, &x, &y);
+  TransformToSurface (dispatch, xev->event_x, xev->event_y,
+		      &x, &y);
   EnteredSurface (seat, dispatch, xev->time, x, y,
 		  False);
 
@@ -4891,7 +4891,7 @@ ForceEntry (Seat *seat, Window source, double x, double y)
 
 	  /* Finally, translate the coordinates to the target
 	     view.  */
-	  TransformToView (surface->view,  x, y, &x, &y);
+	  TransformToSurface (surface, x, y, &x, &y);
 	}
     }
   else

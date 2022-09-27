@@ -488,9 +488,13 @@ MaybeUpdateOutputs (Subsurface *subsurface)
     /* Valid base coordinates are not yet available.  */
     return;
 
+  if (!subsurface->parent)
+    /* A valid scale factor is not available.  */
+    return;
+
   /* Compute the positions relative to the parent.  */
-  x = subsurface->current_substate.x * global_scale_factor;
-  y = subsurface->current_substate.y * global_scale_factor;
+  x = subsurface->current_substate.x * subsurface->parent->factor;
+  y = subsurface->current_substate.y * subsurface->parent->factor;
 
   /* And the base X and Y.  */
   base_x = subsurface->role.surface->output_x;
@@ -541,12 +545,12 @@ AfterParentCommit (Surface *surface, void *data)
       subsurface->current_substate.y
 	= subsurface->pending_substate.y;
 
-      /* The X and Y coordinates here are also surface-local and must
+      /* The X and Y coordinates here are also parent-local and must
 	 be scaled by the global scale factor.  */
 
       ViewMove (subsurface->role.surface->view,
-		subsurface->current_substate.x * global_scale_factor,
-		subsurface->current_substate.y * global_scale_factor);
+		subsurface->current_substate.x * subsurface->parent->factor,
+		subsurface->current_substate.y * subsurface->parent->factor);
     }
 
   /* And any cached surface state too.  */
@@ -695,8 +699,15 @@ Rescale (Surface *surface, Role *role)
      position.  */
 
   ViewMove (surface->view,
-	    subsurface->current_substate.x * global_scale_factor,
-	    subsurface->current_substate.y * global_scale_factor);
+	    subsurface->current_substate.x * subsurface->parent->factor,
+	    subsurface->current_substate.y * subsurface->parent->factor);
+}
+
+static void
+ParentRescale (Surface *surface, Role *role)
+{
+  /* This is called when the scale factor of the parent changes.  */
+  Rescale (surface, role);
 }
 
 static void
@@ -843,6 +854,7 @@ GetSubsurface (struct wl_client *client, struct wl_resource *resource,
   subsurface->role.funcs.early_commit = EarlyCommit;
   subsurface->role.funcs.get_window = GetWindow;
   subsurface->role.funcs.rescale = Rescale;
+  subsurface->role.funcs.parent_rescale = ParentRescale;
   subsurface->role.funcs.note_child_synced = NoteChildSynced;
   subsurface->role.funcs.note_desync_child = NoteDesyncChild;
 
@@ -937,9 +949,9 @@ XLUpdateOutputsForChildren (Surface *parent, int base_x, int base_y)
       child = item->data;
       subsurface = SubsurfaceFromRole (child->role);
       output_x = (subsurface->current_substate.x
-		  * global_scale_factor);
+		  * parent->factor);
       output_y = (subsurface->current_substate.y
-		  * global_scale_factor);
+		  * parent->factor);
       output_width = ViewWidth (child->view);
       output_height = ViewHeight (child->view);
 

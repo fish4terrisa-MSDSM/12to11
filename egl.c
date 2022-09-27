@@ -126,9 +126,6 @@ struct _EglBuffer
   /* The width and height of the buffer.  */
   int width, height;
 
-  /* The projective scale factor.  */
-  GLfloat scale;
-
   /* Various different buffers.  */
   union {
     /* The type of the buffer.  */
@@ -1128,15 +1125,6 @@ ClearRectangle (RenderTarget target, int x, int y, int width, int height)
   FillBoxesWithTransparency (target, &box, 1, 0, 0);
 }
 
-static void
-ApplyTransform (RenderBuffer buffer, double divisor)
-{
-  EglBuffer *egl_buffer;
-
-  egl_buffer = buffer.pointer;
-  egl_buffer->scale = 1.0f / (GLfloat) divisor;
-}
-
 static CompositeProgram *
 FindProgram (EglBuffer *buffer)
 {
@@ -1177,7 +1165,7 @@ GetTextureTarget (EglBuffer *buffer)
 static void
 Composite (RenderBuffer buffer, RenderTarget target,
 	   Operation op, int src_x, int src_y, int x, int y,
-	   int width, int height)
+	   int width, int height, DrawParams *params)
 {
   GLfloat verts[8], texcoord[8];
   GLfloat x1, x2, y1, y2;
@@ -1185,6 +1173,7 @@ Composite (RenderBuffer buffer, RenderTarget target,
   EglBuffer *egl_buffer;
   CompositeProgram *program;
   GLenum tex_target;
+  GLfloat scale;
 
   egl_target = target.pointer;
   egl_buffer = buffer.pointer;
@@ -1244,13 +1233,18 @@ Composite (RenderBuffer buffer, RenderTarget target,
   else
     glDisable (GL_BLEND);
 
+  if (params->flags & ScaleSet)
+    scale = params->scale;
+  else
+    scale = 1.0f;
+
   glActiveTexture (GL_TEXTURE0);
   glBindTexture (tex_target, egl_buffer->texture);
   glTexParameteri (tex_target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glUseProgram (program->program);
 
   glUniform1i (program->texture, 0);
-  glUniform1f (program->scale, egl_buffer->scale);
+  glUniform1f (program->scale, scale);
   glUniform1i (program->invert_y, egl_buffer->flags & InvertY);
   glVertexAttribPointer (program->position, 2, GL_FLOAT,
 			 GL_FALSE, 0, verts);
@@ -1266,12 +1260,6 @@ Composite (RenderBuffer buffer, RenderTarget target,
   glDisableVertexAttribArray (program->texcoord);
 
   glBindTexture (tex_target, 0);
-}
-
-static void
-ResetTransform (RenderBuffer buffer)
-{
-  /* TODO... */
 }
 
 static void
@@ -1421,9 +1409,7 @@ static RenderFuncs egl_render_funcs =
     .start_render = StartRender,
     .fill_boxes_with_transparency = FillBoxesWithTransparency,
     .clear_rectangle = ClearRectangle,
-    .apply_transform = ApplyTransform,
     .composite = Composite,
-    .reset_transform = ResetTransform,
     .finish_render = FinishRender,
     .target_age = TargetAge,
     .import_fd_fence = ImportFdFence,
@@ -1514,7 +1500,6 @@ BufferFromDmaBuf (DmaBufAttributes *attributes, Bool *error)
   buffer->texture = EGL_NO_TEXTURE;
   buffer->width = attributes->width;
   buffer->height = attributes->height;
-  buffer->scale = 1.0f;
   buffer->u.type = DmaBufBuffer;
   i = 0;
 
@@ -1664,7 +1649,6 @@ BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
   buffer->texture = EGL_NO_TEXTURE;
   buffer->width = attributes->width;
   buffer->height = attributes->height;
-  buffer->scale = 1.0f;
   buffer->u.type = ShmBuffer;
 
   /* Record the buffer data.  */
@@ -2134,22 +2118,19 @@ UpdateBuffer (RenderBuffer buffer, pixman_region32_t *damage)
 }
 
 static void
-UpdateBufferForDamage (RenderBuffer buffer, pixman_region32_t *damage)
+UpdateBufferForDamage (RenderBuffer buffer, pixman_region32_t *damage,
+		       float scale)
 {
-  EglBuffer *egl_buffer;
   pixman_region32_t region;
 
-  egl_buffer = buffer.pointer;
-
-  if (egl_buffer->scale != 1.0f && damage)
+  if (scale != 1.0f && damage)
     {
       /* Scale the damage, specified in scaled coordinates, down to
 	 texture coordinates.  */
 
       pixman_region32_init (&region);
-      XLScaleRegion (&region, damage,
-		     1.0f / egl_buffer->scale,
-		     1.0f / egl_buffer->scale);
+      XLScaleRegion (&region, damage, 1.0f / scale,
+		     1.0f / scale);
       UpdateBuffer (buffer, &region);
       pixman_region32_fini (&region);
     }
