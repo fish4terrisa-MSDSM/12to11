@@ -89,11 +89,13 @@ This directory is organized as follows:
                   those containing MIME types or shaders
 
 Building the source code is simple, provided that you have the
-necessary libwayland-server library, wayland-scanner, pixman, XCB, and
-X extension libraries installed:
+necessary libwayland-server library, pixman, XCB, and X extension
+libraries installed:
 
   xmkmf # to generate the Makefile
   make  # to build the binary
+
+wayland-scanner is also required when building from the repository.
 
 Running the binary should be simple as well:
 
