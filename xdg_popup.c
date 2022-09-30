@@ -278,7 +278,6 @@ MoveWindow (XdgPopup *popup)
   int root_x, root_y, parent_gx, parent_gy;
   int geometry_x, geometry_y, x, y;
   Window window;
-  double parent_scale, current_scale;
 
   /* No parent was specified.  */
   if (!popup->parent)
@@ -292,9 +291,6 @@ MoveWindow (XdgPopup *popup)
        scale.  */
     return;
 
-  parent_scale = popup->parent->surface->factor;
-  current_scale = popup->role->surface->factor;
-
   window = XLWindowFromXdgRole (popup->role);
 
   XLXdgRoleGetCurrentGeometry (popup->parent, &parent_gx,
@@ -305,17 +301,17 @@ MoveWindow (XdgPopup *popup)
 				&root_y);
 
   /* Parent geometry is relative to the parent coordinate system.  */
-  parent_gx *= parent_scale;
-  parent_gy *= parent_scale;
+  TruncateSurfaceToWindow (popup->parent->surface, parent_gx, parent_gy,
+			   &parent_gx, &parent_gy);
 
   /* geometry_x and geometry_y are relative to the local coordinate
      system.  */
-  geometry_x *= current_scale;
-  geometry_y *= current_scale;
+  TruncateSurfaceToWindow (popup->role->surface, geometry_x,
+			   geometry_y, &geometry_x, &geometry_y);
 
   /* X and Y are relative to the parent coordinate system.  */
-  x = popup->x * parent_scale;
-  y = popup->y * parent_scale;
+  TruncateSurfaceToWindow (popup->parent->surface, popup->x,
+			   popup->y, &x, &y);
 
   XMoveWindow (compositor.display, window,
 	       x + root_x + parent_gx - geometry_x,
@@ -754,6 +750,15 @@ HandleParentResize (void *data)
     InternalReposition (popup);
 }
 
+static Bool
+IsWindowMapped (Role *role, XdgRoleImplementation *impl)
+{
+  XdgPopup *popup;
+
+  popup = PopupFromRoleImpl (impl);
+  return popup->state & StateIsMapped;
+}
+
 static const struct xdg_popup_interface xdg_popup_impl =
   {
     .destroy = Destroy,
@@ -798,6 +803,7 @@ XLGetXdgPopup (struct wl_client *client, struct wl_resource *resource,
   popup->impl.funcs.ack_configure = AckConfigure;
   popup->impl.funcs.note_size = NoteSize;
   popup->impl.funcs.handle_geometry_change = HandleGeometryChange;
+  popup->impl.funcs.is_window_mapped = IsWindowMapped;
 
   if (parent_resource)
     {

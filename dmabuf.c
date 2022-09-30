@@ -1068,9 +1068,6 @@ XLInitDmabuf (void)
   /* And try to create the format table.  */
   size = WriteFormatTable ();
 
-  /* Create an unmapped, InputOnly window, that is used to receive
-     roundtrip events.  */
-
   global_dmabuf = wl_global_create (compositor.wl_display,
 				    &zwp_linux_dmabuf_v1_interface,
 				    /* If writing the format table

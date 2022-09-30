@@ -123,6 +123,11 @@ struct _EglBuffer
   /* The texture name of any generated texture.  */
   GLuint texture;
 
+  /* 3x3 matrix that is used to transform texcoord into actual texture
+     coordinates.  Note that GLfloat[9] should be the same type as
+     Matrix.  */
+  GLfloat matrix[9];
+
   /* The width and height of the buffer.  */
   int width, height;
 
@@ -180,12 +185,16 @@ struct _CompositeProgram
   /* The index of the texture uniform.  */
   GLuint texture;
 
-  /* The index of the scale uniform.  */
-  GLuint scale;
+  /* The index of the source uniform.  */
+  GLuint source;
 
   /* The index of the invert_y uniform.  */
   GLuint invert_y;
 };
+
+/* This macro makes column major order easier to reason about for C
+   folks.  */
+#define Index(matrix, row, column) ((matrix)[(column) * 3 + (row)])
 
 /* All known SHM formats.  */
 static FormatInfo known_shm_formats[] =
@@ -532,6 +541,134 @@ EglInitGlFuncs (void)
 }
 
 static Visual *
+PickBetterVisual (Visual *visual, int *depth)
+{
+  XRenderPictFormat target_format, *format, *found;
+  int i, num_x_formats, bpp, n_visuals, j;
+  EGLint alpha_size;
+  XPixmapFormatValues *formats;
+  XVisualInfo empty_template, *visuals;
+
+  /* First, see if there is already an alpha channel.  */
+  format = XRenderFindVisualFormat (compositor.display, visual);
+
+  if (!format)
+    return visual;
+
+  if (format->type != PictTypeDirect)
+    /* Can this actually happen? */
+    return visual;
+
+  if (format->direct.alphaMask)
+    return visual;
+
+  /* Next, build the target format from the visual format.  */
+  target_format.type = PictTypeDirect;
+  target_format.direct = format->direct;
+
+  /* Obtain the size of the alpha mask in the EGL config.  */
+  if (!eglGetConfigAttrib (egl_display, egl_config,
+			   EGL_ALPHA_SIZE, &alpha_size))
+    return visual;
+
+  if (alpha_size > 16)
+    /* If the alpha mask is too big, then use the chosen visual.  */
+    return visual;
+
+  /* Add the alpha mask.  */
+  for (i = 0; i < alpha_size; ++i)
+    target_format.direct.alphaMask |= 1 << i;
+
+  /* Look for matching picture formats with the same bpp and a larger
+     depth.  */
+  formats = XListPixmapFormats (compositor.display, &num_x_formats);
+
+  if (!formats)
+    return visual;
+
+  /* Obtain the number of bits per pixel for the given depth.  */
+  bpp = 0;
+
+  for (i = 0; i < num_x_formats; ++i)
+    {
+      if (formats[i].depth == format->depth)
+	bpp = formats[i].bits_per_pixel;
+    }
+
+  if (!bpp)
+    {
+      XFree (formats);
+      return visual;
+    }
+
+  /* Get a list of all visuals.  */
+  empty_template.screen = DefaultScreen (compositor.display);
+  visuals = XGetVisualInfo (compositor.display, VisualScreenMask,
+			    &empty_template, &n_visuals);
+
+  if (!visuals)
+    {
+      XFree (formats);
+      return visual;
+    }
+
+  /* Now, loop through each depth.  */
+
+  for (i = 0; i < num_x_formats; ++i)
+    {
+      if (formats[i].depth > format->depth
+	  && formats[i].bits_per_pixel == bpp)
+	{
+	  /* Try to find a matching picture format.  */
+	  target_format.depth = formats[i].depth;
+
+	  found = XRenderFindFormat (compositor.display,
+				     PictFormatType
+				     | PictFormatDepth
+				     | PictFormatRed
+				     | PictFormatGreen
+				     | PictFormatBlue
+				     | PictFormatRedMask
+				     | PictFormatBlueMask
+				     | PictFormatGreenMask
+				     | PictFormatAlphaMask,
+				     &target_format, 0);
+
+	  if (found)
+	    {
+	      /* Now try to find the corresponding visual.  */
+
+	      for (j = 0; j < n_visuals; ++j)
+		{
+		  if (visuals[j].depth != formats[i].depth)
+		    continue;
+
+		  if (XRenderFindVisualFormat (compositor.display,
+					       visuals[j].visual) == found)
+		    {
+		      /* We got a usable visual with an alpha channel
+			 otherwise matching the characteristics of the
+			 visual specified by EGL.  Return.  */
+		      *depth = formats[i].depth;
+		      visual = visuals[j].visual;
+
+		      XFree (visuals);
+		      XFree (formats);
+		      return visual;
+		    }
+		}
+	    }
+	}
+    }
+
+  /* Otherwise, nothing was found.  Return the original visual
+     untouched, but free visuals.  */
+  XFree (visuals);
+  XFree (formats);
+  return visual;
+}
+
+static Visual *
 FindVisual (VisualID visual, int *depth)
 {
   XVisualInfo vinfo, *visuals;
@@ -568,6 +705,12 @@ FindVisual (VisualID visual, int *depth)
      them.  */
 
   value = visuals->visual;
+
+  /* EGL does not know how to find visuals with an alpha channel, even
+     if we specify one in the framebuffer configuration.  Detect when
+     that is the case, and pick a better visual.  */
+  value = PickBetterVisual (value, &visuals->depth);
+
   *depth = visuals->depth;
 
   XLFree (visuals);
@@ -735,8 +878,8 @@ EglCompileCompositeProgram (CompositeProgram *program,
 					   "pos");
   program->texture = glGetUniformLocation (program->program,
 					  "texture");
-  program->scale = glGetUniformLocation (program->program,
-					 "scale");
+  program->source = glGetUniformLocation (program->program,
+					  "source");
   program->invert_y = glGetUniformLocation (program->program,
 					    "invert_y");
 
@@ -1163,6 +1306,39 @@ GetTextureTarget (EglBuffer *buffer)
 }
 
 static void
+ComputeTransformMatrix (EglBuffer *buffer, DrawParams *params)
+{
+  /* Update the transformation matrix of BUFFER.  This is a 3x3
+     transformation matrix that maps from texcoords to actual
+     coordinates in the buffer.  */
+
+  /* Copy over the identity transform.  */
+  MatrixIdentity (&buffer->matrix);
+
+  /* Set the X and Y scales.  */
+  if (params->flags & ScaleSet)
+    {
+      Index (buffer->matrix, 0, 0)
+	= (float) (1.0 / params->scale);
+      Index (buffer->matrix, 1, 1)
+	= (float) (1.0 / params->scale);
+    }
+
+  /* Set the offsets.  */
+  if (params->flags & OffsetSet)
+    MatrixTranslate (&buffer->matrix,
+		     (float) (params->off_x / buffer->width),
+		     (float) (params->off_y / buffer->height));
+
+  /* Set the stretch.  */
+  if (params->flags & StretchSet)
+    /* Scale the buffer down by this much.  */
+    MatrixScale (&buffer->matrix,
+		 (float) (params->crop_width / params->stretch_width),
+		 (float) (params->crop_height / params->stretch_height));
+}
+
+static void
 Composite (RenderBuffer buffer, RenderTarget target,
 	   Operation op, int src_x, int src_y, int x, int y,
 	   int width, int height, DrawParams *params)
@@ -1173,7 +1349,6 @@ Composite (RenderBuffer buffer, RenderTarget target,
   EglBuffer *egl_buffer;
   CompositeProgram *program;
   GLenum tex_target;
-  GLfloat scale;
 
   egl_target = target.pointer;
   egl_buffer = buffer.pointer;
@@ -1187,6 +1362,10 @@ Composite (RenderBuffer buffer, RenderTarget target,
 
   /* Get the texturing target.  */
   tex_target = GetTextureTarget (egl_buffer);
+
+  /* Compute the transformation matrix to use to draw the given
+     buffer.  */
+  ComputeTransformMatrix (egl_buffer, params);
 
   /* dest rectangle on target.  */
   x1 = x;
@@ -1233,18 +1412,17 @@ Composite (RenderBuffer buffer, RenderTarget target,
   else
     glDisable (GL_BLEND);
 
-  if (params->flags & ScaleSet)
-    scale = params->scale;
-  else
-    scale = 1.0f;
-
   glActiveTexture (GL_TEXTURE0);
   glBindTexture (tex_target, egl_buffer->texture);
-  glTexParameteri (tex_target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri (tex_target, GL_TEXTURE_MIN_FILTER,
+		   GL_NEAREST);
+  glTexParameteri (tex_target, GL_TEXTURE_MAG_FILTER,
+		   GL_NEAREST);
   glUseProgram (program->program);
 
   glUniform1i (program->texture, 0);
-  glUniform1f (program->scale, scale);
+  glUniformMatrix3fv (program->source, 1, GL_FALSE,
+		      egl_buffer->matrix);
   glUniform1i (program->invert_y, egl_buffer->flags & InvertY);
   glVertexAttribPointer (program->position, 2, GL_FLOAT,
 			 GL_FALSE, 0, verts);
@@ -1501,6 +1679,10 @@ BufferFromDmaBuf (DmaBufAttributes *attributes, Bool *error)
   buffer->width = attributes->width;
   buffer->height = attributes->height;
   buffer->u.type = DmaBufBuffer;
+
+  /* Copy over the identity transform.  */
+  MatrixIdentity (&buffer->matrix);
+
   i = 0;
 
   /* Find the DRM format in question so we can determine the right
@@ -1650,6 +1832,9 @@ BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
   buffer->width = attributes->width;
   buffer->height = attributes->height;
   buffer->u.type = ShmBuffer;
+
+  /* Copy over the identity transform.  */
+  MatrixIdentity (&buffer->matrix);
 
   /* Record the buffer data.  */
 
@@ -1990,10 +2175,52 @@ UpdateTexture (EglBuffer *buffer)
 }
 
 static void
-UpdateShmBufferIncrementally (EglBuffer *buffer, pixman_region32_t *damage)
+ReverseTransformToBox (DrawParams *params, pixman_box32_t *box)
+{
+  double x_factor, y_factor;
+
+  if (!params)
+    return;
+
+  /* Apply the inverse of PARAMS to BOX, for use in damage
+     tracking.  */
+
+  if (params->flags & ScaleSet)
+    {
+      box->x1 = floor (box->x1 / params->scale);
+      box->y1 = floor (box->y1 / params->scale);
+      box->x2 = ceil (box->x2 / params->scale);
+      box->y2 = ceil (box->y2 / params->scale);
+    }
+
+  if (params->flags & OffsetSet)
+    {
+      /* Since the offset can be a fractional value, also try to
+	 include as much as possible in the box.  */
+      box->x1 = floor (box->x1 + params->off_x);
+      box->y1 = floor (box->y1 + params->off_y);
+      box->x2 = ceil (box->x2 + params->off_x);
+      box->y2 = ceil (box->y2 + params->off_y);
+    }
+
+  if (params->flags & StretchSet)
+    {
+      x_factor = params->crop_width / params->stretch_width;
+      y_factor = params->crop_height / params->stretch_height;
+
+      box->x1 = floor (box->x1 * x_factor);
+      box->y1 = floor (box->y1 * y_factor);
+      box->x2 = ceil (box->x2 * x_factor);
+      box->y2 = ceil (box->y2 * y_factor);
+    }
+}
+
+static void
+UpdateShmBufferIncrementally (EglBuffer *buffer, pixman_region32_t *damage,
+			      DrawParams *params)
 {
   GLenum target;
-  pixman_box32_t *boxes;
+  pixman_box32_t *boxes, box;
   int nboxes, i, width, height;
   void *data_ptr;
   size_t expected_data_size;
@@ -2018,34 +2245,39 @@ UpdateShmBufferIncrementally (EglBuffer *buffer, pixman_region32_t *damage)
      the damage.  */
   for (i = 0; i < nboxes; ++i)
     {
-      if (boxes[i].x1 >= buffer->width
-	  || boxes[i].y1 >= buffer->height)
-	/* This box isn't contained in the buffer.  */
-	continue;
+      /* Get a copy of the box.  */
+      box = boxes[i];
+
+      /* Transform the box according to any transforms.  */
+      ReverseTransformToBox (params, &box);
+
+      /* Clip the box X and Y to 0, 0.  */
+      box.x1 = MIN (box.y1, 0);
+      box.y1 = MIN (box.y1, 0);
 
       /* These computations are correct, since box->x2/box->y2 are
 	 actually 1 pixel outside the last pixel in the box.  */
-      width = MIN (boxes[i].x2, buffer->width) - boxes[i].x1;
-      height = MIN (boxes[i].y2, buffer->height) - boxes[i].y1;
+      width = MIN (box.x2, buffer->width) - box.x1;
+      height = MIN (box.y2, buffer->height) - box.y1;
 
       if (width <= 0 || height <= 0)
 	/* The box is effectively empty because it straddles one of
-	   the corners of the buffer.  */
+	   the corners of the buffer, or is outside of the buffer.  */
 	continue;
 
       /* First, set the length of a single row.  */
       glPixelStorei (GL_UNPACK_ROW_LENGTH_EXT,
 		     buffer->u.shm.stride / (buffer->u.shm.format->bpp / 8));
 
-      /* Next, skip boxes[i].x1 pixels of each row.  */
-      glPixelStorei (GL_UNPACK_SKIP_PIXELS_EXT, boxes[i].x1);
+      /* Next, skip box.x1 pixels of each row.  */
+      glPixelStorei (GL_UNPACK_SKIP_PIXELS_EXT, box.x1);
 
-      /* And boxes[i].y1 rows.  */
-      glPixelStorei (GL_UNPACK_SKIP_ROWS_EXT, boxes[i].y1);
+      /* And box.y1 rows.  */
+      glPixelStorei (GL_UNPACK_SKIP_ROWS_EXT, box.y1);
 
       /* Copy the image into the sub-texture.  */
-      glTexSubImage2D (target, 0, boxes[i].x1, boxes[i].y1,
-		       width, height, buffer->u.shm.format->gl_format,
+      glTexSubImage2D (target, 0, box.x1, box.y1, width, height,
+		       buffer->u.shm.format->gl_format,
 		       buffer->u.shm.format->gl_type, data_ptr);
     }
 
@@ -2080,7 +2312,8 @@ EnsureTexture (EglBuffer *buffer)
 }
 
 static void
-UpdateBuffer (RenderBuffer buffer, pixman_region32_t *damage)
+UpdateBuffer (RenderBuffer buffer, pixman_region32_t *damage,
+	      DrawParams *params)
 {
   EglBuffer *egl_buffer;
 
@@ -2106,8 +2339,9 @@ UpdateBuffer (RenderBuffer buffer, pixman_region32_t *damage)
 	{
 	case ShmBuffer:
 	  /* Update the shared memory buffer incrementally, taking
-	     into account the damaged area.  */
-	  UpdateShmBufferIncrementally (egl_buffer, damage);
+	     into account the damaged area and transform.  */
+	  UpdateShmBufferIncrementally (egl_buffer, damage,
+					params);
 	  break;
 
 	default:
@@ -2119,23 +2353,9 @@ UpdateBuffer (RenderBuffer buffer, pixman_region32_t *damage)
 
 static void
 UpdateBufferForDamage (RenderBuffer buffer, pixman_region32_t *damage,
-		       float scale)
+		       DrawParams *params)
 {
-  pixman_region32_t region;
-
-  if (scale != 1.0f && damage)
-    {
-      /* Scale the damage, specified in scaled coordinates, down to
-	 texture coordinates.  */
-
-      pixman_region32_init (&region);
-      XLScaleRegion (&region, damage, 1.0f / scale,
-		     1.0f / scale);
-      UpdateBuffer (buffer, &region);
-      pixman_region32_fini (&region);
-    }
-  else
-    UpdateBuffer (buffer, damage);
+  UpdateBuffer (buffer, damage, params);
 }
 
 static Bool

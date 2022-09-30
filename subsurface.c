@@ -493,8 +493,10 @@ MaybeUpdateOutputs (Subsurface *subsurface)
     return;
 
   /* Compute the positions relative to the parent.  */
-  x = subsurface->current_substate.x * subsurface->parent->factor;
-  y = subsurface->current_substate.y * subsurface->parent->factor;
+  x = floor (subsurface->current_substate.x
+	     * subsurface->parent->factor);
+  y = floor (subsurface->current_substate.y
+	     * subsurface->parent->factor);
 
   /* And the base X and Y.  */
   base_x = subsurface->role.surface->output_x;
@@ -526,6 +528,38 @@ MaybeUpdateOutputs (Subsurface *subsurface)
 }
 
 static void
+MoveFractional (Subsurface *subsurface)
+{
+  double x, y;
+  int x_int, y_int;
+
+  /* Move the surface to a fractional window (subcompositor)
+     coordinate relative to the parent.  This is done by placing the
+     surface at the floor of the coordinates, and then offsetting the
+     image and input by the remainder during rendering.  */
+  SurfaceToWindow (subsurface->parent, subsurface->current_substate.x,
+		   subsurface->current_substate.y, &x, &y);
+
+  x_int = floor (x);
+  y_int = floor (y);
+
+  /* Move the subsurface to x_int, y_int.  */
+  ViewMove (subsurface->role.surface->view, x_int, y_int);
+  ViewMove (subsurface->role.surface->under, x_int, y_int);
+
+  /* Apply the fractional offset.  */
+  ViewMoveFractional (subsurface->role.surface->view,
+		      x - x_int, y - y_int);
+  ViewMoveFractional (subsurface->role.surface->under,
+		      x - x_int, y - y_int);
+
+  /* And set the fractional offset on the surface for input handling
+     purposes.  */
+  subsurface->role.surface->input_delta_x = x - x_int;
+  subsurface->role.surface->input_delta_y = y - y_int;
+}
+
+static void
 AfterParentCommit (Surface *surface, void *data)
 {
   Subsurface *subsurface;
@@ -540,17 +574,14 @@ AfterParentCommit (Surface *surface, void *data)
 
   if (subsurface->pending_substate.flags & PendingPosition)
     {
+      /* Apply the new position.  */
       subsurface->current_substate.x
 	= subsurface->pending_substate.x;
       subsurface->current_substate.y
 	= subsurface->pending_substate.y;
 
-      /* The X and Y coordinates here are also parent-local and must
-	 be scaled by the global scale factor.  */
-
-      ViewMove (subsurface->role.surface->view,
-		subsurface->current_substate.x * subsurface->parent->factor,
-		subsurface->current_substate.y * subsurface->parent->factor);
+      /* And move the views.  */
+      MoveFractional (subsurface);
     }
 
   /* And any cached surface state too.  */
@@ -680,6 +711,10 @@ Setup (Surface *surface, Role *role)
 			ViewGetSubcompositor (parent_view));
   ViewInsert (parent_view, surface->view);
 
+  /* Now move the subsurface to its initial location (0, 0) */
+  if (subsurface->parent)
+    MoveFractional (subsurface);
+
   /* Now add the subsurface to the parent's list of subsurfaces.  */
   subsurface->parent->subsurfaces
     = XLListPrepend (subsurface->parent->subsurfaces,
@@ -698,9 +733,7 @@ Rescale (Surface *surface, Role *role)
   /* The scale factor changed; move the subsurface to the new correct
      position.  */
 
-  ViewMove (surface->view,
-	    subsurface->current_substate.x * subsurface->parent->factor,
-	    subsurface->current_substate.y * subsurface->parent->factor);
+  MoveFractional (subsurface);
 }
 
 static void

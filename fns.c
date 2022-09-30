@@ -380,6 +380,36 @@ XLScaleRegion (pixman_region32_t *dst, pixman_region32_t *src,
     XLFree (dst_rects);
 }
 
+void
+XLExtendRegion (pixman_region32_t *dst, pixman_region32_t *src,
+		int extend_x, int extend_y)
+{
+  int nrects, i;
+  pixman_box32_t *src_rects;
+  pixman_box32_t *dst_rects;
+
+  src_rects = pixman_region32_rectangles (src, &nrects);
+
+  if (nrects < 128)
+    dst_rects = alloca (nrects * sizeof *dst_rects);
+  else
+    dst_rects = XLMalloc (nrects * sizeof *dst_rects);
+
+  for (i = 0; i < nrects; ++i)
+    {
+      dst_rects[i].x1 = src_rects[i].x1;
+      dst_rects[i].x2 = src_rects[i].x2 + extend_x;
+      dst_rects[i].y1 = src_rects[i].y1;
+      dst_rects[i].y2 = src_rects[i].y2 + extend_y;
+    }
+
+  pixman_region32_fini (dst);
+  pixman_region32_init_rects (dst, dst_rects, nrects);
+
+  if (nrects >= 128)
+    XLFree (dst_rects);
+}
+
 int
 XLOpenShm (void)
 {

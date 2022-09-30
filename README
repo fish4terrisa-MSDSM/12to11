@@ -3,7 +3,7 @@ preferably with a compositing manager running.
 
 It is not yet complete.  What is not yet implemented includes support
 for touchscreens, input methods, device switching in dmabuf feedback,
-and the viewporter protocol extension.
+and the single-pixel buffer protocol extension.
 
 There are also problems with output reporting in subsurfaces.
 
@@ -64,6 +64,7 @@ complete degree:
   'wl_data_device_manager',                     version:  3
   'zwp_linux_dmabuf_v1',                        version:  4
   'zwp_primary_selection_device_manager_v1',    version:  1
+  'wp_viewporter',                              version:  1
 
 When built with EGL, the following Wayland protocol is also supported:
 

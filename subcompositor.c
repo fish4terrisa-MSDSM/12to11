@@ -192,7 +192,11 @@ enum
   {
     /* This means that the view and all its inferiors should be
        skipped in bounds computation, input tracking, et cetera.  */
-    ViewIsUnmapped = 1,
+    ViewIsUnmapped   = 1,
+    /* This means that the view has a viewport specifying its size,
+       effectively decoupling its relation to the buffer width and
+       height.  */
+    ViewIsViewported = 1 << 2,
   };
 
 #define IsViewUnmapped(view)			\
@@ -201,6 +205,13 @@ enum
   ((view)->flags |= ViewIsUnmapped)
 #define ClearUnmapped(view)			\
   ((view)->flags &= ~ViewIsUnmapped)
+
+#define IsViewported(view)			\
+  ((view)->flags & ViewIsViewported)
+#define SetViewported(view)			\
+  ((view)->flags |= ViewIsViewported)
+#define ClearViewported(view)			\
+  ((view)->flags &= ~ViewIsViewported)
 
 #endif
 
@@ -273,6 +284,13 @@ struct _View
 
   /* Flags; whether or not this view is unmapped, etc.  */
   int flags;
+
+  /* The viewport data.  */
+  double src_x, src_y, crop_width, crop_height, dest_width, dest_height;
+
+  /* Fractional offset applied to the view contents and damage during
+     compositing.  */
+  double fract_x, fract_y;
 #else
   /* Label used during tests.  */
   const char *label;
@@ -749,7 +767,6 @@ ViewUpdateBoundsForInsert (View *view)
 					view);
 }
 
-
 #endif
 
 TEST_STATIC void
@@ -1214,6 +1231,10 @@ main (int argc, char **argv)
 
 #ifndef TEST
 
+/* Notice that VIEW's size has changed, while VIEW itself has not
+   moved.  Recompute the max_x, min_x, min_y, and max_y of its
+   subcompositor.  */
+
 static void
 ViewAfterSizeUpdate (View *view)
 {
@@ -1272,7 +1293,11 @@ ViewAttachBuffer (View *view, ExtBuffer *buffer)
 	  && (XLBufferWidth (buffer) != XLBufferWidth (old)
 	      || XLBufferHeight (buffer) != XLBufferHeight (old))))
     {
-      if (view->subcompositor)
+      if (view->subcompositor
+	  /* If a viewport is specified, then the view width and
+	     height are determined independently from the buffer
+	     size.  */
+	  && !IsViewported (view))
 	{
 	  /* A new buffer was attached, so garbage the subcompositor
 	     as well.  */
@@ -1399,6 +1424,20 @@ ViewMove (View *view, int x, int y)
 }
 
 void
+ViewMoveFractional (View *view, double x, double y)
+{
+  XLAssert (x < 1.0 && y < 1.0);
+
+  /* This does not necessitate adjustments to the view size, but does
+     require that the subcompositor be garbaged.  */
+  view->fract_x = x;
+  view->fract_y = y;
+
+  if (view->subcompositor)
+    SetGarbaged (view->subcompositor);
+}
+
+void
 ViewDetach (View *view)
 {
   ViewAttachBuffer (view, NULL);
@@ -1477,8 +1516,9 @@ ViewFree (View *view)
 void
 ViewDamage (View *view, pixman_region32_t *damage)
 {
-  pixman_region32_union (&view->damage,
-			 &view->damage,
+  /* This damage must be transformed by the viewport and scale, but
+     must NOT be transformed by the subpixel (fractional) offset.  */
+  pixman_region32_union (&view->damage, &view->damage,
 			 damage);
 }
 
@@ -1509,6 +1549,15 @@ ViewGetSubcompositor (View *view)
   return view->subcompositor;
 }
 
+static double
+GetContentScale (int scale)
+{
+  if (scale > 0)
+    return 1.0 / (scale + 1);
+
+  return -scale + 1;
+}
+
 int
 ViewWidth (View *view)
 {
@@ -1517,12 +1566,20 @@ ViewWidth (View *view)
   if (!view->buffer)
     return 0;
 
+  if (IsViewported (view))
+    /* The view has a viewport specified.  view->dest_width and
+       view->dest_height can be fractional values.  When that happens,
+       we simply use the ceiling and rely on the renderer to DTRT with
+       scaling.  */
+    return ceil (view->dest_width
+		 * GetContentScale (view->scale));
+
   width = XLBufferWidth (view->buffer);
 
   if (view->scale < 0)
-    return width * (abs (view->scale) + 1);
+    return ceil (width * (abs (view->scale) + 1));
   else
-    return width / (view->scale + 1);
+    return ceil (width / (view->scale + 1));
 }
 
 int
@@ -1533,74 +1590,127 @@ ViewHeight (View *view)
   if (!view->buffer)
     return 0;
 
+  if (IsViewported (view))
+    /* The view has a viewport specified.  view->dest_width and
+       view->dest_height can be fractional values.  When that happens,
+       we simply use the ceiling and rely on the renderer to DTRT with
+       scaling.  */
+    return ceil (view->dest_height
+		 * GetContentScale (view->scale));
+
   height = XLBufferHeight (view->buffer);
 
   if (view->scale < 0)
-    return height * (abs (view->scale) + 1);
+    return ceil (height * (abs (view->scale) + 1));
   else
-    return height / (view->scale + 1);
+    return ceil (height / (view->scale + 1));
 }
 
 void
 ViewSetScale (View *view, int scale)
 {
-  int doflags;
-
-  /* First, assume we will have to compute both max_x and max_y.  */
-  doflags = DoMaxX | DoMaxY;
-
   if (view->scale == scale)
     return;
 
   view->scale = scale;
 
-  if (view->subcompositor)
-    {
-      /* If the view is now wider than max_x and/or max_y, update those
-	 now.  */
-
-      if (view->subcompositor->max_x < ViewMaxX (view))
-	{
-	  view->subcompositor->max_x = ViewMaxX (view);
-
-	  /* We don't have to update max_x anymore.  */
-	  doflags &= ~DoMaxX;
-	}
-
-      if (view->subcompositor->max_y < ViewMaxY (view))
-	{
-	  view->subcompositor->max_y = ViewMaxY (view);
-
-	  /* We don't have to update max_x anymore.  */
-	  doflags &= ~DoMaxY;
-	}
-
-      /* Finally, update the bounds.  */
-      SubcompositorUpdateBounds (view->subcompositor,
-				 doflags);
-    }
+  /* Recompute subcompositor bounds; they could've changed.  */
+  ViewAfterSizeUpdate (view);
 }
 
-static double
-GetContentScale (int scale)
-{
-  if (scale > 0)
-    return 1.0 / (scale + 1);
 
-  return -scale + 1;
+void
+ViewSetViewport (View *view, double src_x, double src_y,
+		 double crop_width, double crop_height,
+		 double dest_width, double dest_height)
+{
+  SetViewported (view);
+
+  view->src_x = src_x;
+  view->src_y = src_y;
+  view->crop_width = crop_width;
+  view->crop_height = crop_height;
+  view->dest_width = dest_width;
+  view->dest_height = dest_height;
+
+  /* Update min_x and min_y.  */
+  ViewAfterSizeUpdate (view);
+
+  /* Garbage the subcompositor as damage can no longer be trusted.  */
+  if (view->subcompositor)
+    SubcompositorGarbage (view->subcompositor);
+}
+
+void
+ViewClearViewport (View *view)
+{
+  ClearViewported (view);
+
+  /* Update min_x and min_y.  */
+  ViewAfterSizeUpdate (view);
+
+  /* Garbage the subcompositor as damage can no longer be trusted.  */
+  if (view->subcompositor)
+    SubcompositorGarbage (view->subcompositor);
 }
 
 static void
-ViewComputeTransform (View *view, DrawParams *params)
+ViewComputeTransform (View *view, DrawParams *params, Bool draw)
 {
+  /* Compute the effective transform of VIEW, then put it in PARAMS.
+     DRAW means whether or not the transform is intended for drawing;
+     when not set, the parameters are being used for damage tracking
+     instead.  */
+
   /* First, there is no transform.  */
   params->flags = 0;
+  params->off_x = 0.0;
+  params->off_y = 0.0;
 
   if (view->scale)
     {
       /* There is a scale, so set it.  */
       params->flags |= ScaleSet;
       params->scale = GetContentScale (view->scale);
+    }
+
+  if (IsViewported (view))
+    {
+      /* Set the viewport (a.k.a "stretch" and "offset" in the
+	 rendering code).  */
+
+      params->flags |= StretchSet;
+      params->flags |= OffsetSet;
+
+      params->off_x = view->src_x;
+      params->off_y = view->src_y;
+      params->crop_width = view->crop_width;
+      params->stretch_width = view->dest_width;
+      params->crop_height = view->crop_height;
+      params->stretch_height = view->dest_height;
+
+      /* If the crop width/height were not specified, use the current
+	 buffer width/height.  */
+
+      if (params->crop_width == -1)
+	{
+	  params->crop_width = (XLBufferWidth (view->buffer)
+				* GetContentScale (view->scale));
+	  params->crop_height = (XLBufferHeight (view->buffer)
+				 * GetContentScale (view->scale));
+	}
+    }
+
+  if ((view->fract_x != 0.0 || view->fract_y != 0.0)
+      && draw)
+    {
+      params->flags |= OffsetSet;
+
+      /* This is not entirely right.  When applying a negative offset,
+	 contents to the left of where the picture actually is can
+	 appear to "shine through".  */
+      params->off_x -= view->fract_x;
+      params->off_y -= view->fract_y;
     }
 }
 
@@ -1740,7 +1850,7 @@ IntersectBoxes (pixman_box32_t *in, pixman_box32_t *other,
   out->y2 = MIN (a.y2, b.y2);
 
   /* If the intersection is empty, return False.  */
-  if (out->x2 - out->x1 <= 0 || out->y2 - out->y1 <= 0)
+  if (out->x2 - out->x1 < 0 || out->y2 - out->y1 < 0)
     return False;
 
   return True;
@@ -1754,7 +1864,7 @@ SubcompositorUpdate (Subcompositor *subcompositor)
   View *start, *original_start, *view, *first;
   List *list;
   pixman_box32_t *boxes, *extents, temp_boxes;
-  int nboxes, i, tx, ty;
+  int nboxes, i, tx, ty, view_width, view_height;
   Operation op;
   RenderBuffer buffer;
   int min_x, min_y;
@@ -1862,6 +1972,10 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 	  if (!view->buffer)
 	    goto next;
 
+	  /* Obtain the view width and height here.  */
+	  view_width = ViewWidth (view);
+	  view_height = ViewHeight (view);
+
 	  if (!start)
 	    {
 	      start = view;
@@ -1882,8 +1996,7 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 
 	      pixman_region32_intersect_rect (&temp, &view->opaque,
 					      view->abs_x, view->abs_y,
-					      ViewWidth (view),
-					      ViewHeight (view));
+					      view_width, view_height);
 
 	      if (IsOpaqueDirty (subcompositor))
 		pixman_region32_union (&total_opaque, &total_opaque, &temp);
@@ -1922,8 +2035,7 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 
 	      pixman_region32_intersect_rect (&temp, &view->input,
 					      view->abs_x, view->abs_y,
-					      ViewWidth (view),
-					      ViewHeight (view));
+					      view_width, view_height);
 
 	      pixman_region32_union (&total_input, &total_input, &temp);
 
@@ -1942,9 +2054,13 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 	     However, the function does not perform partial updates
 	     when the damage region is empty.  */
 
+	  /* Compute the transform and put it in draw_params, so TRT
+	     can be done in the rendering backend.  */
+	  ViewComputeTransform (view, &draw_params, False);
+
 	  buffer = XLRenderBufferFromBuffer (view->buffer);
 	  RenderUpdateBufferForDamage (buffer, &list->view->damage,
-				       GetContentScale (list->view->scale));
+				       &draw_params);
 
 	  if (pixman_region32_not_empty (&list->view->damage))
 	    {
@@ -1958,9 +2074,21 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 		 clipping.  */
 	      pixman_region32_intersect_rect (&temp, &list->view->damage,
 					      view->abs_x, view->abs_y,
-					      ViewWidth (view),
-					      ViewHeight (view));
+					      view_width, view_height);
 
+	      /* If a fractional offset is set, extend the damage by 1
+		 pixel to cover the offset.  */
+	      if (view->fract_x != 0.0 && view->fract_y != 0.0)
+		{
+		  XLExtendRegion (&temp, &temp, 1, 1);
+
+		  /* Intersect the region again.  */
+		  pixman_region32_intersect_rect (&temp, &temp, view->abs_x,
+						  view->abs_y, view_width,
+						  view_height);
+		}
+
+	      /* Union the region with the update region.  */
 	      pixman_region32_union (&update_region, &temp, &update_region);
 
 	      /* If the damage extends outside the area known to be
@@ -2100,6 +2228,10 @@ SubcompositorUpdate (Subcompositor *subcompositor)
       if (!view->buffer)
 	goto next_1;
 
+      /* Get the view width and height here.  */
+      view_width = ViewWidth (view);
+      view_height = ViewHeight (view);
+
       buffer = XLRenderBufferFromBuffer (view->buffer);
 
       if (IsGarbaged (subcompositor))
@@ -2113,12 +2245,18 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 
 	   Note that if the subcompositor is not garbaged, then this
 	   has already been done.  */
-	RenderUpdateBufferForDamage (buffer, NULL, 0.0f);
-      else if (age < 0 || age > 3)
-	/* The target contents are too old, but the damage can be
-	   trusted.  */
-	RenderUpdateBufferForDamage (buffer, &view->damage,
-				     GetContentScale (list->view->scale));
+	RenderUpdateBufferForDamage (buffer, NULL, NULL);
+      else if (age < 0 || age >= 3)
+	{
+	  /* Compute the transform and put it in draw_params, so TRT
+	     can be done in the rendering backend.  */
+	  ViewComputeTransform (view, &draw_params, False);
+
+	  /* The target contents are too old, but the damage can be
+	     trusted.  */
+	  RenderUpdateBufferForDamage (buffer, &view->damage,
+				       &draw_params);
+	}
 
       if (!first)
 	{
@@ -2126,7 +2264,7 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 	     with PictOpSrc so that transparency is applied correctly,
 	     if it contains the entire update region.  */
 
-	  if (IsGarbaged (subcompositor) || age < 0 || age > 3)
+	  if (IsGarbaged (subcompositor) || age < 0 || age >= 3)
 	    {
 	      extents = &temp_boxes;
 
@@ -2149,7 +2287,7 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 	      /* Otherwise, fill the whole update region with
 		 transparency.  */
 
-	      if (IsGarbaged (subcompositor) || age < 0 || age > 3)
+	      if (IsGarbaged (subcompositor) || age < 0 || age >= 3)
 		{
 		  /* Use the entire subcompositor bounds if
 		     garbaged.  */
@@ -2174,7 +2312,7 @@ SubcompositorUpdate (Subcompositor *subcompositor)
       first = view;
 
       /* Compute the transform and put it in draw_params.  */
-      ViewComputeTransform (view, &draw_params);
+      ViewComputeTransform (view, &draw_params, True);
 
       if (!IsGarbaged (subcompositor) && (age >= 0 && age < 3))
 	{
@@ -2190,8 +2328,8 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 
 	      temp_boxes.x1 = view->abs_x;
 	      temp_boxes.y1 = view->abs_y;
-	      temp_boxes.x2 = view->abs_x + ViewWidth (view);
-	      temp_boxes.y2 = view->abs_y + ViewHeight (view);
+	      temp_boxes.x2 = view->abs_x + view_width;
+	      temp_boxes.y2 = view->abs_y + view_height;
 
 	      if (IntersectBoxes (&boxes[i], &temp_boxes, &temp_boxes))
 		RenderComposite (buffer, subcompositor->target, op,
@@ -2226,9 +2364,9 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 			   /* dst-y.  */
 			   view->abs_y - min_y + ty,
 			   /* width.  */
-			   ViewWidth (view),
+			   view_width,
 			   /* height, draw-params.  */
-			   ViewHeight (view), &draw_params);
+			   view_height, &draw_params);
 
 	  /* Also adjust the opaque and input regions here.  */
 
@@ -2248,8 +2386,7 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 
 	      pixman_region32_intersect_rect (&temp, &view->opaque,
 					      view->abs_x, view->abs_y,
-					      ViewWidth (view),
-					      ViewHeight (view));
+					      view_width, view_height);
 	      pixman_region32_union (&total_opaque, &temp, &total_opaque);
 
 	      /* Translate it back.  */
@@ -2270,8 +2407,7 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 					 list->view->abs_y);
 	      pixman_region32_intersect_rect (&temp, &view->input,
 					      view->abs_x, view->abs_y,
-					      ViewWidth (view),
-					      ViewHeight (view));
+					      view_width, view_height);
 	      pixman_region32_union (&total_input, &temp, &total_input);
 
 	      /* Translate it back.  */
@@ -2292,7 +2428,7 @@ SubcompositorUpdate (Subcompositor *subcompositor)
  complete:
 
   if (IsGarbaged (subcompositor)
-      || ((age < 0 || age > 3)
+      || ((age < 0 || age >= 3)
 	  && (IsInputDirty (subcompositor)
 	      || IsOpaqueDirty (subcompositor))))
     {
@@ -2436,11 +2572,17 @@ SubcompositorExpose (Subcompositor *subcompositor, XEvent *event)
       boxes = pixman_region32_rectangles (&temp, &nboxes);
 
       /* Compute the transform.  */
-      ViewComputeTransform (view, &draw_params);
+      ViewComputeTransform (view, &draw_params, False);
 
       /* Update the attached buffer from any damage.  */
       RenderUpdateBufferForDamage (buffer, &list->view->damage,
-				   GetContentScale (list->view->scale));
+				   &draw_params);
+
+      /* If a fractional offset is set, recompute the transform again,
+	 this time for drawing.  */
+      if (list->view->fract_x != 0.0
+	  || list->view->fract_y != 0.0)
+	ViewComputeTransform (view, &draw_params, True);
 
       for (i = 0; i < nboxes; ++i)
 	RenderComposite (buffer, subcompositor->target, op,

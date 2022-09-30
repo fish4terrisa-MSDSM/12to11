@@ -1,4 +1,4 @@
-/* Wayland compositor running on top of an X serer.
+/* Wayland compositor running on top of an X server.
 
 Copyright (C) 2022 to various contributors.
 
@@ -90,6 +90,10 @@ typedef struct _Seat Seat;
 
 typedef struct _PDataSource PDataSource;
 
+/* Forward declarations from wp_viewporter.c.  */
+
+typedef struct _ViewportExt ViewportExt;
+
 /* Defined in 12to11.c.  */
 
 extern Compositor compositor;
@@ -125,7 +129,13 @@ enum _Operation
 enum
   {
     /* Scale has been set.  */
-    ScaleSet	   = 1,
+    ScaleSet  = 1,
+
+    /* Offset has been set.  */
+    OffsetSet = (1 << 2),
+
+    /* Stretch has been set.  */
+    StretchSet = (1 << 3),
   };
 
 struct _DrawParams
@@ -135,6 +145,15 @@ struct _DrawParams
 
   /* A scale factor to apply to the buffer.  */
   double scale;
+
+  /* Offset from which to start sampling from the buffer, after
+     scaling.  */
+  double off_x, off_y;
+
+  /* The crop, width and height of the buffer.  The buffer will be
+     stretched or shrunk to this size, after being cropped to
+     crop and being offset by -off_x, -off_y.  */
+  double crop_width, crop_height, stretch_width, stretch_height;
 };
 
 struct _SharedMemoryAttributes
@@ -261,7 +280,10 @@ struct _RenderFuncs
   /* Composite width, height, from the given buffer onto the given
      target, at x, y.  The arguments are: buffer, target, operation,
      source_x, source_y, x, y, width, height, params.  params
-     describes how to transform the given buffer.  */
+     describes how to transform the given buffer.
+
+     Reads outside the texture contents should result in transparency
+     being composited.  */
   void (*composite) (RenderBuffer, RenderTarget, Operation, int, int,
 		     int, int, int, int, DrawParams *);
 
@@ -360,10 +382,11 @@ struct _BufferFuncs
   /* Notice that the given buffer has been damaged.  May be NULL.  If
      the given NULL damage, assume that the entire buffer has been
      damaged.  Must be called at least once before any rendering can
-     be performed on the buffer.  3rd arg is the scale by which to
-     divide the buffer.  */
+     be performed on the buffer.  3rd arg is a DrawParams struct
+     describing a transform to inversely apply to the damage
+     region.  */
   void (*update_buffer_for_damage) (RenderBuffer, pixman_region32_t *,
-				    float);
+				    DrawParams *);
 
   /* Return whether or not the buffer contents can be released early,
      by being copied to an offscreen buffer.  */
@@ -410,7 +433,7 @@ extern Bool RenderValidateShmParams (uint32_t, uint32_t, uint32_t, int32_t,
 extern void RenderFreeShmBuffer (RenderBuffer);
 extern void RenderFreeDmabufBuffer (RenderBuffer);
 extern void RenderUpdateBufferForDamage (RenderBuffer, pixman_region32_t *,
-					 float);
+					 DrawParams *);
 extern Bool RenderCanReleaseNow (RenderBuffer);
 
 /* Defined in run.c.  */
@@ -503,6 +526,8 @@ extern int XLOpenShm (void);
 
 extern void XLScaleRegion (pixman_region32_t *, pixman_region32_t *,
 			   float, float);
+extern void XLExtendRegion (pixman_region32_t *, pixman_region32_t *,
+			    int, int);
 extern Time XLGetServerTimeRoundtrip (void);
 
 extern RootWindowSelection *XLSelectInputFromRootWindow (unsigned long);
@@ -625,6 +650,11 @@ extern void ViewMove (View *, int, int);
 extern void ViewDetach (View *);
 extern void ViewMap (View *);
 extern void ViewUnmap (View *);
+extern void ViewMoveFractional (View *, double, double);
+
+extern void ViewSetViewport (View *, double, double, double, double,
+			     double, double);
+extern void ViewClearViewport (View *);
 
 extern void ViewSetData (View *, void *);
 extern void *ViewGetData (View *);
@@ -673,6 +703,8 @@ enum
     PendingFrameCallbacks = (1 << 6),
     PendingBufferScale	  = (1 << 7),
     PendingAttachments	  = (1 << 8),
+    PendingViewportSrc	  = (1 << 9),
+    PendingViewportDest   = (1 << 10),
 
     /* Flags here are stored in `pending' of the current state for
        space reasons.  */
@@ -717,6 +749,14 @@ struct _State
 
   /* Attachment position.  */
   int x, y;
+
+  /* Viewport destination width and height.  All viewport coordinates
+     and dimensions are specified in terms of the surface coordinate
+     system.  */
+  int dest_width, dest_height;
+
+  /* Viewport source rectangle.  */
+  double src_x, src_y, src_width, src_height;
 };
 
 typedef enum _ClientDataType ClientDataType;
@@ -848,6 +888,13 @@ struct _Surface
   /* The scale factor used to convert from surface coordinates to
      window coordinates.  */
   double factor;
+
+  /* Any associated viewport resource.  */
+  ViewportExt *viewport;
+
+  /* Any associated input delta.  This is used to compensate
+     for fractional subsurface placement while handling input.  */
+  double input_delta_x, input_delta_y;
 };
 
 struct _RoleFuncs
@@ -916,6 +963,16 @@ extern void XLSurfacePostResize (Surface *, int, int, int, int);
 extern void XLSurfaceMoveBy (Surface *, int, int);
 extern Window XLWindowFromSurface (Surface *);
 extern void XLUpdateSurfaceOutputs (Surface *, int, int, int, int);
+
+extern void SurfaceToWindow (Surface *, double, double, double *, double *);
+extern void ScaleToWindow (Surface *, double, double, double *, double *);
+extern void WindowToSurface (Surface *, double, double, double *, double *);
+extern void ScaleToSurface (Surface *, double, double, double *, double *);
+
+extern void TruncateSurfaceToWindow (Surface *, int, int, int *, int *);
+extern void TruncateScaleToWindow (Surface *, int, int, int *, int *);
+extern void TruncateWindowToSurface (Surface *, int, int, int *, int *);
+extern void TruncateScaleToSurface (Surface *, int, int, int *, int *);
 
 /* Defined in output.c.  */
 
@@ -1016,6 +1073,7 @@ struct _XdgRoleImplementationFuncs
   void (*handle_geometry_change) (Role *, XdgRoleImplementation *);
   void (*post_resize) (Role *, XdgRoleImplementation *, int, int, int, int);
   void (*commit_inside_frame) (Role *, XdgRoleImplementation *);
+  Bool (*is_window_mapped) (Role *, XdgRoleImplementation *);
 };
 
 struct _XdgRoleImplementation
@@ -1348,6 +1406,23 @@ extern void XLSyncCommit (Synchronization *);
 extern void XLSyncRelease (SyncRelease *);
 extern void XLWaitFence (Surface *);
 extern void XLInitExplicitSynchronization (void);
+
+/* Defined in transform.c.  */
+
+/* N.B. the data is stored in column-major order.  */
+typedef float Matrix[9];
+
+extern void MatrixMultiply (Matrix, Matrix, Matrix *);
+extern void MatrixIdentity (Matrix *);
+extern void MatrixTranslate (Matrix *, float, float);
+extern void MatrixScale (Matrix *, float, float);
+extern void MatrixExport (Matrix *, XTransform *);
+
+/* Defined in wp_viewporter.c.  */
+
+extern void XLInitWpViewporter (void);
+extern void XLWpViewportReportBadSize (ViewportExt *);
+extern void XLWpViewportReportOutOfBuffer (ViewportExt *);
 
 /* Utility functions that don't belong in a specific file.  */
 

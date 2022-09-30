@@ -628,6 +628,13 @@ Unfreeze (XdgRole *role)
   XLFrameClockUnfreeze (role->clock);
 }
 
+static Bool
+IsRoleMapped (XdgRole *role)
+{
+  return role->impl->funcs.is_window_mapped (&role->role,
+					     role->impl);
+}
+
 static void
 Commit (Surface *surface, Role *role)
 {
@@ -666,6 +673,12 @@ Commit (Surface *surface, Role *role)
      ack_configure.  */
   xdg_role->state &= ~StateWaitingForAckCommit;
 
+  /* If the window is unmapped, skip all of this code!  Once the
+     window is mapped again, the compositor will send _NET_FRAME_DRAWN
+     should a frame still be in progress.  */
+  if (!IsRoleMapped (xdg_role))
+    goto start_drawing;
+
   /* A frame is already in progress, so instead say that an urgent
      update is needed immediately after the frame completes.  In any
      case, don't run frame callbacks upon buffer release anymore.  */
@@ -687,6 +700,8 @@ Commit (Surface *surface, Role *role)
       return;
     }
 
+ start_drawing:
+
   /* If the frame clock is frozen but we are no longer waiting for the
      configure event to be acknowledged by the client, unfreeze the
      frame clock.  */
@@ -706,7 +721,13 @@ Commit (Surface *surface, Role *role)
      callbacks are not provided by the frame clock while it is frozen.
 
      If that happens, just run the frame callback immediately.  */
-  if (XLFrameClockIsFrozen (xdg_role->clock))
+  if (XLFrameClockIsFrozen (xdg_role->clock)
+      /* If the window is not mapped, then the native frame clock will
+	 not draw frames.  Some clients do commit before the initial
+	 configure event and wait for the frame callback to be called
+	 after or before ack_configure, leading to the mapping commit
+	 never being performed.  */
+      || !IsRoleMapped (xdg_role))
     RunFrameCallbacksConditionally (xdg_role);
 
   return;
@@ -842,6 +863,10 @@ Subframe (Surface *surface, Role *role)
       RunFrameCallbacksConditionally (xdg_role);
       return False;
     }
+
+  /* Similarly, return False if the role is unmapped.  */
+  if (!IsRoleMapped (xdg_role))
+    return False;
 
   /* If a frame is already in progress, return False.  Then, require a
      late frame.  */
@@ -1167,8 +1192,8 @@ GetResizeDimensions (Surface *surface, Role *role, int *x_out,
 {
   XLXdgRoleGetCurrentGeometry (role, NULL, NULL, x_out, y_out);
 
-  *x_out *= surface->factor;
-  *y_out *= surface->factor;
+  /* Scale these surface-local dimensions to window-local ones.  */
+  TruncateSurfaceToWindow (surface, *x_out, *y_out, x_out, y_out);
 }
 
 static void
@@ -1481,10 +1506,15 @@ XLXdgRoleCalcNewWindowSize (Role *role, int width, int height,
   SubcompositorBounds (xdg_role->subcompositor,
 		       &min_x, &min_y, &max_x, &max_y);
 
-  /* Adjust the current_width and current_height by the global scale
+  /* Calculate the current width and height.  */
+  current_width = (max_x - min_x + 1);
+  current_height = (max_y - min_y + 1);
+
+  /* Adjust the current_width and current_height by the scale
      factor.  */
-  current_width = (max_x - min_x + 1) / role->surface->factor;
-  current_height = (max_y - min_y + 1) / role->surface->factor;
+  TruncateScaleToSurface (role->surface, current_width,
+			  current_height, &current_width,
+			  &current_height);
 
   XLXdgRoleGetCurrentGeometry (role, NULL, NULL, &geometry_width,
 			       &geometry_height);

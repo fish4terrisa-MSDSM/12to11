@@ -283,6 +283,15 @@ RunUnmapCallbacks (XdgToplevel *toplevel)
   toplevel->unmap_callbacks.last = &toplevel->unmap_callbacks;
 }
 
+static Bool
+IsWindowMapped (Role *role, XdgRoleImplementation *impl)
+{
+  XdgToplevel *toplevel;
+
+  toplevel = ToplevelFromRoleImpl (impl);
+  return toplevel->state & StateIsMapped;
+}
+
 static void
 WriteHints (XdgToplevel *toplevel)
 {
@@ -362,13 +371,9 @@ NoteConfigureTime (Timer *timer, void *data, struct timespec time)
 {
   XdgToplevel *toplevel;
   int width, height, effective_width, effective_height;
-  double factor;
 
   toplevel = data;
 
-  /* Obtain the scale factor.  toplevel->role->surface should not be
-     NULL here, as the timer is cancelled upon role detachment.  */
-  factor = toplevel->role->surface->factor;
 
   /* If only the window state changed, call SendStates.  */
   if (!(toplevel->state & StatePendingConfigureSize))
@@ -379,8 +384,14 @@ NoteConfigureTime (Timer *timer, void *data, struct timespec time)
       if (toplevel->state & StatePendingConfigureStates)
 	WriteStates (toplevel);
 
-      effective_width = toplevel->configure_width / factor;
-      effective_height = toplevel->configure_height / factor;
+      effective_width = toplevel->configure_width;
+      effective_height = toplevel->configure_height;
+
+      /* toplevel->role->surface should not be NULL here, as the timer
+	 is cancelled upon role detachment.  */
+      TruncateScaleToSurface (toplevel->role->surface,
+			      effective_width, effective_height,
+			      &effective_width, &effective_height);
 
       /* Compute the geometry for the configure event based on the
 	 current size of the toplevel.  */
@@ -482,13 +493,8 @@ static void
 SendStates (XdgToplevel *toplevel)
 {
   int width, height;
-  double factor;
 
   WriteStates (toplevel);
-
-  /* Obtain the scale factor.  toplevel->role->surface should not be
-     NULL here.  */
-  factor = toplevel->role->surface->factor;
 
   /* Adjust the width and height we're sending by the window
      geometry.  */
@@ -496,10 +502,15 @@ SendStates (XdgToplevel *toplevel)
     XLXdgRoleGetCurrentGeometry (toplevel->role, NULL, NULL,
 				 &width, &height);
   else
-    XLXdgRoleCalcNewWindowSize (toplevel->role,
-				toplevel->width / factor,
-				toplevel->height / factor,
-				&width, &height);
+    {
+      /* toplevel->role->surface should not be NULL here.  */
+      TruncateScaleToSurface (toplevel->role->surface,
+			      toplevel->width, toplevel->height,
+			      &width, &height);
+
+      XLXdgRoleCalcNewWindowSize (toplevel->role, width,
+				  height, &width, &height);
+    }
 
   SendConfigure (toplevel, width, height);
 
@@ -515,14 +526,10 @@ RecordStateSize (XdgToplevel *toplevel)
 {
   Bool a, b;
   int width, height;
-  double factor;
 
   if (!toplevel->role->surface)
     /* We can't get the scale factor in this case.  */
     return;
-
-  /* Obtain the scale factor.  */
-  factor = toplevel->role->surface->factor;
 
   /* Record the last known size of a toplevel before its state is
      changed.  That way, we can send xdg_toplevel::configure with the
@@ -539,8 +546,10 @@ RecordStateSize (XdgToplevel *toplevel)
 	 upon minimization.  */
       XLXdgRoleGetCurrentGeometry (toplevel->role, NULL, NULL,
 				   &width, &height);
-      width *= factor;
-      height *= factor;
+
+      /* Scale the width and height to window dimensions.  */
+      TruncateScaleToWindow (toplevel->role->surface, width, height,
+			     &width, &height);
     }
   else
     {
@@ -795,11 +804,9 @@ HandleWindowGeometryChange (XdgToplevel *toplevel)
 
   XLXdgRoleGetCurrentGeometry (toplevel->role, &x, &y,
 			       &width, &height);
-
-  width *= toplevel->role->surface->factor;
-  height *= toplevel->role->surface->factor;
-  x *= toplevel->role->surface->factor;
-  y *= toplevel->role->surface->factor;
+  TruncateScaleToWindow (toplevel->role->surface, width, height,
+			 &width, &height);
+  TruncateSurfaceToWindow (toplevel->role->surface, x, y, &x, &y);
 
   dx = SubcompositorWidth (subcompositor) - width;
   dy = SubcompositorHeight (subcompositor) - height;
@@ -813,21 +820,25 @@ HandleWindowGeometryChange (XdgToplevel *toplevel)
   /* Initially, specify PSize.  After the first MapNotify, also
      specify PPosition so that subsurfaces won't move the window.  */
 
-  hints->min_width = (toplevel->min_width
-		      * toplevel->role->surface->factor
-		      + dx);
-  hints->min_height = (toplevel->min_height
-		       * toplevel->role->surface->factor
-		       + dy);
+  /* First, make hints->min_width and hints->min_height the min width
+     in terms of the window coordinate system.  Then, add deltas. */
+  TruncateScaleToWindow (toplevel->role->surface, toplevel->min_width,
+			 toplevel->min_height, &hints->min_width,
+			 &hints->min_height);
+
+  /* Add deltas.  */
+  hints->min_width += dx;
+  hints->min_height += dy;
 
   if (toplevel->max_width)
     {
-      hints->max_width = (toplevel->max_width
-			  * toplevel->role->surface->factor
-			  + dx);
-      hints->max_height = (toplevel->max_height
-			   * toplevel->role->surface->factor
-			   + dy);
+      /* Do the same with the max width.  */
+      TruncateScaleToWindow (toplevel->role->surface, toplevel->max_width,
+			     toplevel->max_height, &hints->max_width,
+			     &hints->max_height);
+
+      hints->max_width += dx;
+      hints->max_height += dy;
       hints->flags |= PMaxSize;
     }
   else
@@ -1373,10 +1384,13 @@ NoteWindowPreResize (Role *role, XdgRoleImplementation *impl,
   XLXdgRoleGetCurrentGeometry (toplevel->role, &x, &y,
 			       &gwidth, &gheight);
 
-  dx = width - gwidth * toplevel->role->surface->factor;
-  dy = height - gheight * toplevel->role->surface->factor;
-  x *= toplevel->role->surface->factor;
-  y *= toplevel->role->surface->factor;
+  /* Scale the window geometry to window dimensions.  */
+  TruncateScaleToWindow (toplevel->role->surface, gwidth, gheight,
+			 &gwidth, &gheight);
+  TruncateSurfaceToWindow (toplevel->role->surface, x, y, &x, &y);
+
+  dx = width - gwidth;
+  dy = height - gheight;
 
   ApplyGtkFrameExtents (toplevel, x, y, dx - x, dy - y);
 }
@@ -1966,6 +1980,7 @@ XLGetXdgToplevel (struct wl_client *client, struct wl_resource *resource,
   toplevel->impl.funcs.handle_geometry_change = HandleGeometryChange;
   toplevel->impl.funcs.post_resize = PostResize;
   toplevel->impl.funcs.commit_inside_frame = CommitInsideFrame;
+  toplevel->impl.funcs.is_window_mapped = IsWindowMapped;
 
   /* Set up the sentinel node for the list of unmap callbacks.  */
   toplevel->unmap_callbacks.next = &toplevel->unmap_callbacks;

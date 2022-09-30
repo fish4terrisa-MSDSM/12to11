@@ -144,15 +144,45 @@ SetSyncCounter (XSyncCounter counter, uint64_t value)
 }
 
 static uint64_t
-CurrentHighPrecisionTimestamp (void)
+HighPrecisionTimestamp (struct timespec *clock)
 {
-  struct timespec clock;
   uint64_t timestamp;
 
-  clock_gettime (CLOCK_MONOTONIC, &clock);
+  if (IntMultiplyWrapv (clock->tv_sec, 1000000, &timestamp)
+      || IntAddWrapv (timestamp, clock->tv_nsec / 1000, &timestamp))
+    /* Overflow.  */
+    return 0;
 
-  if (IntMultiplyWrapv (clock.tv_sec, 1000000, &timestamp)
-      || IntAddWrapv (timestamp, clock.tv_nsec / 1000, &timestamp))
+  return timestamp;
+}
+
+static uint64_t
+HighPrecisionTimestamp32 (struct timespec *clock)
+{
+  uint64_t timestamp, milliseconds;
+
+  /* This function is like CurrentHighPrecisionTimestamp, but the X
+     server time portion is limited to 32 bits.  First, the seconds
+     are converted to milliseconds.  */
+  if (IntMultiplyWrapv (clock->tv_sec, 1000, &milliseconds))
+    return 0;
+
+  /* Next, the nanosecond portion is also converted to
+     milliseconds.  */
+  if (IntAddWrapv (milliseconds, clock->tv_nsec / 1000000,
+		   &milliseconds))
+    return 0;
+
+  /* Then, the milliseconds are truncated to 32 bits.  */
+  milliseconds &= 0xffffffff;
+
+  /* Finally, add the milliseconds to the timestamp.  */
+  if (IntMultiplyWrapv (milliseconds, 1000, &timestamp))
+    return 0;
+
+  /* And add the remaining nsec portion.  */
+  if (IntAddWrapv (timestamp, (clock->tv_nsec % 1000000) / 1000,
+		   &timestamp))
     /* Overflow.  */
     return 0;
 
@@ -197,8 +227,8 @@ HandleEndFrame (Timer *timer, void *data, struct timespec time)
 static void
 PostEndFrame (FrameClock *clock)
 {
-  uint64_t target, now;
-  struct timespec timespec;
+  uint64_t target, fallback, now, additional;
+  struct timespec timespec, current_time;
 
   XLAssert (clock->end_frame_timer == NULL);
 
@@ -206,11 +236,27 @@ PostEndFrame (FrameClock *clock)
       || !clock->presentation_time)
     return;
 
+  /* Obtain the monotonic clock time.  */
+  clock_gettime (CLOCK_MONOTONIC, &current_time);
+
   /* Calculate the time by which the next frame must be drawn.  It is
      a multiple of the refresh rate with the vertical blanking
      period added.  */
   target = clock->last_frame_time + clock->presentation_time;
-  now = CurrentHighPrecisionTimestamp ();
+  now = HighPrecisionTimestamp (&current_time);
+  additional = 0;
+
+  /* If now is more than UINT32_MAX * 1000, then this timestamp may
+     overflow the 32-bit X server time, depending on how the X
+     compositing manager implements timestamp generation.  Generate a
+     fallback timestamp to use in that situation.
+
+     Use now << 10 instead of now / 1000; the difference is too small
+     to be noticeable.  */
+  if (now << 10 > UINT32_MAX)
+    fallback = HighPrecisionTimestamp32 (&current_time);
+  else
+    fallback = 0;
 
   if (!now)
     return;
@@ -218,7 +264,22 @@ PostEndFrame (FrameClock *clock)
   /* If the last time the frame time was obtained was that long ago,
      return immediately.  */
   if (now - clock->last_frame_time >= MaxPresentationAge)
-    return;
+    {
+      if ((fallback - clock->last_frame_time) <= MaxPresentationAge)
+	{
+	  /* Some compositors wrap around once the X server time
+	     overflows the 32-bit Time type.  If now happens to be
+	     within the limit after its millisecond portion is
+	     truncated to 32 bits, continue, after setting the
+	     additional value the difference between the truncated
+	     value and the actual time.  */
+
+	  additional = now - fallback;
+	  now = fallback;
+	}
+      else
+	return;
+    }
 
   while (target < now)
     {
@@ -226,14 +287,18 @@ PostEndFrame (FrameClock *clock)
 	return;
     }
 
-  /* Convert the high precision timestamp to a timespec.  */
-  if (!HighPrecisionTimestampToTimespec (target, &timespec))
-    return;
-
   /* Use 3/4ths of the presentation time.  Any more and we risk the
      counter value change signalling the end of the frame arriving
      after the presentation deadline.  */
   target = target - (clock->presentation_time / 4 * 3);
+
+  /* Add the remainder of now if it was probably truncated by the
+     compositor.  */
+  target += additional;
+
+  /* Convert the high precision timestamp to a timespec.  */
+  if (!HighPrecisionTimestampToTimespec (target, &timespec))
+    return;
 
   /* Schedule the timer marking the end of this frame for the target
      time.  */
@@ -435,7 +500,7 @@ XLFrameClockFreeze (FrameClock *clock)
   else
     {
       RemoveTimer (clock->end_frame_timer);
-      clock->end_frame_timer = NULL; 
+      clock->end_frame_timer = NULL;
     }
 
   /* Don't unfreeze until the next EndFrame.  */

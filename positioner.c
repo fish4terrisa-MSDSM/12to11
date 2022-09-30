@@ -60,7 +60,8 @@ struct _Positioner
   int refcount;
 };
 
-/* Scale factor used during constraint adjustment calculation.  */
+/* Surface used to handle scaling during constraint adjustment
+   calculation.  */
 static double scale_adjustment_factor;
 
 static void
@@ -673,8 +674,12 @@ GetAdjustmentOffset (Role *parent, int *off_x, int *off_y)
 			       &parent_gy, NULL, NULL);
   XLXdgRoleCurrentRootPosition (parent, &root_x, &root_y);
 
-  *off_x = root_x + parent_gx * parent->surface->factor;
-  *off_y = root_y + parent_gy * parent->surface->factor;
+  /* Convert the gx and gy to the window coordinate system.  */
+  TruncateSurfaceToWindow (parent->surface, parent_gx, parent_gy,
+			   &parent_gx, &parent_gy);
+
+  *off_x = root_x + parent_gx;
+  *off_y = root_y + parent_gy;
 }
 
 static void
@@ -684,17 +689,18 @@ ApplyConstraintAdjustment (Positioner *positioner, Role *parent, int x,
 {
   int width, height, cx, cy, cwidth, cheight, off_x, off_y;
 
-  width = positioner->width * scale_adjustment_factor;
-  height = positioner->height * scale_adjustment_factor;
+  width = positioner->width;
+  height = positioner->height;
+
+  /* Constraint calculations are simplest if we use scaled
+     coordinates, and then unscale them later.  */
+  TruncateSurfaceToWindow (parent->surface, x, y, &x, &y);
+  TruncateScaleToWindow (parent->surface, width, height, &width,
+			 &height);
 
   /* Set the factor describing how to convert surface coordinates to
      window ones.  */
   scale_adjustment_factor = parent->surface->factor;
-
-  /* Constraint calculations are simplest if we use scaled
-     coordinates, and then unscale them later.  */
-  x *= scale_adjustment_factor;
-  y *= scale_adjustment_factor;
 
   if (positioner->constraint_adjustment
       == XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_NONE)
@@ -740,10 +746,14 @@ ApplyConstraintAdjustment (Positioner *positioner, Role *parent, int x,
 		off_y, &y, &height);
 
  finish:
-  *x_out = x / scale_adjustment_factor;
-  *y_out = y / scale_adjustment_factor;
-  *width_out = width / scale_adjustment_factor;
-  *height_out = height / scale_adjustment_factor;
+  /* Now, scale the coordinates back.  */
+  TruncateWindowToSurface (parent->surface, x, y, &x, &y);
+  TruncateScaleToSurface (parent->surface, width, height, &width, &height);
+
+  *x_out = x;
+  *y_out = y;
+  *width_out = width;
+  *height_out = height;
 }
 
 void
@@ -754,8 +764,12 @@ XLPositionerCalculateGeometry (Positioner *positioner, Role *parent,
   int x, y, width, height;
 
   CalculatePosition (positioner, &x, &y);
-  ApplyConstraintAdjustment (positioner, parent, x, y,
-			     &x, &y, &width, &height);
+
+  if (parent->surface)
+    ApplyConstraintAdjustment (positioner, parent, x, y,
+			       &x, &y, &width, &height);
+  else
+    width = positioner->width, height = positioner->height;
 
   *x_out = x;
   *y_out = y;

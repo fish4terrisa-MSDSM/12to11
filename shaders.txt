@@ -31,19 +31,19 @@ main (void)
 attribute vec2 pos;
 attribute vec2 texcoord;
 varying vec2 v_texcoord;
+uniform mat3 source;
 
 void
 main (void)
 {
   gl_Position = vec4 (pos.x, pos.y, 1.0, 1.0);
-  v_texcoord = texcoord;
+  v_texcoord = (source * vec3 (texcoord, 1.0)).xy;
 }
 //==
 
 //== Composite Rectangle Fragment Shader RGBA
 precision mediump float;
 uniform sampler2D texture;
-uniform float scale;
 uniform bool invert_y;
 varying vec2 v_texcoord;
 
@@ -52,7 +52,7 @@ main (void)
 {
   vec2 texcoord;
 
-  texcoord = v_texcoord / scale;
+  texcoord = v_texcoord;
 
   if (invert_y)
     texcoord = vec2 (texcoord.x, 1.0 - texcoord.y);
@@ -64,7 +64,7 @@ main (void)
 //== Composite Rectangle Fragment Shader RGBX
 precision mediump float;
 uniform sampler2D texture;
-uniform float scale;
+uniform mat3 source;
 uniform bool invert_y;
 varying vec2 v_texcoord;
 
@@ -73,14 +73,12 @@ main (void)
 {
   vec2 texcoord;
 
-  texcoord = v_texcoord / scale;
+  texcoord = v_texcoord;
 
   if (invert_y)
     texcoord = vec2 (texcoord.x, 1.0 - texcoord.y);
 
-  gl_FragColor = vec4 (texture2D (texture,
-				  texcoord).rgb,
-		       1.0);
+  gl_FragColor = vec4 (texture2D (texture, texcoord).rgb, 1.0);
 }
 //==
 
@@ -89,7 +87,7 @@ main (void)
 
 precision mediump float;
 uniform samplerExternalOES texture;
-uniform float scale;
+uniform mat3 source;
 uniform bool invert_y;
 varying vec2 v_texcoord;
 
@@ -98,7 +96,7 @@ main (void)
 {
   vec2 texcoord;
 
-  texcoord = v_texcoord / scale;
+  texcoord = v_texcoord;
 
   if (invert_y)
     texcoord = vec2 (texcoord.x, 1.0 - texcoord.y);

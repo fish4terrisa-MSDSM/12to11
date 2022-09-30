@@ -8,8 +8,6 @@ SYS_LIBRARIES = MathLibrary ThreadsLibraries
 DEPLIBS = $(DEPXLIB) $(DEPEXTENSIONLIB) $(DEPXRANDRLIB) $(DEPXRENDERLIB) \
   $(DEPXFIXESLIB) $(DEPXILIB) $(DEPXKBFILELIB)
 
-ETAGS = etags
-
 LOCAL_LIBRARIES = $(XLIB) $(EXTENSIONLIB) $(XCBLIB) $(XCB) $(XCB_SHM)      \
   $(XRANDRLIB) $(PIXMAN) $(XRENDERLIB) $(XILIB) $(XKBFILELIB) $(XFIXESLIB) \
   $(XCB_DRI3) $(XCB_SHAPE) $(WAYLAND_SERVER)
@@ -22,7 +20,8 @@ SRCS = 12to11.c run.c alloc.c fns.c output.c compositor.c       \
   ewmh.c timer.c subsurface.c seat.c data_device.c xdg_popup.c  \
   dmabuf.c buffer.c select.c xdata.c xsettings.c dnd.c          \
   icon_surface.c primary_selection.c renderer.c                 \
-  picture_renderer.c explicit_synchronization.c
+  picture_renderer.c explicit_synchronization.c transform.c     \
+  wp_viewporter.c
 
 OBJS = 12to11.o run.o alloc.o fns.o output.o compositor.o       \
   surface.o region.o shm.o atoms.o subcompositor.o positioner.o \
@@ -30,11 +29,10 @@ OBJS = 12to11.o run.o alloc.o fns.o output.o compositor.o       \
   ewmh.o timer.o subsurface.o seat.o data_device.o xdg_popup.o  \
   dmabuf.o buffer.o select.o xdata.o xsettings.o dnd.o          \
   icon_surface.o primary_selection.o renderer.o                 \
-  picture_renderer.o explicit_synchronization.o
+  picture_renderer.o explicit_synchronization.o transform.o     \
+  wp_viewporter.o
 
-GENHEADERS = transfer_atoms.h primary-selection-unstable-v1.h \
-  linux-dmabuf-unstable-v1.h xdg-shell.h                      \
-  linux-explicit-synchronization-unstable-v1.h
+GENHEADERS = transfer_atoms.h
 
 #ifdef HaveEglSupport
 
@@ -111,6 +109,7 @@ ScannerTarget(linux-dmabuf-unstable-v1)
 ScannerTarget(xdg-shell)
 ScannerTarget(primary-selection-unstable-v1)
 ScannerTarget(linux-explicit-synchronization-unstable-v1)
+ScannerTarget(viewporter)
 
 /* Make OBJS depend on scanner headers, and depend on both them and SRCS.  */
 $(OBJS): $(GENHEADERS)

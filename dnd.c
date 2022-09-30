@@ -897,12 +897,10 @@ HandleMotion (Surface *toplevel, int x, int y, uint32_t action,
   /* Compute the surface-relative coordinates and scale them.  */
 
   if (child)
-    {
-      /* x_out and y_out are only used if dnd_state.child ends up
-	 non-NULL.  */
-      *x_out = (x - x_off) / child->factor;
-      *y_out = (y - y_off) / child->factor;
-    }
+    /* x_out and y_out are only used if dnd_state.child ends up
+       non-NULL.  */
+    TruncateWindowToSurface (child, x - x_off, y - y_off,
+			     x_out, y_out);
 
   if (dnd_state.child == child)
     /* If nothing changed, don't do anything.  */

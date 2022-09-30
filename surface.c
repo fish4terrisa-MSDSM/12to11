@@ -22,6 +22,7 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <string.h>
 
 #include <inttypes.h>
+#include <float.h>
 
 #include "compositor.h"
 
@@ -558,9 +559,7 @@ ApplyScale (Surface *surface)
 	D = C / L
 
 	D = (A * E) / (A / B)
-	D = B * E
-
-  Phew.  */
+	D = B * E.  */
 
   b = scale;
   g = global_scale_factor;
@@ -638,6 +637,161 @@ ApplyInputRegion (Surface *surface)
 }
 
 static void
+ApplyViewport (Surface *surface)
+{
+  State *state;
+  int dest_width, dest_height;
+  double crop_width, crop_height, src_x, src_y;
+  double max_width, max_height;
+
+  state = &surface->current_state;
+
+  /* If no values are specified, return and clear the viewport.  */
+  if (state->src_x == -1 && state->dest_width == -1)
+    {
+      ViewClearViewport (surface->view);
+      return;
+    }
+
+  /* Calculate the viewport.  crop_width and crop_height describe the
+     amount by which to crop the surface contents, after conversion to
+     window geometry.  dest_width and dest_height then describe how
+     large the surface should be.  src_x and src_y describe the
+     origin at which to start sampling from the buffer.  */
+
+  if (state->buffer)
+    {
+      max_width = XLBufferWidth (state->buffer);
+      max_height = XLBufferHeight (state->buffer);
+    }
+  else
+    {
+      /* If state->buffer is not set then the source rectangle does
+	 not have to be validated now.  It will be validated later
+	 once the buffer is attached.  */
+      max_width = DBL_MAX;
+      max_height = DBL_MAX;
+    }
+
+  if (state->src_x != -1.0)
+    {
+      /* This means a source rectangle has been specified.  Set src_x
+	 and src_y.  */
+      src_x = state->src_x;
+      src_y = state->src_y;
+
+      /* Also set crop_width and crop_height.  */
+      crop_width = state->src_width;
+      crop_height = state->src_height;
+    }
+  else
+    {
+      /* Set crop_width and crop_height to the default values, which
+	 are the width and height of the buffer divided by the buffer
+	 scale.  */
+      src_x = 0;
+      src_y = 0;
+
+      crop_width = -1;
+      crop_height = -1;
+    }
+
+  /* Now, either dest_width/dest_height are specified, or dest_width
+     and dest_height should be crop_width and crop_height.  If the
+     latter, then crop_width and crop_height must be integer
+     values.  */
+
+  if (state->dest_width != -1)
+    {
+      /* This means dest_width and dest_height have been explicitly
+	 specified.  */
+      dest_width = state->dest_width;
+      dest_height = state->dest_height;
+    }
+  else
+    {
+      if ((rint (crop_width) != crop_width
+	   || rint (crop_height) != crop_height)
+	  /* If the src_width and src_height were not specified
+	     manually but were computed from the buffer scale, don't
+	     complain that they are not integer values.  The
+	     underlying viewport code satisfactorily handles
+	     fractional width and height anyway.  */
+	  && state->src_x != 1.0)
+	goto bad_size;
+
+      dest_width = state->src_width;
+      dest_height = state->src_height;
+    }
+
+  /* Now all of the fields above must be set.  Verify that none of
+     them lie outside the buffer.  */
+  if (state->src_x != -1
+      && (src_x + crop_width - 1 >= max_width / state->buffer_scale
+	  || src_y + crop_height - 1 >= max_height / state->buffer_scale))
+    goto out_of_buffer;
+
+  /* Finally, set the viewport.  Convert the values to window
+     coordinates.  */
+  src_x *= surface->factor;
+  src_y *= surface->factor;
+
+  if (crop_width != -1)
+    {
+      crop_width *= surface->factor;
+      crop_height *= surface->factor;
+    }
+
+  dest_width *= surface->factor;
+  dest_height *= surface->factor;
+
+  /* And really set the viewport.  */
+  ViewSetViewport (surface->view, src_x, src_y, crop_width,
+		   crop_height, dest_width, dest_height);
+
+  return;
+
+ bad_size:
+  /* By this point, surface->viewport should be non-NULL; however, if
+     a synchronous subsurface applies invalid viewporter state,
+     commits it, destroys the wp_viewport resource, and the parent
+     commits, then the cached state applied due to the parent commit
+     will be invalid, but the viewport resource will no longer be
+     associated with the surface.  I don't know what to do in that
+     case, so leave the behavior undefined.  */
+  if (surface->viewport)
+    XLWpViewportReportBadSize (surface->viewport);
+  return;
+
+ out_of_buffer:
+  if (surface->viewport)
+    XLWpViewportReportOutOfBuffer (surface->viewport);
+}
+
+static void
+CheckViewportValues (Surface *surface)
+{
+  State *state;
+  int width, height;
+
+  state = &surface->current_state;
+
+  if (!surface->viewport || state->src_x == -1.0
+      || !state->buffer)
+    return;
+
+  /* A buffer is attached and a viewport source rectangle is set;
+     check that it remains in bounds.  */
+
+  width = XLBufferWidth (state->buffer);
+  height = XLBufferHeight (state->buffer);
+
+  if (state->src_x + state->src_width - 1 >= width / state->buffer_scale
+      || state->src_y + state->src_height - 1 >= height / state->buffer_scale)
+    XLWpViewportReportBadSize (surface->viewport);
+}
+
+static void
 HandleScaleChanged (void *data, int new_scale)
 {
   Surface *surface;
@@ -650,6 +804,7 @@ HandleScaleChanged (void *data, int new_scale)
   ApplyScale (surface);
   ApplyInputRegion (surface);
   ApplyOpaqueRegion (surface);
+  ApplyViewport (surface);
 
   /* Next, call any role-specific hooks.  */
   if (surface->role && surface->role->funcs.rescale)
@@ -680,21 +835,44 @@ ApplyDamage (Surface *surface)
 {
   pixman_region32_t temp;
   int scale;
+  float x_factor, y_factor;
 
   scale = GetEffectiveScale (surface->current_state.buffer_scale);
 
   /* N.B. that this must come after the scale is applied.  */
 
-  if (scale)
+  if (scale || surface->current_state.src_x != -1
+      || surface->current_state.dest_width != -1)
     {
       pixman_region32_init (&temp);
 
+      if (!scale)
+	x_factor = y_factor = 1.0;
       if (scale > 0)
-	XLScaleRegion (&temp, &surface->current_state.damage,
-		       1.0 / (scale + 1), 1.0 / (scale + 1));
+	x_factor = y_factor = 1.0 / (scale + 1);
       else
+	x_factor = y_factor = abs (scale) + 1;
+
+      /* If a viewport dest size is set, add that to the scale as
+	 well.  */
+      if (surface->current_state.src_width != -1)
+	{
+	  x_factor += (float) (surface->current_state.src_width
+			       / surface->current_state.dest_width);
+	  y_factor += (float) (surface->current_state.src_height
+			       / surface->current_state.dest_height);
+	}
+
+      if (x_factor != 1.0f && y_factor != 1.0f)
 	XLScaleRegion (&temp, &surface->current_state.damage,
-		       abs (scale) + 1, abs (scale) + 1);
+		       x_factor, y_factor);
+
+      /* If a viewport is set, translate the damage region by the
+	 src_x and src_y.  This is lossy.  */
+      if (surface->current_state.src_x != -1.0)
+	pixman_region32_translate (&temp,
+				   floor (surface->current_state.src_x),
+				   floor (surface->current_state.src_y));
 
       ViewDamage (surface->view, &temp);
 
@@ -766,6 +944,25 @@ SavePendingState (Surface *surface)
   if (surface->pending_state.pending & PendingBufferScale)
     surface->cached_state.buffer_scale
       = surface->pending_state.buffer_scale;
+
+  if (surface->pending_state.pending & PendingViewportDest)
+    {
+      surface->cached_state.dest_width
+	= surface->pending_state.dest_width;
+      surface->cached_state.dest_height
+	= surface->pending_state.dest_height;
+    }
+
+  if (surface->pending_state.pending & PendingViewportSrc)
+    {
+      surface->cached_state.src_x = surface->pending_state.src_x;
+      surface->cached_state.src_y = surface->pending_state.src_y;
+
+      surface->cached_state.src_width
+	= surface->pending_state.src_width;
+      surface->cached_state.src_height
+	= surface->pending_state.src_height;
+    }
 
   if (surface->pending_state.pending & PendingAttachments)
     {
@@ -860,6 +1057,11 @@ InternalCommit (Surface *surface, State *pending)
 			pending->buffer);
 	  ApplyBuffer (surface);
 	  ClearBuffer (pending);
+
+	  /* Check that any applied viewport source rectangles remain
+	     valid.  */
+	  if (!(pending->pending & PendingViewportSrc))
+	    CheckViewportValues (surface);
 	}
       else
 	{
@@ -887,6 +1089,29 @@ InternalCommit (Surface *surface, State *pending)
       pixman_region32_copy (&surface->current_state.opaque,
 			    &pending->opaque);
       ApplyOpaqueRegion (surface);
+    }
+
+  if (pending->pending & PendingViewportSrc
+      || pending->pending & PendingViewportDest)
+    {
+      /* Copy the viewport data over to the current state.  */
+
+      if (pending->pending & PendingViewportDest)
+	{
+	  surface->current_state.dest_width = pending->dest_width;
+	  surface->current_state.dest_height = pending->dest_height;
+	}
+
+      if (pending->pending & PendingViewportSrc)
+	{
+	  surface->current_state.src_x = pending->src_x;
+	  surface->current_state.src_y = pending->src_y;
+	  surface->current_state.src_width = pending->src_width;
+	  surface->current_state.src_height = pending->src_height;
+	}
+
+      /* And apply the viewport now.  */
+      ApplyViewport (surface);
     }
 
   if (pending->pending & PendingAttachments)
@@ -1077,6 +1302,14 @@ InitState (State *state)
   state->frame_callbacks.next = &state->frame_callbacks;
   state->frame_callbacks.last = &state->frame_callbacks;
   state->frame_callbacks.resource = NULL;
+
+  /* Initialize the viewport to the default undefined values.  */
+  state->dest_width = -1;
+  state->dest_height = -1;
+  state->src_x = -1.0;
+  state->src_y = -1.0;
+  state->src_width = -1.0;
+  state->src_height = -1.0;
 }
 
 static void
@@ -1321,16 +1554,17 @@ XLStateDetachBuffer (State *state)
 void
 XLSurfaceRunFrameCallbacks (Surface *surface, struct timespec time)
 {
-  uint32_t ms_time;
+  uint64_t ms_time;
   XLList *list;
 
-  /* I don't know what else is reasonable in case of overflow.  */
+  /* If ms_time is too large to fit in uint32_t, take the lower 32
+     bits.  */
 
   if (IntMultiplyWrapv (time.tv_sec, 1000, &ms_time))
-    ms_time = UINT32_MAX;
+    ms_time = UINT64_MAX;
   else if (IntAddWrapv (ms_time, time.tv_nsec / 1000000,
 			&ms_time))
-    ms_time = UINT32_MAX;
+    ms_time = UINT64_MAX;
 
   RunFrameCallbacks (&surface->current_state.frame_callbacks,
 		     ms_time);
@@ -1473,4 +1707,84 @@ XLSurfaceMoveBy (Surface *surface, int west, int north)
 
   surface->role->funcs.move_by (surface, surface->role,
 				west, north);
+}
+
+/* The following functions convert from window to surface
+   coordinates and vice versa:
+
+   SurfaceToWindow - take given surface coordinate, and return a
+                     window relative coordinate.
+   ScaleToWindow   - take given surface dimension, and return a
+                     window relative dimension.
+   WindowToSurface - take given window coordinate, and return a
+                     surface relative coordinate as a double.
+   ScaleToSurface  - take given window dimension, and return a
+                     surface relative dimension.
+
+   Functions prefixed by "truncate" return and accept integer values
+   instead of floating point ones; truncation is performed on
+   fractional values.  */
+
+void
+SurfaceToWindow (Surface *surface, double x, double y,
+		   double *x_out, double *y_out)
+{
+  *x_out = x * surface->factor + surface->input_delta_x;
+  *y_out = y * surface->factor + surface->input_delta_y;
+}
+
+void
+ScaleToWindow (Surface *surface, double width, double height,
+		 double *width_out, double *height_out)
+{
+  *width_out = width * surface->factor;
+  *height_out = height * surface->factor;
+}
+
+void
+WindowToSurface (Surface *surface, double x, double y,
+		 double *x_out, double *y_out)
+{
+  *x_out = x / surface->factor - surface->input_delta_x;
+  *y_out = y / surface->factor - surface->input_delta_y;
+}
+
+void
+ScaleToSurface (Surface *surface, double width, double height,
+		double *width_out, double *height_out)
+{
+  *width_out = width / surface->factor;
+  *height_out = height / surface->factor;
+}
+
+void
+TruncateSurfaceToWindow (Surface *surface, int x, int y,
+			   int *x_out, int *y_out)
+{
+  *x_out = x * surface->factor + surface->input_delta_x;
+  *y_out = y * surface->factor + surface->input_delta_y;
+}
+
+void
+TruncateScaleToWindow (Surface *surface, int width, int height,
+		       int *width_out, int *height_out)
+{
+  *width_out = width * surface->factor;
+  *height_out = height * surface->factor;
+}
+
+void
+TruncateWindowToSurface (Surface *surface, int x, int y,
+			 int *x_out, int *y_out)
+{
+  *x_out = x / surface->factor - surface->input_delta_x;
+  *y_out = y / surface->factor - surface->input_delta_y;
+}
+
+void
+TruncateScaleToSurface (Surface *surface, int width, int height,
+			int *width_out, int *height_out)
+{
+  *width_out = width / surface->factor;
+  *height_out = height / surface->factor;
 }

@@ -325,16 +325,54 @@ GetScale (DrawParams *params)
   return 1.0;
 }
 
+static double
+GetSourceX (DrawParams *params)
+{
+  if (params->flags & OffsetSet)
+    return params->off_x;
+
+  return 0.0;
+}
+
+static double
+GetSourceY (DrawParams *params)
+{
+  if (params->flags & OffsetSet)
+    return params->off_y;
+
+  return 0.0;
+}
+
+static Bool
+CompareStretch (DrawParams *params, DrawParams *other)
+{
+  if ((params->flags & StretchSet)
+      != (other->flags & StretchSet))
+    return False;
+
+  if (params->flags & StretchSet)
+    return (other->crop_width == params->crop_width
+	    && other->crop_height == params->crop_height
+	    && other->stretch_width == params->stretch_width
+	    && other->stretch_height == params->stretch_height);
+
+  return True;
+}
+
 static void
 MaybeApplyTransform (PictureBuffer *buffer, DrawParams *params)
 {
   XTransform transform;
+  Matrix ftransform;
 
-  if (GetScale (params) == GetScale (&buffer->params))
+  if (GetScale (params) == GetScale (&buffer->params)
+      && GetSourceX (params) == GetSourceX (&buffer->params)
+      && GetSourceY (params) == GetSourceY (&buffer->params)
+      && CompareStretch (params, &buffer->params))
     /* Nothing changed.  */
     return;
 
-  /* Otherwise, compute and apply the new transform.  */
+  /* Otherwise, compute and apply the new transform. */
   if (!params->flags)
     /* No transform of any kind is set, use the identity matrix.  */
     XRenderSetPictureTransform (compositor.display,
@@ -342,14 +380,29 @@ MaybeApplyTransform (PictureBuffer *buffer, DrawParams *params)
 				&identity_transform);
   else
     {
-      memset (&transform, 0, sizeof transform);
+      MatrixIdentity (&ftransform);
 
-      transform.matrix[0][0] = XDoubleToFixed (1.0 / params->scale);
-      transform.matrix[1][1] = XDoubleToFixed (1.0 / params->scale);
-      transform.matrix[2][2] = XDoubleToFixed (1);
+      /* Note that these must be applied in the right order.  First,
+	 the scale is applied.  Then, the offset, and finally the
+	 stretch.  */
+      if (params->flags & ScaleSet)
+	MatrixScale (&ftransform, 1.0 / GetScale (params),
+		     1.0 / GetScale (params));
 
-      XRenderSetPictureTransform (compositor.display,
-				  buffer->picture,
+      if (params->flags & OffsetSet)
+	MatrixTranslate (&ftransform, params->off_x, params->off_y);
+
+      if (params->flags & StretchSet)
+	MatrixScale (&ftransform,
+		     params->crop_width / params->stretch_width,
+		     params->crop_height / params->stretch_height);
+
+      /* Export the matrix to an XTransform.  */
+      MatrixExport (&ftransform, &transform);
+
+      /* Set the transform.  The transform maps from dest coords to
+	 picture coords, so that [X Y 1] = TRANSFORM * [DX DY 1].  */
+      XRenderSetPictureTransform (compositor.display, buffer->picture,
 				  &transform);
     }
 

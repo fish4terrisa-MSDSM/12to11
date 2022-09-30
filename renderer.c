@@ -241,12 +241,12 @@ RenderFreeDmabufBuffer (RenderBuffer buffer)
 
 void
 RenderUpdateBufferForDamage (RenderBuffer buffer, pixman_region32_t *damage,
-			     float scale)
+			     DrawParams *params)
 {
   if (!buffer_funcs.update_buffer_for_damage)
     return;
 
-  buffer_funcs.update_buffer_for_damage (buffer, damage, scale);
+  buffer_funcs.update_buffer_for_damage (buffer, damage, params);
 }
 
 Bool
