@@ -1140,6 +1140,8 @@ extern void XLGetXdgToplevel (struct wl_client *, struct wl_resource *,
 extern Bool XLHandleXEventForXdgToplevels (XEvent *);
 extern Bool XLIsXdgToplevel (Window);
 extern void XLInitXdgToplevels (void);
+extern void XLXdgToplevelGetDecoration (XdgRoleImplementation *,
+					struct wl_resource *, uint32_t);
 
 /* Defined in xdg_popup.c.  */
 
@@ -1425,6 +1427,10 @@ extern void MatrixExport (Matrix *, XTransform *);
 extern void XLInitWpViewporter (void);
 extern void XLWpViewportReportBadSize (ViewportExt *);
 extern void XLWpViewportReportOutOfBuffer (ViewportExt *);
+
+/* Defined in decoration.c.  */
+
+extern void XLInitDecoration (void);
 
 /* Utility functions that don't belong in a specific file.  */
 

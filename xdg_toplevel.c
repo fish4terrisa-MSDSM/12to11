@@ -25,15 +25,18 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include "compositor.h"
 #include "xdg-shell.h"
+#include "xdg-decoration-unstable-v1.h"
 
 #define ToplevelFromRoleImpl(impl) ((XdgToplevel *) (impl))
 
 typedef struct _XdgToplevel XdgToplevel;
+typedef struct _XdgDecoration XdgDecoration;
 typedef struct _ToplevelState ToplevelState;
 typedef struct _PropMotifWmHints PropMotifWmHints;
 typedef struct _XdgUnmapCallback XdgUnmapCallback;
 
 typedef enum _How How;
+typedef enum _DecorationMode DecorationMode;
 
 enum
   {
@@ -45,14 +48,15 @@ enum
     StatePendingResize		= (1 << 5),
     StatePendingConfigureSize	= (1 << 6),
     StatePendingConfigureStates = (1 << 7),
+    StateDecorationModeDirty    = (1 << 8),
   };
 
 enum
   {
-    SupportsWindowMenu	  = 1,
-    SupportsMaximize	  = (1 << 2),
+    SupportsWindowMenu = 1,
+    SupportsMaximize   = (1 << 2),
     SupportsFullscreen = (1 << 3),
-    SupportsMinimize	  = (1 << 4),
+    SupportsMinimize   = (1 << 4),
   };
 
 enum
@@ -66,6 +70,12 @@ enum _How
     Remove = 0,
     Add	   = 1,
     Toggle = 2,
+  };
+
+enum _DecorationMode
+  {
+    DecorationModeClient	= 0,
+    DecorationModeWindowManager = 1,
   };
 
 struct _XdgUnmapCallback
@@ -218,6 +228,21 @@ struct _XdgToplevel
   /* The width and height used by that timer if
      StatePendingConfigureSize is set.  */
   int configure_width, configure_height;
+
+  /* Any decoration resource associated with this toplevel.  */
+  XdgDecoration *decoration;
+
+  /* The decoration mode.  */
+  DecorationMode decor;
+};
+
+struct _XdgDecoration
+{
+  /* The associated resource.  */
+  struct wl_resource *resource;
+
+  /* The associated toplevel.  */
+  XdgToplevel *toplevel;
 };
 
 /* iconv context used to convert between UTF-8 and Latin-1.  */
@@ -359,6 +384,39 @@ SendConfigure (XdgToplevel *toplevel, unsigned int width,
 
   toplevel->conf_reply = True;
   toplevel->conf_serial = serial;
+}
+
+static void
+SendDecorationConfigure (XdgToplevel *toplevel)
+{
+  uint32_t serial;
+
+  /* This should never be NULL when called!  */
+  XLAssert (toplevel->decoration != NULL);
+
+  serial = wl_display_next_serial (compositor.wl_display);
+
+#define ServerSide ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+#define ClientSide ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
+
+  if (toplevel->decor == DecorationModeClient)
+    zxdg_toplevel_decoration_v1_send_configure (toplevel->decoration->resource,
+					        ClientSide);
+  else
+    zxdg_toplevel_decoration_v1_send_configure (toplevel->decoration->resource,
+						ServerSide);
+
+#undef ServerSide
+#undef ClientSide
+
+  XLXdgRoleSendConfigure (toplevel->role, serial);
+
+  toplevel->conf_reply = True;
+  toplevel->conf_serial = serial;
+
+  /* This means that the decoration should be reapplied upon the next
+     commit.  */
+  toplevel->state |= StateDecorationModeDirty;
 }
 
 /* Forward declaration.  */
@@ -1094,6 +1152,20 @@ Commit (Role *role, Surface *surface, XdgRoleImplementation *impl)
       if (!(toplevel->state & StateIsMapped))
 	Map (toplevel);
     }
+
+  if (!toplevel->conf_reply
+      && toplevel->state & StateDecorationModeDirty)
+    {
+      /* The decoration is dirty and all configure events were
+	 aknowledged; apply the new decoration.  */
+
+      if (toplevel->decor == DecorationModeWindowManager)
+	SetDecorated (toplevel, True);
+      else
+	SetDecorated (toplevel, False);
+
+      toplevel->state &= ~StateDecorationModeDirty;
+    }
 }
 
 static void
@@ -1459,12 +1531,15 @@ HandleResourceDestroy (struct wl_resource *resource)
   toplevel = wl_resource_get_user_data (resource);
   toplevel->resource = NULL;
 
+  /* If there is an attached decoration resource, detach it.  */
+  if (toplevel->decoration)
+    toplevel->decoration->toplevel = NULL;
+
   DestroyBacking (toplevel);
 }
 
 static void
-Destroy (struct wl_client *client,
-	 struct wl_resource *resource)
+Destroy (struct wl_client *client, struct wl_resource *resource)
 {
   XdgToplevel *toplevel;
 
@@ -1474,7 +1549,15 @@ Destroy (struct wl_client *client,
     XLXdgRoleDetachImplementation (toplevel->role,
 				   &toplevel->impl);
 
-  wl_resource_destroy (resource);
+  /* If the resource still has a decoration applied, then this is an
+     error.  */
+  if (toplevel->decoration)
+    wl_resource_post_error (resource,
+			    ZXDG_TOPLEVEL_DECORATION_V1_ERROR_ORPHANED,
+			    "the attached decoration would be orphaned by"
+			    " the destruction of this resource");
+  else
+    wl_resource_destroy (resource);
 }
 
 static void
@@ -2128,4 +2211,143 @@ Bool
 XLIsXdgToplevel (Window window)
 {
   return XLLookUpXdgToplevel (window) != NULL;
+}
+
+
+
+static void
+DestroyDecoration (struct wl_client *client, struct wl_resource *resource)
+{
+  wl_resource_destroy (resource);
+}
+
+static void
+SetMode (struct wl_client *client, struct wl_resource *resource,
+	 uint32_t mode)
+{
+  XdgDecoration *decoration;
+
+  decoration = wl_resource_get_user_data (resource);
+
+  if (!decoration->toplevel)
+    return;
+
+  switch (mode)
+    {
+    case ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE:
+      decoration->toplevel->decor = DecorationModeClient;
+      break;
+
+    case ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE:
+      decoration->toplevel->decor = DecorationModeWindowManager;
+      break;
+
+    default:
+      wl_resource_post_error (resource, WL_DISPLAY_ERROR_IMPLEMENTATION,
+			      "trying to set bogus decoration mode %u",
+			      mode);
+      return;
+    }
+
+  SendDecorationConfigure (decoration->toplevel);
+}
+
+static void
+UnsetMode (struct wl_client *client, struct wl_resource *resource)
+{
+  XdgDecoration *decoration;
+
+  decoration = wl_resource_get_user_data (resource);
+
+  if (!decoration->toplevel)
+    return;
+
+  /* Default to using window manager decorations.  */
+  decoration->toplevel->decor = DecorationModeWindowManager;
+  SendDecorationConfigure (decoration->toplevel);
+}
+
+static struct zxdg_toplevel_decoration_v1_interface decoration_impl =
+  {
+    .destroy = DestroyDecoration,
+    .set_mode = SetMode,
+    .unset_mode = UnsetMode,
+  };
+
+static void
+HandleDecorationResourceDestroy (struct wl_resource *resource)
+{
+  XdgDecoration *decoration;
+
+  decoration = wl_resource_get_user_data (resource);
+
+  /* Detach the decoration from the toplevel if the latter still
+     exists.  */
+  if (decoration->toplevel)
+    decoration->toplevel->decoration = NULL;
+
+  /* Free the decoration.  */
+  XLFree (decoration);
+}
+
+void
+XLXdgToplevelGetDecoration (XdgRoleImplementation *impl,
+			    struct wl_resource *resource,
+			    uint32_t id)
+{
+  XdgToplevel *toplevel;
+  XdgDecoration *decoration;
+
+  toplevel = ToplevelFromRoleImpl (impl);
+
+  /* See if a decoration object is already attached.  */
+  if (toplevel->decoration)
+    {
+#define AlreadyConstructed ZXDG_TOPLEVEL_DECORATION_V1_ERROR_ALREADY_CONSTRUCTED
+      wl_resource_post_error (resource, AlreadyConstructed,
+			      "the given toplevel already has a decoration"
+			      "object.");
+#undef AlreadyConstructed
+      return;
+    }
+
+  /* See if a buffer is already attached.  */
+  if (toplevel->role->surface
+      && toplevel->role->surface->current_state.buffer)
+    {
+#define UnconfiguredBuffer ZXDG_TOPLEVEL_DECORATION_V1_ERROR_UNCONFIGURED_BUFFER
+      wl_resource_post_error (resource, UnconfiguredBuffer,
+			      "given toplevel already has attached buffer");
+#undef UnconfiguredBuffer
+      return;
+    }
+
+  decoration = XLSafeMalloc (sizeof *decoration);
+
+  if (!decoration)
+    {
+      wl_resource_post_no_memory (resource);
+      return;
+    }
+
+  memset (decoration, 0, sizeof *decoration);
+  decoration->resource
+    = wl_resource_create (wl_resource_get_client (resource),
+			  &zxdg_toplevel_decoration_v1_interface,
+			  wl_resource_get_version (resource), id);
+
+  if (!decoration->resource)
+    {
+      XLFree (decoration);
+      wl_resource_post_no_memory (resource);
+      return;
+    }
+
+  /* Now attach the decoration to the toplevel and vice versa.  */
+  toplevel->decoration = decoration;
+  decoration->toplevel = toplevel;
+
+  /* And set the implementation.  */
+  wl_resource_set_implementation (decoration->resource, &decoration_impl,
+				  decoration, HandleDecorationResourceDestroy);
 }

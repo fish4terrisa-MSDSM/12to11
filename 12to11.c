@@ -123,6 +123,7 @@ XLMain (int argc, char **argv)
   XLInitPrimarySelection ();
   XLInitExplicitSynchronization ();
   XLInitWpViewporter ();
+  XLInitDecoration ();
   /* This has to come after the rest of the initialization.  */
   DetermineServerTime ();
   XLRunCompositor ();
