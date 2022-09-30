@@ -593,8 +593,12 @@ AfterParentCommit (Surface *surface, void *data)
 	 the scanout area of.  */
       MaybeUpdateOutputs (subsurface);
     }
-  subsurface->pending_commit = False;
 
+  /* Mark the subsurface as unskipped.  (IOW, make it visible).  */
+  ViewUnskip (subsurface->role.surface->view);
+  ViewUnskip (subsurface->role.surface->under);
+
+  subsurface->pending_commit = False;
   subsurface->pending_substate.flags = 0;
 }
 
@@ -719,6 +723,22 @@ Setup (Surface *surface, Role *role)
   subsurface->parent->subsurfaces
     = XLListPrepend (subsurface->parent->subsurfaces,
 		     surface);
+
+  /* And mark the view as "skipped"; this differs from unmapping,
+     which we cannot simply use, in that children remain visible, as
+     the specification says the following:
+
+       Adding sub-surfaces to a parent is a double-buffered operation
+       on the parent (see wl_surface.commit).  The effect of adding a
+       sub-surface becomes visible on the next time the state of the
+       parent surface is applied.
+
+    So if a child is added to a desynchronized subsurface whose parent
+    toplevel has not yet committed, and commit is called on the
+    desynchronized subsurface, the child should become indirectly
+    visible on the parent toplevel through the child.  */
+  ViewSkip (surface->view);
+  ViewSkip (surface->under);
 
   return True;
 }

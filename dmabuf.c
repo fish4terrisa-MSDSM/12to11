@@ -831,7 +831,7 @@ static struct zwp_linux_dmabuf_feedback_v1_interface zld_feedback_v1_impl =
   };
 
 /* TODO: dynamically switch tranche for surface feedbacks based on the
-   crtc of the provider the surface is in.  */
+   provider of the crtc the surface is in.  */
 
 static void
 MakeFeedback (struct wl_client *client, struct wl_resource *resource,

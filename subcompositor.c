@@ -193,10 +193,14 @@ enum
     /* This means that the view and all its inferiors should be
        skipped in bounds computation, input tracking, et cetera.  */
     ViewIsUnmapped   = 1,
+    /* This means that the view itself (not including its inferiors)
+       should be skipped for bounds computation and input
+       tracking, etc.  */
+    ViewIsSkipped    = 1 << 2,
     /* This means that the view has a viewport specifying its size,
-       effectively decoupling its relation to the buffer width and
+       effectively decoupling its relation to the buffer width	and
        height.  */
-    ViewIsViewported = 1 << 2,
+    ViewIsViewported = 1 << 3,
   };
 
 #define IsViewUnmapped(view)			\
@@ -205,6 +209,13 @@ enum
   ((view)->flags |= ViewIsUnmapped)
 #define ClearUnmapped(view)			\
   ((view)->flags &= ~ViewIsUnmapped)
+
+#define IsSkipped(view)				\
+  ((view)->flags & ViewIsSkipped)
+#define SetSkipped(view)			\
+  ((view)->flags |= ViewIsSkipped)
+#define ClearSkipped(view)			\
+  ((view)->flags &= ~ViewIsSkipped)
 
 #define IsViewported(view)			\
   ((view)->flags & ViewIsViewported)
@@ -528,6 +539,10 @@ SubcompositorUpdateBounds (Subcompositor *subcompositor, int doflags)
 	      goto next;
 	    }
 
+	  if (IsSkipped (list->view))
+	    /* Skip past the view itself should it be skipped.  */
+	    goto next;
+
 	  if ((doflags & DoMinX) && min_x > list->view->abs_x)
 	    min_x = list->view->abs_x;
 
@@ -566,7 +581,7 @@ SubcompositorUpdateBoundsForInsert (Subcompositor *subcompositor,
 {
   XLAssert (view->subcompositor == subcompositor);
 
-  if (!ViewIsMapped (view))
+  if (!ViewIsMapped (view) || IsSkipped (view))
     /* If the view is unmapped, do nothing.  */
     return;
 
@@ -718,7 +733,9 @@ ViewRecomputeChildren (View *view, int *doflags)
 	      && attached
 	      /* Or if it isn't mapped, or none of its parents are
 		 mapped.  */
-	      && mapped)
+	      && mapped
+	      /* Or if it is skipped.  */
+	      && !IsSkipped (view))
 	    {
 	      if (child->abs_x < view->subcompositor->min_x)
 		{
@@ -1242,7 +1259,7 @@ ViewAfterSizeUpdate (View *view)
   Bool mapped;
 
   if (!view->subcompositor || !ViewVisibilityState (view, &mapped)
-      || !mapped)
+      || !mapped || IsSkipped (view))
     return;
 
   /* First, assume we will have to compute both max_x and max_y.  */
@@ -1354,9 +1371,9 @@ ViewMove (View *view, int x, int y)
 	}
 
       if (view->subcompositor && ViewVisibilityState (view, &mapped)
-	  /* If this view isn't mapped, then do nothing.  The bounds
-	     will be recomputed later.  */
-	  && mapped)
+	  /* If this view isn't mapped or is skipped, then do nothing.
+	     The bounds will be recomputed later.  */
+	  && mapped && !IsSkipped (view))
 	{
 	  /* First assume everything will have to be updated.  */
 	  doflags |= DoMaxX | DoMaxY | DoMinY | DoMinX;
@@ -1480,6 +1497,52 @@ ViewUnmap (View *view)
 	 to do anything other than marking the subcompositor as
 	 partially mapped.  */
       if (view->link != view->inferior || view->buffer)
+	{
+	  /* Recompute the bounds of the subcompositor.  */
+	  SubcompositorUpdateBounds (view->subcompositor,
+				     DoAll);
+
+	  /* Garbage the view's subcompositor.  */
+	  SetGarbaged (view->subcompositor);
+	}
+    }
+}
+
+void
+ViewUnskip (View *view)
+{
+  if (!IsSkipped (view))
+    return;
+
+  ClearSkipped (view);
+
+  if (view->subcompositor && view->buffer)
+    {
+      /* Garbage the subcompositor and recompute bounds, if something
+	 is attached to the view.  */
+      SetGarbaged (view->subcompositor);
+      SubcompositorUpdateBounds (view->subcompositor, DoAll);
+    }
+}
+
+void
+ViewSkip (View *view)
+{
+  if (IsSkipped (view))
+    return;
+
+  /* Mark the view as skipped.  */
+  SetSkipped (view);
+
+  if (view->subcompositor)
+    {
+      /* Mark the subcompositor as having unmapped or skipped
+	 views.  */
+      SetPartiallyMapped (view->subcompositor);
+
+      /* If nothing is attached, the subcompositor need not be
+	 garbaged.  */
+      if (view->buffer)
 	{
 	  /* Recompute the bounds of the subcompositor.  */
 	  SubcompositorUpdateBounds (view->subcompositor,
@@ -1969,6 +2032,15 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 	      goto next;
 	    }
 
+	  if (IsSkipped (view))
+	    {
+	      /* We must skip this view, as it represents (for
+		 instance) a subsurface that has been added, but not
+		 committed.  */
+	      SetPartiallyMapped (subcompositor);
+	      goto next;
+	    }
+
 	  if (!view->buffer)
 	    goto next;
 
@@ -2221,6 +2293,15 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 	  /* Set the "is partially mapped" flag.  This is an
 	     optimization used to make inserting views in deeply
 	     nested hierarchies faster.  */
+	  SetPartiallyMapped (subcompositor);
+	  goto next_1;
+	}
+
+      if (IsSkipped (view))
+	{
+	  /* We must skip this view, as it represents (for
+	     instance) a subsurface that has been added, but not
+	     committed.  */
 	  SetPartiallyMapped (subcompositor);
 	  goto next_1;
 	}
@@ -2539,6 +2620,15 @@ SubcompositorExpose (Subcompositor *subcompositor, XEvent *event)
 	  goto next;
 	}
 
+      if (IsSkipped (list->view))
+	{
+	  /* We must skip this view, as it represents (for
+	     instance) a subsurface that has been added, but not
+	     committed.  */
+	  SetPartiallyMapped (subcompositor);
+	  goto next;
+	}
+
       if (!list->view->buffer)
 	goto next;
 
@@ -2666,6 +2756,14 @@ SubcompositorLookupView (Subcompositor *subcompositor, int x, int y,
       if (IsViewUnmapped (list->view))
 	{
 	  list = list->view->inferior;
+	  continue;
+	}
+
+      if (IsSkipped (list->view))
+	{
+	  /* We must skip this view, as it represents (for instance) a
+	     subsurface that has been added, but not committed.  */
+	  SetPartiallyMapped (subcompositor);
 	  continue;
 	}
 

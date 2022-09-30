@@ -21,10 +21,16 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+#include <fcntl.h>
 
 #include <sys/mman.h>
 
 #include "compositor.h"
+
+enum
+  {
+    PoolCannotSigbus = 1,
+  };
 
 typedef struct _Pool
 {
@@ -36,6 +42,9 @@ typedef struct _Pool
 
   /* The number of references to this pool.  */
   int refcount;
+
+  /* Various flags.  */
+  int flags;
 
   /* Pointer to the raw data in this pool.  */
   void *data;
@@ -83,7 +92,10 @@ DereferencePool (Pool *pool)
 
   if (pool->data != (void *) -1
       /* If the pool is of size 0, no busfault was installed.  */
-      && pool->size)
+      && pool->size
+      /* If reading from the pool cannot possibly cause SIGBUS, then
+	 no bus fault trap was installed.  */
+      && !(pool->flags & PoolCannotSigbus))
     XLRemoveBusfault (pool->data);
 
   close (pool->fd);
@@ -339,6 +351,10 @@ ResizePool (struct wl_client *client, struct wl_resource *resource,
 {
   Pool *pool;
   void *data;
+#ifdef F_GET_SEALS
+  int seals;
+  struct stat statb;
+#endif
 
   pool = wl_resource_get_user_data (resource);
 
@@ -365,14 +381,27 @@ ResizePool (struct wl_client *client, struct wl_resource *resource,
 
   /* Now cancel the existing bus fault handler, should it have been
      installed.  */
-  if (pool->size)
+  if (pool->size && !(pool->flags & PoolCannotSigbus))
     XLRemoveBusfault (pool->data);
+
+  pool->flags = 0;
+
+  /* Recheck whether or not reading from the pool can cause
+     SIGBUS.  */
+#ifdef F_GET_SEALS
+  seals = fcntl (pool->fd, F_GET_SEALS);
+
+  if (seals != -1 && seals & F_SEAL_SHRINK
+      && fstat (pool->fd, &statb) >= 0
+      && statb.st_size >= size)
+    pool->flags |= PoolCannotSigbus;
+#endif
 
   pool->size = size;
   pool->data = data;
 
   /* And add a new handler.  */
-  if (pool->size)
+  if (pool->size && !(pool->flags & PoolCannotSigbus))
     XLRecordBusfault (pool->data, pool->size);
 }
 
@@ -394,6 +423,18 @@ CreatePool (struct wl_client *client, struct wl_resource *resource,
 	    uint32_t id, int32_t fd, int32_t size)
 {
   Pool *pool;
+#ifdef F_GET_SEALS
+  int seals;
+  struct stat statb;
+#endif
+
+  if (size <= 0)
+    {
+      wl_resource_post_error (resource, WL_SHM_ERROR_INVALID_STRIDE,
+			      "invalid size given to create_pool");
+      close (fd);
+      return;
+    }
 
   pool = XLSafeMalloc (sizeof *pool);
 
@@ -411,6 +452,7 @@ CreatePool (struct wl_client *client, struct wl_resource *resource,
     {
       XLFree (pool);
       wl_resource_post_no_memory (resource);
+      close (fd);
 
       return;
     }
@@ -423,6 +465,7 @@ CreatePool (struct wl_client *client, struct wl_resource *resource,
       XLFree (pool);
       wl_resource_post_error (resource, WL_SHM_ERROR_INVALID_FD,
 			      "mmap: %s", strerror (errno));
+      close (fd);
 
       return;
     }
@@ -432,10 +475,23 @@ CreatePool (struct wl_client *client, struct wl_resource *resource,
 
   pool->size = size;
 
+  /* Try to determine whether or not the accessing the pool data
+     cannot result in SIGBUS, as the file is already larger (or equal
+     in size) to the pool and the size is sealed.  */
+  pool->flags = 0;
+#ifdef F_GET_SEALS
+  seals = fcntl (fd, F_GET_SEALS);
+
+  if (seals != -1 && seals & F_SEAL_SHRINK
+      && fstat (fd, &statb) >= 0
+      && statb.st_size >= size)
+    pool->flags |= PoolCannotSigbus;
+#endif
+
   /* Begin trapping SIGBUS from this pool.  The client may truncate
      the file without telling us, in which case accessing its contents
      will cause crashes.  */
-  if (pool->size)
+  if (!(pool->flags & PoolCannotSigbus) && pool->size)
     XLRecordBusfault (pool->data, pool->size);
 
   pool->fd = fd;

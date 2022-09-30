@@ -650,6 +650,8 @@ extern void ViewMove (View *, int, int);
 extern void ViewDetach (View *);
 extern void ViewMap (View *);
 extern void ViewUnmap (View *);
+extern void ViewSkip (View *);
+extern void ViewUnskip (View *);
 extern void ViewMoveFractional (View *, double, double);
 
 extern void ViewSetViewport (View *, double, double, double, double,
