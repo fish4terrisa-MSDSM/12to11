@@ -1634,8 +1634,7 @@ ViewWidth (View *view)
        view->dest_height can be fractional values.  When that happens,
        we simply use the ceiling and rely on the renderer to DTRT with
        scaling.  */
-    return ceil (view->dest_width
-		 * GetContentScale (view->scale));
+    return ceil (view->dest_width);
 
   width = XLBufferWidth (view->buffer);
 
@@ -1658,8 +1657,7 @@ ViewHeight (View *view)
        view->dest_height can be fractional values.  When that happens,
        we simply use the ceiling and rely on the renderer to DTRT with
        scaling.  */
-    return ceil (view->dest_height
-		 * GetContentScale (view->scale));
+    return ceil (view->dest_height);
 
   height = XLBufferHeight (view->buffer);
 
@@ -2504,7 +2502,12 @@ SubcompositorUpdate (Subcompositor *subcompositor)
   while (list != subcompositor->inferiors);
 
   /* Swap changes to display.  */
-  RenderFinishRender (subcompositor->target);
+
+  if (IsGarbaged (subcompositor) || age < 0 || age >= 3)
+    RenderFinishRender (subcompositor->target, NULL);
+  else
+    /* Swap changes to display based on the update region.  */
+    RenderFinishRender (subcompositor->target, &update_region);
 
  complete:
 
@@ -2699,7 +2702,7 @@ SubcompositorExpose (Subcompositor *subcompositor, XEvent *event)
   while (list != subcompositor->inferiors);
 
   /* Swap changes to display.  */
-  RenderFinishRender (subcompositor->target);
+  RenderFinishRender (subcompositor->target, NULL);
 }
 
 void

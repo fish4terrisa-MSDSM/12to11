@@ -836,12 +836,20 @@ ApplyDamage (Surface *surface)
   pixman_region32_t temp;
   int scale;
   float x_factor, y_factor;
+  double src_width, src_height;
+  double dest_width, dest_height;
 
   scale = GetEffectiveScale (surface->current_state.buffer_scale);
 
+  /* If no surface was attached, just return.  */
+  if (!surface->current_state.buffer)
+    return;
+
   /* N.B. that this must come after the scale is applied.  */
 
-  if (scale || surface->current_state.src_x != -1
+  if (scale || (surface->current_state.src_x != -1
+		&& surface->current_state.src_x != 0.0
+		&& surface->current_state.src_y != 0.0)
       || surface->current_state.dest_width != -1)
     {
       pixman_region32_init (&temp);
@@ -855,15 +863,33 @@ ApplyDamage (Surface *surface)
 
       /* If a viewport dest size is set, add that to the scale as
 	 well.  */
-      if (surface->current_state.src_width != -1)
+      if (surface->current_state.dest_width != -1)
 	{
-	  x_factor += (float) (surface->current_state.src_width
-			       / surface->current_state.dest_width);
-	  y_factor += (float) (surface->current_state.src_height
-			       / surface->current_state.dest_height);
+	  if (surface->current_state.src_width != -1)
+	    {
+	      src_width = surface->current_state.src_width;
+	      src_height = surface->current_state.src_height;
+	    }
+	  else
+	    {
+	      src_width = XLBufferWidth (surface->current_state.buffer);
+	      src_height = XLBufferHeight (surface->current_state.buffer);
+
+	      /* Now scale these buffer dimensions down by the buffer
+		 scale, so they can be turned into surface
+		 coordinates.  */
+	      src_width /= surface->current_state.buffer_scale;
+	      src_height /= surface->current_state.buffer_scale;
+	    }
+
+	  dest_width = surface->current_state.dest_width;
+	  dest_height = surface->current_state.dest_height;
+
+	  x_factor *= (float) (src_width / dest_width);
+	  y_factor *= (float) (src_height / dest_height);
 	}
 
-      if (x_factor != 1.0f && y_factor != 1.0f)
+      if (x_factor != 1.0f || y_factor != 1.0f)
 	XLScaleRegion (&temp, &surface->current_state.damage,
 		       x_factor, y_factor);
 
@@ -879,8 +905,7 @@ ApplyDamage (Surface *surface)
       pixman_region32_fini (&temp);
     }
   else
-    ViewDamage (surface->view,
-		&surface->current_state.damage);
+    ViewDamage (surface->view, &surface->current_state.damage);
 }
 
 static void

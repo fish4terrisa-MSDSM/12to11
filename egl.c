@@ -334,6 +334,7 @@ static PFNEGLCLIENTWAITSYNCKHRPROC IClientWaitSync;
 static PFNEGLGETSYNCATTRIBKHRPROC IGetSyncAttrib;
 static PFNEGLWAITSYNCKHRPROC IWaitSync;
 static PFNEGLDUPNATIVEFENCEFDANDROIDPROC IDupNativeFenceFD;
+static PFNEGLSWAPBUFFERSWITHDAMAGEEXTPROC ISwapBuffersWithDamage;
 
 /* The EGL display handle.  */
 static EGLDisplay egl_display;
@@ -527,6 +528,8 @@ EglInitFuncs (void)
   LoadProc (GetSyncAttrib, "KHR", "EGL_KHR_fence_sync");
   LoadProc (WaitSync, "KHR", "EGL_KHR_wait_sync");
   LoadProc (DupNativeFenceFD, "ANDROID", "EGL_ANDROID_native_fence_sync");
+  LoadProc (SwapBuffersWithDamage, "EXT",
+	    "EGL_EXT_swap_buffers_with_damage");
 }
 
 static void
@@ -1441,17 +1444,39 @@ Composite (RenderBuffer buffer, RenderTarget target,
 }
 
 static void
-FinishRender (RenderTarget target)
+FinishRender (RenderTarget target, pixman_region32_t *damage)
 {
   EglTarget *egl_target;
+  EGLint *rects;
+  int nboxes, i;
+  pixman_box32_t *boxes;
 
   egl_target = target.pointer;
 
   if (egl_target->flags & IsPixmap)
     glFinish ();
-  else
+  else if (!ISwapBuffersWithDamage || !damage)
     /* This should also do glFinish.  */
     eglSwapBuffers (egl_display, egl_target->surface);
+  else
+    {
+      /* Do a swap taking the buffer damage into account.  First,
+	 convert the damage into cartesian coordinates.  */
+      boxes = pixman_region32_rectangles (damage, &nboxes);
+      rects = alloca (nboxes * 4 * sizeof *damage);
+
+      for (i = 0; i < nboxes; ++i)
+	{
+	  rects[i * 4 + 0] = boxes[i].x1;
+	  rects[i * 4 + 1] = egl_target->height - boxes[i].y2;
+	  rects[i * 4 + 2] = boxes[i].x2 - boxes[i].x1;
+	  rects[i * 4 + 3] = boxes[i].y2 - boxes[i].y1;
+	}
+
+      /* Next, swap buffers with the damage.  */
+      ISwapBuffersWithDamage (egl_display, egl_target->surface,
+			      rects, nboxes);
+    }
 }
 
 static int
@@ -2324,15 +2349,16 @@ UpdateBuffer (RenderBuffer buffer, pixman_region32_t *damage,
        upload the contents.  */
     EnsureTexture (egl_buffer);
   else if (!damage)
-    {
-      /* Upload all the contents to the buffer's texture if the buffer
-	 type requires manual updates.  Buffers backed by EGLImages do
-	 not need updates, since updates to the EGLImage are
-	 automatically reflected in the texture.  */
+    /* Upload all the contents to the buffer's texture if the buffer
+       type requires manual updates.  Buffers backed by EGLImages do
+       not appear to need updates, since updates to the EGLImage are
+       automatically reflected in the texture.
 
-      if (egl_buffer->u.type == ShmBuffer)
-	UpdateTexture (egl_buffer);
-    }
+       However, someone on #dri says calling
+       glEGLImageTargetTexture2DOES is still required and not doing so
+       may cause certain drivers to stop working in the future.  So
+       still do it for buffers backed by EGLImages.  */
+    UpdateTexture (egl_buffer);
   else if (pixman_region32_not_empty (damage))
     {
       switch (egl_buffer->u.type)
@@ -2344,8 +2370,9 @@ UpdateBuffer (RenderBuffer buffer, pixman_region32_t *damage,
 					params);
 	  break;
 
-	default:
-	  /* These buffers need no updates.  */
+	case DmaBufBuffer:
+	  /* See comment in !damage branch.  */
+	  UpdateTexture (egl_buffer);
 	  break;
 	}
     }

@@ -139,10 +139,10 @@ RenderComposite (RenderBuffer source, RenderTarget target, Operation op,
 }
 
 void
-RenderFinishRender (RenderTarget target)
+RenderFinishRender (RenderTarget target, pixman_region32_t *damage)
 {
   if (render_funcs.finish_render)
-    render_funcs.finish_render (target);
+    render_funcs.finish_render (target, damage);
 }
 
 int

@@ -287,8 +287,9 @@ struct _RenderFuncs
   void (*composite) (RenderBuffer, RenderTarget, Operation, int, int,
 		     int, int, int, int, DrawParams *);
 
-  /* Finish rendering, and swap changes to display.  May be NULL.  */
-  void (*finish_render) (RenderTarget);
+  /* Finish rendering, and swap changes in given damage to display.
+     May be NULL.  */
+  void (*finish_render) (RenderTarget, pixman_region32_t *);
 
   /* Return the age of the target.  Value is a number not less than
      -1, describing the "age" of the contents of the target.
@@ -414,7 +415,7 @@ extern void RenderFillBoxesWithTransparency (RenderTarget, pixman_box32_t *,
 extern void RenderClearRectangle (RenderTarget, int, int, int, int);
 extern void RenderComposite (RenderBuffer, RenderTarget, Operation, int,
 			     int, int, int, int, int, DrawParams *);
-extern void RenderFinishRender (RenderTarget);
+extern void RenderFinishRender (RenderTarget, pixman_region32_t *);
 extern int RenderTargetAge (RenderTarget);
 extern RenderFence RenderImportFdFence (int, Bool *);
 extern void RenderWaitFence (RenderFence);

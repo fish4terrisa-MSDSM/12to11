@@ -38,6 +38,8 @@ enum
     StateWaitingForAckCommit	= (1 << 4),
     StateLateFrameAcked		= (1 << 5),
     StateMaybeConfigure		= (1 << 6),
+    StateDirtyFrameExtents	= (1 << 7),
+    StateTemporaryBounds	= (1 << 8),
   };
 
 typedef struct _XdgRole XdgRole;
@@ -631,6 +633,11 @@ Unfreeze (XdgRole *role)
 static Bool
 IsRoleMapped (XdgRole *role)
 {
+  if (!role->impl)
+    /* This can happen when destroying subsurfaces as part of client
+       cleanup.  */
+    return False;
+
   return role->impl->funcs.is_window_mapped (&role->role,
 					     role->impl);
 }
@@ -655,23 +662,36 @@ Commit (Surface *surface, Role *role)
 	= xdg_role->pending_state.window_geometry_width;
       xdg_role->current_state.window_geometry_height
 	= xdg_role->pending_state.window_geometry_height;
+
+#ifdef DEBUG_GEOMETRY_CALCULATION
+      fprintf (stderr, "Client set window geometry to: [%d %d %d %d]\n",
+	       xdg_role->current_state.window_geometry_x,
+	       xdg_role->current_state.window_geometry_y,
+	       xdg_role->current_state.window_geometry_width,
+	       xdg_role->current_state.window_geometry_height);
+#endif
+
+      /* Now, clear the "pending window geometry" flag.  */
+      xdg_role->state &= ~StatePendingWindowGeometry;
+
+      /* Next, set the "dirty frame extents" flag; this is then used
+	 to update the window geometry the next time the window is
+	 resized.  */
+      xdg_role->state |= StateDirtyFrameExtents;
     }
 
   xdg_role->impl->funcs.commit (role, surface,
 				xdg_role->impl);
 
-  if (xdg_role->state & StatePendingWindowGeometry)
-    {
-      if (xdg_role->impl->funcs.handle_geometry_change)
-	xdg_role->impl->funcs.handle_geometry_change (role,
-						      xdg_role->impl);
-
-      xdg_role->state &= ~StatePendingWindowGeometry;
-    }
-
   /* This flag means no commit has happened after an
      ack_configure.  */
-  xdg_role->state &= ~StateWaitingForAckCommit;
+  if (!(xdg_role->state & StateWaitingForAckConfigure))
+    {
+#ifdef DEBUG_GEOMETRY_CALCULATION
+      fprintf (stderr, "Client aknowledged commit\n");
+#endif
+      xdg_role->state &= ~StateWaitingForAckCommit;
+    }
 
   /* If the window is unmapped, skip all of this code!  Once the
      window is mapped again, the compositor will send _NET_FRAME_DRAWN
@@ -1102,11 +1122,18 @@ NoteBounds (void *data, int min_x, int min_y,
        still in effect.  */
     return;
 
+  if (role->state & StateTemporaryBounds)
+    return;
+
   /* Avoid resizing the window should its actual size not have
      changed.  */
 
   bounds_width = max_x - min_x + 1;
   bounds_height = max_y - min_y + 1;
+
+#ifdef DEBUG_GEOMETRY_CALCULATION
+  fprintf (stderr, "Noticed bounds: %d %d\n", bounds_width, bounds_height);
+#endif
 
   if (role->bounds_width != bounds_width
       || role->bounds_height != bounds_height)
@@ -1120,6 +1147,18 @@ NoteBounds (void *data, int min_x, int min_y,
 						  role->impl,
 						  bounds_width,
 						  bounds_height);
+
+      if (role->state & StateDirtyFrameExtents)
+	{
+	  /* Only handle window geometry changes once a commit happens
+	     and the window is really resized.  */
+
+	  if (role->impl->funcs.handle_geometry_change)
+	    role->impl->funcs.handle_geometry_change (&role->role,
+						      role->impl);
+
+	  role->state &= ~StateDirtyFrameExtents;
+	}
 
       XResizeWindow (compositor.display, role->window,
 		     bounds_width, bounds_height);
@@ -1183,7 +1222,38 @@ ResizeForMap (XdgRole *role)
 
   SubcompositorBounds (role->subcompositor, &min_x,
 		       &min_y, &max_x, &max_y);
+
+  /* At this point, we are probably still waiting for ack_commit; as a
+     result, NoteBounds will not really resize the window.  */
   NoteBounds (role, min_x, min_y, max_x, max_y);
+
+#ifdef DEBUG_GEOMETRY_CALCULATION
+  fprintf (stderr, "ResizeForMap: %d %d\n",
+	   max_x - min_x + 1, max_y - min_y + 1);
+#endif
+
+  if (role->state & StateDirtyFrameExtents)
+    {
+      /* Only handle window geometry changes once a commit
+	 happens.  */
+
+      if (role->impl->funcs.handle_geometry_change)
+	role->impl->funcs.handle_geometry_change (&role->role,
+						  role->impl);
+
+      role->state &= ~StateDirtyFrameExtents;
+    }
+
+  /* Resize the window pre-map.  This should generate a
+     ConfigureNotify event once the resize completes.  */
+  XResizeWindow (compositor.display, role->window,
+		 max_x - min_x + 1, max_y - min_y + 1);
+
+  if (role->impl->funcs.note_window_resized)
+    role->impl->funcs.note_window_resized (&role->role,
+					   role->impl,
+					   max_x - min_x + 1,
+					   max_y - min_y + 1);
 }
 
 static void
@@ -1470,6 +1540,9 @@ XLXdgRoleSendConfigure (Role *role, uint32_t serial)
   xdg_role->state |= StateWaitingForAckConfigure;
   xdg_role->state |= StateWaitingForAckCommit;
 
+  /* See the comment under XLXdgRoleSetBoundsSize.  */
+  xdg_role->state &= ~StateTemporaryBounds;
+
   /* We know know that the ConfigureNotify event following any
      _NET_WM_SYNC_REQUEST event was accepted, so clear the maybe
      configure flag.  */
@@ -1573,6 +1646,17 @@ XLXdgRoleSetBoundsSize (Role *role, int bounds_width, int bounds_height)
   xdg_role = XdgRoleFromRole (role);
   xdg_role->bounds_width = bounds_width;
   xdg_role->bounds_height = bounds_height;
+
+  /* Now, a temporary bounds_width and bounds_height has been
+     recorded.  This means that if a configure event has not yet been
+     delivered, then any subsequent SubcompositorUpdate will cause
+     NoteBounds to resize back to the old width and height, confusing
+     the window manager and possibly causing it to maximize us.
+
+     Set a flag that tells NoteBounds to abstain from resizing the
+     window.  This flag is then cleared once a configure event is
+     delivered, or the next time the role is mapped.  */
+  xdg_role->state |= StateTemporaryBounds;
 }
 
 void
@@ -1690,6 +1774,12 @@ XLXdgRoleResizeForMap (Role *role)
   XdgRole *xdg_role;
 
   xdg_role = XdgRoleFromRole (role);
+
+  /* Clear the StateTemporaryBounds flag; it should not persist after
+     mapping, as a configure event is no longer guaranteed to be sent
+     if the toplevel is unmapped immediately after
+     XLXdgRoleSetBoundsSize.  */
+  xdg_role->state &= ~StateTemporaryBounds;
   ResizeForMap (xdg_role);
 }
 

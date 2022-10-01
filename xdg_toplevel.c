@@ -432,7 +432,6 @@ NoteConfigureTime (Timer *timer, void *data, struct timespec time)
 
   toplevel = data;
 
-
   /* If only the window state changed, call SendStates.  */
   if (!(toplevel->state & StatePendingConfigureSize))
     SendStates (toplevel);
@@ -1330,6 +1329,12 @@ HandleConfigureEvent (XdgToplevel *toplevel, XEvent *event)
 			 event->xconfigure.height))
     WriteStates (toplevel);
 
+  /* Also set the bounds width and height to avoid resizing the
+     window.  */
+  XLXdgRoleSetBoundsSize (toplevel->role,
+			  toplevel->width,
+			  toplevel->height);
+
   if (!MaybePostDelayedConfigure (toplevel, StatePendingConfigureSize))
     {
       XLXdgRoleCalcNewWindowSize (toplevel->role,
@@ -1345,12 +1350,6 @@ HandleConfigureEvent (XdgToplevel *toplevel, XEvent *event)
   toplevel->height = event->xconfigure.height;
   toplevel->configure_width = toplevel->width;
   toplevel->configure_height = toplevel->height;
-
-  /* Also set the bounds width and height to avoid resizing
-     the window.  */
-  XLXdgRoleSetBoundsSize (toplevel->role,
-			  toplevel->width,
-			  toplevel->height);
 
   RecordStateSize (toplevel);
 

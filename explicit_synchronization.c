@@ -404,10 +404,10 @@ XLSyncRelease (SyncRelease *release)
   Bool error;
   int fd;
 
-  /* Optimization ideas.  Every time a buffer is attached with a
+  /* Optimization ideas.  Every time an shm buffer is attached with a
      release object, create new finish_fence for the buffer, that is
-     signalled whenever the contents are drawn.  Then, just use that
-     fence here instead.  */
+     signalled whenever the contents are uploaded.  Then, just use
+     that fence here instead.  */
 
   error = False;
   fd = RenderGetFinishFence (&error);
