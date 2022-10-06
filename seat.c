@@ -75,12 +75,18 @@ static XLAssocTable *devices;
 
 XLList *live_seats;
 
+/* This is a mask of all keyboard state.  */
+#define AllKeyMask							\
+  (ShiftMask | LockMask | ControlMask | Mod1Mask | Mod2Mask | Mod3Mask	\
+   | Mod4Mask)
+
 enum
   {
     IsInert	      = 1,
     IsWindowMenuShown = (1 << 2),
     IsDragging	      = (1 << 3),
     IsDropped	      = (1 << 4),
+    IsTextInputSeat   = (1 << 5),
   };
 
 enum
@@ -532,6 +538,9 @@ struct _DeviceInfo
   (((unsigned char *) (ptr))[(event) >> 3] &   (1 << ((event) & 7)))
 #define MaskLen(event)							\
   (((event) >> 3) + 1)
+
+/* Text input functions.  */
+static TextInputFuncs *input_funcs;
 
 #define CursorFromRole(role)	((SeatCursor *) (role))
 
@@ -1786,6 +1795,10 @@ MakeSeatForDevicePair (int master_keyboard, int master_pointer,
   XLMakeAssoc (seats, master_keyboard, seat);
   XLMakeAssoc (seats, master_pointer, seat);
 
+  if (!live_seats)
+    /* This is the first seat; make it the input seat.  */
+    seat->flags |= IsTextInputSeat;
+
   live_seats = XLListPrepend (live_seats, seat);
 
   /* Now update the seat state from the X server.  */
@@ -2076,7 +2089,7 @@ RunDestroyListeners (Seat *seat)
 static void
 NoticeDeviceDisabled (int deviceid)
 {
-  Seat *seat;
+  Seat *seat, *new;
   DeviceInfo *info;
 
   /* First, see if there is any deviceinfo related to the disabled
@@ -2123,6 +2136,18 @@ NoticeDeviceDisabled (int deviceid)
       /* Finally, destroy the global.  */
 
       wl_global_destroy (seat->global);
+
+      /* If it was the input seat, then find a new seat to take its
+	 place.  */
+      if (seat->flags & IsTextInputSeat
+	  && live_seats)
+	{
+	  new = live_seats->data;
+
+	  /* This results in nondeterministic selection of input
+	     seats, and as such can be confusing to the user.  */
+	  new->flags |= IsTextInputSeat;
+	}
 
       /* And release the seat.  */
 
@@ -2624,6 +2649,12 @@ ClearFocusSurface (void *data)
 
   seat->focus_surface = NULL;
   seat->focus_destroy_callback = NULL;
+
+  XLPrimarySelectionHandleFocusChange (seat);
+
+  /* Tell any input method about the focus change.  */
+  if (input_funcs)
+    input_funcs->focus_out (seat);
 }
 
 static void
@@ -2698,6 +2729,29 @@ SendKeyboardModifiers (Seat *seat, Surface *focus)
 }
 
 static void
+HackKeyboardModifiers (Seat *seat, Surface *focus, int effective,
+		       int group)
+{
+  Keyboard *keyboard;
+  uint32_t serial;
+  SeatClientInfo *info;
+
+  serial = wl_display_next_serial (compositor.wl_display);
+  info = ClientInfoForResource (seat, focus->resource);
+
+  if (!info)
+    return;
+
+  keyboard = info->keyboards.next;
+
+  for (; keyboard != &info->keyboards; keyboard = keyboard->next)
+    /* It is wrong to send the new modifiers in seat->based, but I
+       don't know anything better.  */
+    wl_keyboard_send_modifiers (keyboard->resource, serial,
+				effective, 0, 0, group);
+}
+
+static void
 SendUpdatedModifiers (Seat *seat)
 {
   ModifierChangeCallback *callback;
@@ -2758,6 +2812,10 @@ SetFocusSurface (Seat *seat, Surface *focus)
       XLSurfaceCancelRunOnFree (seat->focus_destroy_callback);
       seat->focus_destroy_callback = NULL;
       seat->focus_surface = NULL;
+
+      if (input_funcs)
+	/* Tell any input method about the change.  */
+	input_funcs->focus_out (seat);
     }
 
   if (!focus)
@@ -2767,6 +2825,10 @@ SetFocusSurface (Seat *seat, Surface *focus)
       XLPrimarySelectionHandleFocusChange (seat);
       return;
     }
+
+  if (input_funcs)
+    /* Tell any input method about the change.  */
+    input_funcs->focus_in (seat, focus);
 
   seat->focus_surface = focus;
   seat->focus_destroy_callback
@@ -3971,6 +4033,17 @@ DispatchKey (XIDeviceEvent *xev)
 
   if (seat->focus_surface)
     {
+      if (input_funcs
+	  && seat->flags & IsTextInputSeat
+	  && input_funcs->filter_input (seat, seat->focus_surface,
+					xev))
+	/* The input method decided to filter the key.  */
+	return;
+
+      /* Ignore repeated keys.  */
+      if (xev->flags & XIKeyRepeat)
+	return;
+
       if (xev->evtype == XI_KeyPress)
 	SendKeyboardKey (seat, seat->focus_surface,
 			 xev->time, WaylandKeycode (xev->detail),
@@ -4799,6 +4872,12 @@ XLSeatIsClientFocused (Seat *seat, struct wl_client *client)
   return client == surface_client;
 }
 
+Surface *
+XLSeatGetFocus (Seat *seat)
+{
+  return seat->focus_surface;
+}
+
 void
 XLSeatShowWindowMenu (Seat *seat, Surface *surface, int root_x,
 		      int root_y)
@@ -5271,4 +5350,104 @@ Bool
 XLSeatResizeInProgress (Seat *seat)
 {
   return seat->resize_in_progress;
+}
+
+void
+XLSeatSetTextInputFuncs (TextInputFuncs *funcs)
+{
+  input_funcs = funcs;
+}
+
+int
+XLSeatGetKeyboardDevice (Seat *seat)
+{
+  return seat->master_keyboard;
+}
+
+Seat *
+XLSeatGetInputMethodSeat (void)
+{
+  XLList *list;
+  Seat *seat;
+
+  for (list = live_seats; list; list = list->next)
+    {
+      seat = list->data;
+
+      if (seat->flags & IsTextInputSeat)
+	return seat;
+    }
+
+  return NULL;
+}
+
+void
+XLSeatDispatchCoreKeyEvent (Seat *seat, Surface *surface, XEvent *event,
+			    KeySym keysym)
+{
+  unsigned int effective;
+  unsigned int state, group;
+  unsigned int mods_return;
+  KeyCode keycode;
+  KeySym sym_return;
+
+  /* Dispatch a core event generated by an input method to SEAT.  If
+     SURFACE is no longer the focus surface, refrain from doing
+     anything.  If a keycode can be found for KEYSYM, use that
+     keycode.  */
+
+  if (surface != seat->focus_surface)
+    return;
+
+  /* Get the group and state of the key event.  */
+  group = event->xkey.state >> 13;
+  state = event->xkey.state & AllKeyMask;
+
+  /* Get the effective state of the seat.  */
+  effective = seat->base | seat->latched | seat->locked;
+
+  /* Determine what keycode to use.  If a keysym was provided, try to
+     find a corresponding keycode.  */
+
+  if (keysym)
+    {
+      /* If looking up the event keycode also results in the keysym,
+	 then just use the keycode specified in the event.  */
+      if (XkbLookupKeySym (compositor.display, event->xkey.keycode,
+			   event->xkey.state, &mods_return, &sym_return)
+	  && keysym == sym_return)
+	{
+	  keycode = event->xkey.keycode;
+	}
+      else
+	keycode = XKeysymToKeycode (compositor.display, keysym);
+
+      /* But if no corresponding keycode could be found, use the
+	 keycode provided in the event.  */
+      if (!keycode)
+	keycode = event->xkey.keycode;
+    }
+  else
+    keycode = event->xkey.keycode;
+
+  if (group != seat->effective_group || state != effective)
+    /* The modifiers in the provided core event are different from
+       what the focus surface was previously sent.  Send a new
+       modifier event with the effective state provided in the give
+       core event.  */
+    HackKeyboardModifiers (seat, surface, effective, group);
+
+  /* Then send the event.  */
+  if (event->xkey.type == KeyPress)
+    SendKeyboardKey (seat, seat->focus_surface, event->xkey.time,
+		     WaylandKeycode (keycode),
+		     WL_KEYBOARD_KEY_STATE_PRESSED);
+  else
+    SendKeyboardKey (seat, seat->focus_surface, event->xkey.time,
+		     WaylandKeycode (keycode),
+		     WL_KEYBOARD_KEY_STATE_RELEASED);
+
+  /* Restore the modifiers.  */
+  if (group != seat->effective_group || state != effective)
+    SendKeyboardModifiers (seat, surface);
 }

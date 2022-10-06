@@ -19,8 +19,10 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <time.h>
+#include <locale.h>
 
 #include "compositor.h"
 
@@ -63,11 +65,79 @@ DetermineServerTime (void)
 }
 
 static void
+HandleCmdline (int argc, char **argv)
+{
+  int i;
+
+  /* Set the default resource and class names.  */
+  compositor.resource_name = "12to11";
+  compositor.app_name = "12to11";
+
+  if (argc < 2)
+    /* There are no arguments to handle.  */
+    return;
+
+  /* Determine the instance name based on the executable.  First,
+     remove any leading directory separator from argv[0].  */
+  compositor.app_name = strrchr (argv[0], '/');
+
+  /* If no directory separator was present, just use it.  */
+  if (!compositor.app_name)
+    compositor.app_name = argv[0];
+  else
+    /* Otherwise, strip the trailing '/'.  */
+    compositor.app_name = compositor.app_name + 1;
+
+  for (i = 1; i < argc; ++i)
+    {
+      if (!strcmp (argv[i], "-help"))
+	{
+	print_usage:
+	  fprintf (stderr,
+		   "usage: %s [-name name] [-class class]\n",
+		   argv[0]);
+	  exit (!strcmp (argv[i], "-help") ? 0 : 1);
+	}
+      else if (!strcmp (argv[i], "-class"))
+	{
+	  if (i + 1 >= argc)
+	    {
+	      fprintf (stderr, "%s: option -class requires a value\n",
+		       argv[0]);
+	      exit (1);
+	    }
+
+	  compositor.resource_name = argv[++i];
+	}
+      else if (!strcmp (argv[i], "-name"))
+	{
+	  if (i + 1 >= argc)
+	    {
+	      fprintf (stderr, "%s: option -name requires a value\n",
+		       argv[0]);
+	      exit (1);
+	    }
+
+	  compositor.app_name = argv[++i];
+	}
+      else
+	{
+	  fprintf (stderr, "%s: bad command line option \"%s\"\n",
+		   argv[0], argv[1]);
+	  goto print_usage;
+	}
+    }
+}
+
+static void
 XLMain (int argc, char **argv)
 {
   Display *dpy;
   struct wl_display *wl_display;
   const char *socket;
+
+  /* Set the locale.  */
+  setlocale (LC_ALL, "");
 
   dpy = XOpenDisplay (NULL);
   wl_display = wl_display_create ();
@@ -85,6 +155,14 @@ XLMain (int argc, char **argv)
       fprintf (stderr, "Unable to add socket to Wayland display\n");
       exit (1);
     }
+
+  /* Call XGetDefault with some dummy values to have the resource
+     database set up.  */
+  XrmInitialize ();
+  XGetDefault (dpy, "dummmy", "value");
+
+  /* Parse command-line arguments.  */
+  HandleCmdline (argc, argv);
 
   compositor.display = dpy;
   compositor.conn = XGetXCBConnection (dpy);
@@ -124,6 +202,7 @@ XLMain (int argc, char **argv)
   XLInitExplicitSynchronization ();
   XLInitWpViewporter ();
   XLInitDecoration ();
+  XLInitTextInput ();
   /* This has to come after the rest of the initialization.  */
   DetermineServerTime ();
   XLRunCompositor ();

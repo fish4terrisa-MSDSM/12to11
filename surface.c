@@ -1734,6 +1734,21 @@ XLSurfaceMoveBy (Surface *surface, int west, int north)
 				west, north);
 }
 
+void
+XLSurfaceSelectExtraEvents (Surface *surface, unsigned long event_mask)
+{
+  if (!surface->role
+      || !surface->role->funcs.select_extra_events)
+    return;
+
+  /* Note that this need only be implemented for surfaces that can get
+     the input focus.  */
+  surface->role->funcs.select_extra_events (surface, surface->role,
+					    event_mask);
+}
+
+
+
 /* The following functions convert from window to surface
    coordinates and vice versa:
 

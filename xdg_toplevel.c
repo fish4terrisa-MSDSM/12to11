@@ -40,15 +40,17 @@ typedef enum _DecorationMode DecorationMode;
 
 enum
   {
-    StateIsMapped		= 1,
-    StateMissingState		= (1 << 1),
-    StatePendingMaxSize		= (1 << 2),
-    StatePendingMinSize		= (1 << 3),
-    StatePendingAckMovement	= (1 << 4),
-    StatePendingResize		= (1 << 5),
-    StatePendingConfigureSize	= (1 << 6),
-    StatePendingConfigureStates = (1 << 7),
-    StateDecorationModeDirty    = (1 << 8),
+    StateIsMapped		 = 1,
+    StateMissingState		 = (1 << 1),
+    StatePendingMaxSize		 = (1 << 2),
+    StatePendingMinSize		 = (1 << 3),
+    StatePendingAckMovement	 = (1 << 4),
+    StatePendingResize		 = (1 << 5),
+    StatePendingConfigureSize	 = (1 << 6),
+    StatePendingConfigureStates	 = (1 << 7),
+    StateDecorationModeDirty	 = (1 << 8),
+    StateEverMapped		 = (1 << 9),
+    StateNeedDecorationConfigure = (1 << 10),
   };
 
 enum
@@ -371,6 +373,27 @@ AddState (XdgToplevel *toplevel, uint32_t state)
 }
 
 static void
+SendDecorationConfigure1 (XdgToplevel *toplevel)
+{
+#define ServerSide ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+#define ClientSide ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
+
+  if (toplevel->decor == DecorationModeClient)
+    zxdg_toplevel_decoration_v1_send_configure (toplevel->decoration->resource,
+					        ClientSide);
+  else
+    zxdg_toplevel_decoration_v1_send_configure (toplevel->decoration->resource,
+						ServerSide);
+
+#undef ServerSide
+#undef ClientSide
+
+  /* This means that the decoration should be reapplied upon the next
+     commit.  */
+  toplevel->state |= StateDecorationModeDirty;
+}
+
+static void
 SendConfigure (XdgToplevel *toplevel, unsigned int width,
 	       unsigned int height)
 {
@@ -379,6 +402,15 @@ SendConfigure (XdgToplevel *toplevel, unsigned int width,
   serial = wl_display_next_serial (compositor.wl_display);
   xdg_toplevel_send_configure (toplevel->resource, width, height,
 			       &toplevel->states);
+
+  /* If a toplevel decoration resource is created and
+     SetMode/UnsetMode is called before the initial toplevel commit,
+     then the toplevel decoration mode must be sent here instead.  */
+
+  if (toplevel->state & StateNeedDecorationConfigure
+      && toplevel->decoration)
+    SendDecorationConfigure1 (toplevel);
+  toplevel->state &= ~StateNeedDecorationConfigure;
 
   XLXdgRoleSendConfigure (toplevel->role, serial);
 
@@ -396,27 +428,11 @@ SendDecorationConfigure (XdgToplevel *toplevel)
 
   serial = wl_display_next_serial (compositor.wl_display);
 
-#define ServerSide ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
-#define ClientSide ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
-
-  if (toplevel->decor == DecorationModeClient)
-    zxdg_toplevel_decoration_v1_send_configure (toplevel->decoration->resource,
-					        ClientSide);
-  else
-    zxdg_toplevel_decoration_v1_send_configure (toplevel->decoration->resource,
-						ServerSide);
-
-#undef ServerSide
-#undef ClientSide
-
+  SendDecorationConfigure1 (toplevel);
   XLXdgRoleSendConfigure (toplevel->role, serial);
 
   toplevel->conf_reply = True;
   toplevel->conf_serial = serial;
-
-  /* This means that the decoration should be reapplied upon the next
-     commit.  */
-  toplevel->state |= StateDecorationModeDirty;
 }
 
 /* Forward declaration.  */
@@ -1081,7 +1097,7 @@ Map (XdgToplevel *toplevel)
      at this point.  */
   SubcompositorGarbage (XLSubcompositorFromXdgRole (toplevel->role));
 
-  toplevel->state |= StateIsMapped | StateMissingState;
+  toplevel->state |= StateIsMapped | StateMissingState | StateEverMapped;
 
   /* Update the width and height from the xdg_surface bounds.  */
   toplevel->width = XLXdgRoleGetWidth (toplevel->role);
@@ -1329,6 +1345,10 @@ HandleConfigureEvent (XdgToplevel *toplevel, XEvent *event)
 			 event->xconfigure.height))
     WriteStates (toplevel);
 
+  /* Set toplevel->width and toplevel->height correctly.  */
+  toplevel->width = event->xconfigure.width;
+  toplevel->height = event->xconfigure.height;
+
   /* Also set the bounds width and height to avoid resizing the
      window.  */
   XLXdgRoleSetBoundsSize (toplevel->role,
@@ -1345,9 +1365,8 @@ HandleConfigureEvent (XdgToplevel *toplevel, XEvent *event)
       SendConfigure (toplevel, width, height);
     }
 
-  /* Set toplevel->width and toplevel->height correctly.  */
-  toplevel->width = event->xconfigure.width;
-  toplevel->height = event->xconfigure.height;
+  /* Now set toplevel->configure_width and
+     toplevel->configure_height.  */
   toplevel->configure_width = toplevel->width;
   toplevel->configure_height = toplevel->height;
 
@@ -2248,7 +2267,12 @@ SetMode (struct wl_client *client, struct wl_resource *resource,
       return;
     }
 
-  SendDecorationConfigure (decoration->toplevel);
+  /* According to #wayland the configure event shouldn't be sent for
+     partially initialized surfaces.  */
+  if (decoration->toplevel->state & StateEverMapped)
+    SendDecorationConfigure (decoration->toplevel);
+  else
+    decoration->toplevel->state |= StateNeedDecorationConfigure;
 }
 
 static void
@@ -2263,7 +2287,13 @@ UnsetMode (struct wl_client *client, struct wl_resource *resource)
 
   /* Default to using window manager decorations.  */
   decoration->toplevel->decor = DecorationModeWindowManager;
-  SendDecorationConfigure (decoration->toplevel);
+
+  /* According to #wayland the configure event shouldn't be sent for
+     partially initialized surfaces.  */
+  if (decoration->toplevel->state & StateEverMapped)
+    SendDecorationConfigure (decoration->toplevel);
+  else
+    decoration->toplevel->state |= StateNeedDecorationConfigure;
 }
 
 static struct zxdg_toplevel_decoration_v1_interface decoration_impl =

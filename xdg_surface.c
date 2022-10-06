@@ -29,6 +29,10 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #define XdgRoleFromRole(role) ((XdgRole *) (role))
 
+/* This is the default core event mask used by our windows.  */
+#define DefaultEventMask					\
+  (ExposureMask | StructureNotifyMask | PropertyChangeMask)
+
 enum
   {
     StatePendingFrameCallback	= 1,
@@ -472,6 +476,22 @@ XLHandleXEventForXdgSurfaces (XEvent *event)
       return False;
     }
 
+  if (event->type == KeyPress || event->type == KeyRelease)
+    {
+      /* These events are actually sent by the input method library
+	 upon receiving XIM_COMMIT messages.  */
+
+      role = XLLookUpAssoc (surfaces, event->xkey.window);
+
+      if (role && role->role.surface)
+	{
+	  XLTextInputDispatchCoreEvent (role->role.surface, event);
+	  return True;
+	}
+
+      return False;
+    }
+
   window = XLGetGEWindowForSeats (event);
 
   if (window != None)
@@ -685,7 +705,8 @@ Commit (Surface *surface, Role *role)
 
   /* This flag means no commit has happened after an
      ack_configure.  */
-  if (!(xdg_role->state & StateWaitingForAckConfigure))
+  if (!(xdg_role->state & StateWaitingForAckConfigure)
+      && xdg_role->state & StateWaitingForAckCommit)
     {
 #ifdef DEBUG_GEOMETRY_CALCULATION
       fprintf (stderr, "Client aknowledged commit\n");
@@ -1131,15 +1152,13 @@ NoteBounds (void *data, int min_x, int min_y,
   bounds_width = max_x - min_x + 1;
   bounds_height = max_y - min_y + 1;
 
-#ifdef DEBUG_GEOMETRY_CALCULATION
-  fprintf (stderr, "Noticed bounds: %d %d\n", bounds_width, bounds_height);
-#endif
-
   if (role->bounds_width != bounds_width
       || role->bounds_height != bounds_height)
     {
 #ifdef DEBUG_GEOMETRY_CALCULATION
-      fprintf (stderr, "Resizing to: %d %d\n", bounds_width, bounds_height);
+      fprintf (stderr, "Resizing to: %d %d (from: %d %d)\n",
+	       bounds_width, bounds_height, role->bounds_width,
+	       role->bounds_height);
 #endif
       
       if (role->impl->funcs.note_window_pre_resize)
@@ -1357,6 +1376,19 @@ HandleFreeze (void *data)
   role->state |= StateMaybeConfigure;
 }
 
+static void
+SelectExtraEvents (Surface *surface, Role *role,
+		   unsigned long event_mask)
+{
+  XdgRole *xdg_role;
+
+  xdg_role = XdgRoleFromRole (role);
+
+  /* Select extra events for the input method.  */
+  XSelectInput (compositor.display, xdg_role->window,
+		DefaultEventMask | event_mask);
+}
+
 void
 XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
 		 uint32_t id, struct wl_resource *surface_resource)
@@ -1431,11 +1463,11 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
   role->role.funcs.rescale = Rescale;
   role->role.funcs.note_desync_child = NoteDesyncChild;
   role->role.funcs.note_child_synced = NoteChildSynced;
+  role->role.funcs.select_extra_events = SelectExtraEvents;
 
   attrs.colormap = compositor.colormap;
   attrs.border_pixel = border_pixel;
-  attrs.event_mask = (ExposureMask | StructureNotifyMask
-		      | PropertyChangeMask);
+  attrs.event_mask = DefaultEventMask;
   attrs.cursor = InitDefaultCursor ();
   flags = (CWColormap | CWBorderPixel | CWEventMask
 	   | CWCursor);
@@ -1647,6 +1679,11 @@ XLXdgRoleSetBoundsSize (Role *role, int bounds_width, int bounds_height)
   xdg_role->bounds_width = bounds_width;
   xdg_role->bounds_height = bounds_height;
 
+#ifdef DEBUG_GEOMETRY_CALCULATION
+  fprintf (stderr, "Set new bounds size: %d %d\n", bounds_width,
+	   bounds_height);
+#endif
+
   /* Now, a temporary bounds_width and bounds_height has been
      recorded.  This means that if a configure event has not yet been
      delivered, then any subsequent SubcompositorUpdate will cause
@@ -1857,7 +1894,7 @@ XLInitXdgSurfaces (void)
   XColor alloc;
   int shape_minor, shape_major, shape_error;
 
-  surfaces = XLCreateAssocTable (2048);
+  surfaces = XLCreateAssocTable (1024);
 
   alloc.red = 0;
   alloc.green = 65535;

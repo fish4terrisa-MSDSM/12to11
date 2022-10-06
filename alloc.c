@@ -31,7 +31,7 @@ XLMalloc (size_t size)
 
   ptr = malloc (size);
 
-  if (!ptr)
+  if (!ptr && size)
     {
       fprintf (stderr, "Allocation of %zu bytes failed\n",
 	       size);
@@ -54,7 +54,7 @@ XLCalloc (size_t nmemb, size_t size)
 
   ptr = calloc (nmemb, size);
 
-  if (!ptr)
+  if (!ptr && nmemb && size)
     {
       fprintf (stderr, "Allocation of %zu * %zu failed\n",
 	       nmemb, size);
@@ -96,11 +96,13 @@ XLRealloc (void *ptr, size_t size)
 
   ptr = realloc (ptr, size);
 
-  if (!ptr)
+  if (size && !ptr)
     {
       fprintf (stderr, "Reallocation of %zu bytes failed\n", size);
       abort ();
     }
+
+  /* Allow realloc to return NULL if size is also NULL.  */
 
   return ptr;
 }

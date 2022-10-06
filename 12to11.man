@@ -3,12 +3,102 @@
 12to11 - Wayland to X protocol translator
 .SH SYNOPSIS
 .B 12to11
+[\-\fIclass\fP class] [\-\fIname\fP name]
 .SH DESCRIPTION
 .I 12to11
 starts a Wayland compositor on the next available socket;
 Wayland programs will then be displayed through the X server.
 .SH OPTIONS
-None.
+Some X Toolkit library-style command-line arguments are also accepted,
+despite the protocol translator being implemented without using a
+toolkit.  These options are:
+.TP 8
+.B \-class \fIclass\fP
+This option specifies the resource class under which resources are to
+be obtained.  When not set, it defaults to the string ``12to11''.  The
+resource class and name used by the protocol translator are \fInot\fP
+set as the
+.B WM_CLASS
+property on windows created by the protocol translator; instead, those
+windows get the classes and names assigned to them by their individual
+Wayland clients.
+.TP 8
+.B \-name \fIname\fP
+This option specifies the instance name under which resources are to
+be obtained.  When not set, it defaults to the executable file name.
+.TP 8
+.B \-help\fP
+This option causes the protocol translator to print a message
+describing options it accepts.  The protocol translator will then exit
+after printing the message.
+.SH RESOURCES
+\fI12to11\fP understands some resource names and classes that can be
+used to specify various settings that affect its behavior.  Those
+resources are listed below:
+.TP 8
+.B ximFont\fP (class \fBXimFont\fP)
+Specifies the font to be used for displaying the preedit or status
+areas of an input method.
+.IP
+In many input methods, the preedit (a.k.a composition or
+preconversion) string and/or a status window is displayed on screen
+while typing by the input method server.  The client is supposed to
+determine the font used by the input method server to display --
+however, the Wayland protocol does not allow Wayland clients to
+specify that themselves, so the protocol translator has to do that by
+itself.
+.TP
+.B ximStyles\fP (class \fBXimStyles\fP)
+Specifies the default input method styles used by the protocol
+translator.
+.IP
+X input methods can support different editing styles, which affect how
+preconversion and status text is displayed while typing.  These styles
+are named:
+.TP
+.I overTheSpot
+In ``over the spot'', the preedit string is displayed in a window
+created by the input method at a location specified by the Wayland
+client, typically the text insertion point.
+.TP
+.I offTheSpot
+In ``off the spot'', the preedit string is displayed in a window
+created by the input method at some location away from the text
+insertion point.  Often, this type of window is placed at the bottom
+of the preedit window.
+.TP
+.I rootWindow
+In the ``root window'' editing style, the preedit string is displayed
+in a popup window created by the input method.
+.TP
+.I onTheSpot
+In the ``on the spot'' editing style, the preedit string is displayed
+inside the text itself by the Wayland client.
+.PP
+Not all input methods support all editing styles.  In the real world,
+most only support one or two of the styles listed above.  The protocol
+translator will search for a style supported by the input method when
+initializing input method support.  The \fBximStyles\fP resource is
+used to control the order in which the protocol translator searches
+for input styles, and should be a comma separated list of input names,
+which are searched in left-to-right order.  For example,
+.PP
+.in +4
+.EX
+\fBoverTheSpot,rootWindow\fP
+.EE
+.in
+.PP
+will result in the protocol translator searching for the ``over the
+spot'' input style, and if that is not present, the ``root window''
+style.  Whitespace must not be present inside the comma-separated
+list.  When \fBximStyles\fP is not specified, it defaults to:
+.PP
+.in +4
+.EX
+\fBoverTheSpot,offTheSpot,rootWindow,onTheSpot\fP
+.EE
+.in
 .SH ENVIRONMENT
 Several environment variables exist that modify the behavior of the
 protocol translator in one way or another.  Most of these are used for
@@ -99,6 +189,6 @@ and
 window manager hints will result in Wayland programs running
 incorrectly.
 .SH "SEE ALSO"
-X(1), Xorg(1)
+X(7), Xorg(1)
 .SH AUTHOR
 Various contributors.

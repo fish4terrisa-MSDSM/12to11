@@ -130,6 +130,12 @@ HandleOneXEvent (XEvent *event)
 {
   XLHandleOneXEventForDnd (event);
 
+  /* Filter all non-GenericEvents through the input method
+     infrastructure.  */
+  if (event->type != GenericEvent
+      && XFilterEvent (event, event->xany.window))
+    return;
+
   if (XLHandleXEventForXdgSurfaces (event))
     return;
 

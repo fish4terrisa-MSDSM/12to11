@@ -131,6 +131,8 @@ Atom _NET_WM_OPAQUE_REGION, _XL_BUFFER_RELEASE, _NET_WM_SYNC_REQUEST_COUNTER,
   _NET_WM_FRAME_TIMINGS, _NET_WM_BYPASS_COMPOSITOR, WM_STATE,
   _NET_WM_WINDOW_TYPE, _NET_WM_WINDOW_TYPE_MENU, _NET_WM_WINDOW_TYPE_DND;
 
+XrmQuark resource_quark, app_quark, QString;
+
 /* Hash table containing atoms.  */
 
 static AtomTable atom_table;
@@ -284,4 +286,9 @@ XLInitAtoms (void)
 
   /* This is automatically generated.  */
   DirectTransferAtomInit (atoms, 61);
+
+  /* Now, initialize quarks.  */
+  resource_quark = XrmPermStringToQuark (compositor.resource_name);
+  app_quark = XrmPermStringToQuark (compositor.app_name);
+  QString = XrmPermStringToQuark ("String");
 }

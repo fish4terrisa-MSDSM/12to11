@@ -66,6 +66,7 @@ complete degree:
   'zwp_primary_selection_device_manager_v1',    version:  1
   'wp_viewporter',                              version:  1
   'zxdg_decoration_manager_v1',                 version:  1
+  'zwp_text_input_manager_v3',                  version:  1
 
 When built with EGL, the following Wayland protocol is also supported:
 
