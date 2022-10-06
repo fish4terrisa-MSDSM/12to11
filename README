@@ -50,7 +50,8 @@ for the following EGL and GLES extensions to be present at runtime:
   GL_EXT_unpack_subimage
 
 After building with EGL support, the renderer must be enabled by
-setting the environment variable "RENDERER" to "egl".
+setting the environment variable "RENDERER" to "egl", or by setting
+the "renderer" resource (class "Renderer") to "egl".
 
 The following Wayland protocols are implemented to a more-or-less
 complete degree:
@@ -67,6 +68,7 @@ complete degree:
   'wp_viewporter',                              version:  1
   'zxdg_decoration_manager_v1',                 version:  1
   'zwp_text_input_manager_v3',                  version:  1
+  'wp_single_pixel_buffer_manager_v1',          version:  1
 
 When built with EGL, the following Wayland protocol is also supported:
 

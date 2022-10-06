@@ -65,9 +65,10 @@ DetermineServerTime (void)
 }
 
 static void
-HandleCmdline (int argc, char **argv)
+HandleCmdline (Display *dpy, int argc, char **argv)
 {
   int i;
+  XrmDatabase rdb, initial_rdb;
 
   /* Set the default resource and class names.  */
   compositor.resource_name = "12to11";
@@ -76,6 +77,9 @@ HandleCmdline (int argc, char **argv)
   if (argc < 2)
     /* There are no arguments to handle.  */
     return;
+
+  /* Obtain the resource database.  */
+  initial_rdb = rdb = XrmGetDatabase (dpy);
 
   /* Determine the instance name based on the executable.  First,
      remove any leading directory separator from argv[0].  */
@@ -94,7 +98,7 @@ HandleCmdline (int argc, char **argv)
 	{
 	print_usage:
 	  fprintf (stderr,
-		   "usage: %s [-name name] [-class class]\n",
+		   "usage: %s [-name name] [-class class] [-xrm resourcestring]...\n",
 		   argv[0]);
 	  exit (!strcmp (argv[i], "-help") ? 0 : 1);
 	}
@@ -120,6 +124,17 @@ HandleCmdline (int argc, char **argv)
 
 	  compositor.app_name = argv[++i];
 	}
+      else if (!strcmp (argv[i], "-xrm"))
+	{
+	  if (i + 1 >= argc)
+	    {
+	      fprintf (stderr, "%s: option -xrm requires a value\n",
+		       argv[0]);
+	      exit (1);
+	    }
+
+	  XrmPutLineResource (&rdb, argv[++i]);
+	}
       else
 	{
 	  fprintf (stderr, "%s: bad command line option \"%s\"\n",
@@ -127,6 +142,11 @@ HandleCmdline (int argc, char **argv)
 	  goto print_usage;
 	}
     }
+
+  /* In case XrmPutLineResource created a new database, set it as the
+     display's resource database.  */
+  if (rdb != initial_rdb)
+    XrmSetDatabase (dpy, rdb);
 }
 
 static void
@@ -162,7 +182,7 @@ XLMain (int argc, char **argv)
   XGetDefault (dpy, "dummmy", "value");
 
   /* Parse command-line arguments.  */
-  HandleCmdline (argc, argv);
+  HandleCmdline (dpy, argc, argv);
 
   compositor.display = dpy;
   compositor.conn = XGetXCBConnection (dpy);
@@ -203,6 +223,8 @@ XLMain (int argc, char **argv)
   XLInitWpViewporter ();
   XLInitDecoration ();
   XLInitTextInput ();
+  XLInitSinglePixelBuffer ();
+
   /* This has to come after the rest of the initialization.  */
   DetermineServerTime ();
   XLRunCompositor ();

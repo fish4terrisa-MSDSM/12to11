@@ -3,7 +3,7 @@
 12to11 - Wayland to X protocol translator
 .SH SYNOPSIS
 .B 12to11
-[\-\fIclass\fP class] [\-\fIname\fP name]
+[\-\fBclass\fP \fIclass\fP] [\-\fBname\fP \fIname\fP] [\-\fBxrm\fP \fIresourcestring\fP]...
 .SH DESCRIPTION
 .I 12to11
 starts a Wayland compositor on the next available socket;
@@ -26,11 +26,16 @@ Wayland clients.
 .B \-name \fIname\fP
 This option specifies the instance name under which resources are to
 be obtained.  When not set, it defaults to the executable file name.
-.TP 8
+.TP
 .B \-help\fP
 This option causes the protocol translator to print a message
 describing options it accepts.  The protocol translator will then exit
 after printing the message.
+.TP
+.B \-xrm\fP \fIresourcestring\fP
+This option specifies a resource string to be used.  This is
+especially useful for setting resources that do not have separate
+command line options.
 .SH RESOURCES
 \fI12to11\fP understands some resource names and classes that can be
 used to specify various settings that affect its behavior.  Those
@@ -55,26 +60,26 @@ translator.
 X input methods can support different editing styles, which affect how
 preconversion and status text is displayed while typing.  These styles
 are named:
-.TP
-.I overTheSpot
+.TP 16
+.B overTheSpot
 In ``over the spot'', the preedit string is displayed in a window
 created by the input method at a location specified by the Wayland
 client, typically the text insertion point.
 .TP
-.I offTheSpot
+.B offTheSpot
 In ``off the spot'', the preedit string is displayed in a window
 created by the input method at some location away from the text
 insertion point.  Often, this type of window is placed at the bottom
 of the preedit window.
 .TP
-.I rootWindow
+.B rootWindow
 In the ``root window'' editing style, the preedit string is displayed
 in a popup window created by the input method.
 .TP
-.I onTheSpot
+.B onTheSpot
 In the ``on the spot'' editing style, the preedit string is displayed
 inside the text itself by the Wayland client.
-.PP
+.IP "" 8
 Not all input methods support all editing styles.  In the real world,
 most only support one or two of the styles listed above.  The protocol
 translator will search for a style supported by the input method when
@@ -82,23 +87,29 @@ initializing input method support.  The \fBximStyles\fP resource is
 used to control the order in which the protocol translator searches
 for input styles, and should be a comma separated list of input names,
 which are searched in left-to-right order.  For example,
-.PP
+.IP
 .in +4
 .EX
 \fBoverTheSpot,rootWindow\fP
 .EE
 .in
-.PP
+.IP
 will result in the protocol translator searching for the ``over the
 spot'' input style, and if that is not present, the ``root window''
 style.  Whitespace must not be present inside the comma-separated
 list.  When \fBximStyles\fP is not specified, it defaults to:
-.PP
+.IP
 .in +4
 .EX
 \fBoverTheSpot,offTheSpot,rootWindow,onTheSpot\fP
 .EE
 .in
+.TP
+.B renderer \fP (class \fBRenderer\fP)
+Specifies the rendering backend the protocol translator uses to
+composite the contents of Wayland surfaces onto X windows.  This can
+either be \fBpicture\fP (the XRender based compositor) or \fBegl\fP
+(the OpenGL ES 2.0 based compositor).
 .SH ENVIRONMENT
 Several environment variables exist that modify the behavior of the
 protocol translator in one way or another.  Most of these are used for
@@ -163,12 +174,49 @@ The
 variable, if set, controls the rendering backend used by the
 protocol translator.  When set to
 .I help
-it prints a list of available rendering backends instead.
+it prints a list of available rendering backends instead.  This takes
+precedence over the \fBrenderer\fP resource whenever set.
 .PP
 The
 .B RENDER_VISUAL
 variable, if set to a number, contains the ID of the visual used
 when the EGL rendering backend is in use.
+.SH "CONFORMING TO"
+The protocol translator aims to comply with the specifications of the
+following Wayland interfaces:
+.TS H
+lb lb
+lb n .
+Protocol	Version
+wl_output	2
+wl_compositor	5
+wl_shm	1
+xdg_wm_base	5
+wl_subcompositor	1
+wl_seat	7
+wl_data_device_manager	3
+zwp_linux_dmabuf_v1	4
+zwp_primary_selection_device_manager_v1	1
+wp_viewporter	1
+zxdg_decoration_manager_v1	1
+zwp_text_input_manager_v3	1
+wp_single_pixel_buffer_manager_v1	1
+.TE
+.PP
+When the protocol translator is built with EGL support, the following
+protocol is also supported:
+.TS H
+lb lb
+lb n .
+Protocol	Version
+zwp_linux_explicit_synchronization_v1	2
+.TE
+.PP
+However, Wayland clients are allowed to continue to access data from
+the \fBCLIPBOARD\fP and \fBPRIMARY\fP selections even when they do not
+have the keyboard focus, against the restrictions put out in the
+relevant protocol specifications.  It is the opinion of the authors
+that such ``security'' does not come with any real benefit.
 .SH BUGS
 There is a hard to catch bug where Wayland programs leaving the
 fullscreen or maximized state may abruptly return to their maximized
@@ -188,6 +236,10 @@ and
 .B _NET_WM_STATE
 window manager hints will result in Wayland programs running
 incorrectly.
+.PP
+In addition, surfaces transforms are not supported nor reported.  The
+vast majority of clients seem not to make use of this feature, and
+implementing it would be a lot of trouble.
 .SH "SEE ALSO"
 X(7), Xorg(1)
 .SH AUTHOR

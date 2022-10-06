@@ -378,11 +378,18 @@ struct _BufferFuncs
   Bool (*validate_shm_params) (uint32_t, uint32_t, uint32_t, int32_t,
 			       int32_t, size_t);
 
+  /* Create a buffer from the given RGBA color.  */
+  RenderBuffer (*buffer_from_single_pixel) (uint32_t, uint32_t, uint32_t, uint32_t,
+					    Bool *);
+
   /* Free a buffer created from shared memory.  */
   void (*free_shm_buffer) (RenderBuffer);
 
   /* Free a dma-buf buffer.  */
   void (*free_dmabuf_buffer) (RenderBuffer);
+
+  /* Free a single-pixel buffer.  */
+  void (*free_single_pixel_buffer) (RenderBuffer);
 
   /* Notice that the given buffer has been damaged.  May be NULL.  If
      the given NULL damage, assume that the entire buffer has been
@@ -435,8 +442,11 @@ extern void RenderBufferFromDmaBufAsync (DmaBufAttributes *, DmaBufSuccessFunc,
 extern RenderBuffer RenderBufferFromShm (SharedMemoryAttributes *, Bool *);
 extern Bool RenderValidateShmParams (uint32_t, uint32_t, uint32_t, int32_t,
 				     int32_t, size_t);
+extern RenderBuffer RenderBufferFromSinglePixel (uint32_t, uint32_t, uint32_t,
+						 uint32_t, Bool *);
 extern void RenderFreeShmBuffer (RenderBuffer);
 extern void RenderFreeDmabufBuffer (RenderBuffer);
+extern void RenderFreeSinglePixelBuffer (RenderBuffer);
 extern void RenderUpdateBufferForDamage (RenderBuffer, pixman_region32_t *,
 					 DrawParams *);
 extern Bool RenderCanReleaseNow (RenderBuffer);
@@ -1462,6 +1472,10 @@ extern void XLWpViewportReportOutOfBuffer (ViewportExt *);
 /* Defined in decoration.c.  */
 
 extern void XLInitDecoration (void);
+
+/* Defined in single_pixel_buffer.c.  */
+
+extern void XLInitSinglePixelBuffer (void);
 
 /* Utility functions that don't belong in a specific file.  */
 

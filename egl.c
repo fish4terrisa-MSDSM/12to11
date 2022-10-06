@@ -49,6 +49,7 @@ typedef struct _EglBuffer EglBuffer;
 
 typedef struct _EglDmaBufBuffer EglDmaBufBuffer;
 typedef struct _EglShmBuffer EglShmBuffer;
+typedef struct _EglSinglePixelBuffer EglSinglePixelBuffer;
 typedef struct _FormatInfo FormatInfo;
 
 typedef struct _CompositeProgram CompositeProgram;
@@ -57,6 +58,7 @@ enum _EglBufferType
   {
     DmaBufBuffer,
     ShmBuffer,
+    SinglePixelBuffer,
   };
 
 struct _EglDmaBufBuffer
@@ -84,6 +86,15 @@ struct _EglShmBuffer
 
   /* The format info of this buffer.  */
   FormatInfo *format;
+};
+
+struct _EglSinglePixelBuffer
+{
+  /* The type of this buffer.  Always DmaBufBuffer.  */
+  EglBufferType type;
+
+  /* The red, green, blue and alpha values.  */
+  float r, g, b, a;
 };
 
 struct _FormatInfo
@@ -141,6 +152,9 @@ struct _EglBuffer
 
     /* A shared memory buffer.  */
     EglShmBuffer shm;
+
+    /* A single-pixel buffer.  */
+    EglSinglePixelBuffer single_pixel;
   } u;
 };
 
@@ -190,6 +204,9 @@ struct _CompositeProgram
 
   /* The index of the invert_y uniform.  */
   GLuint invert_y;
+
+  /* The index of the source_pixel uniform.  */
+  GLuint source_color;
 };
 
 /* This macro makes column major order easier to reason about for C
@@ -386,6 +403,9 @@ static CompositeProgram xrgb_program;
 
 /* Composition program for external textures.  */
 static CompositeProgram external_program;
+
+/* Composition program for single pixel buffers.  */
+static CompositeProgram single_pixel_buffer_program;
 
 /* Whether or not buffer age is supported.  */
 static Bool have_egl_ext_buffer_age;
@@ -885,6 +905,8 @@ EglCompileCompositeProgram (CompositeProgram *program,
 					  "source");
   program->invert_y = glGetUniformLocation (program->program,
 					    "invert_y");
+  program->source_color = glGetUniformLocation (program->program,
+						"source_color");
 
   /* Now delete the shaders.  */
   glDeleteShader (vertex);
@@ -928,6 +950,8 @@ EglCompileShaders (void)
 			      composite_rectangle_fragment_shader_rgbx);
   EglCompileCompositeProgram (&external_program,
 			      composite_rectangle_fragment_shader_external);
+  EglCompileCompositeProgram (&single_pixel_buffer_program,
+			      composite_rectangle_fragment_shader_single_pixel);
 }
 
 /* Forward declaration.  */
@@ -1276,6 +1300,9 @@ FindProgram (EglBuffer *buffer)
 {
   switch (buffer->u.type)
     {
+    case SinglePixelBuffer:
+      /* Use the single-pixel buffer program.  */
+      return &single_pixel_buffer_program;
     case DmaBufBuffer:
       if (buffer->u.dmabuf.format->flags & NeedExternalTarget)
 	/* Use the external format compositor program.  */
@@ -1302,6 +1329,10 @@ GetTextureTarget (EglBuffer *buffer)
 
     case ShmBuffer:
       return GL_TEXTURE_2D;
+
+    default:
+      /* This should not be called with a single pixel buffer.  */
+      abort ();
     }
 
   /* This is not supposed to happen.  */
@@ -1356,15 +1387,21 @@ Composite (RenderBuffer buffer, RenderTarget target,
   egl_target = target.pointer;
   egl_buffer = buffer.pointer;
 
-  /* Assert that a texture was generated, since UpdateBuffer should be
-     called before the buffer is ever used.  */
-  XLAssert (egl_buffer->flags & IsTextureGenerated);
+  if (egl_buffer->u.type != SinglePixelBuffer)
+    {
+      /* Assert that a texture was generated, since UpdateBuffer should
+	 be called before the buffer is ever used.  */
+      XLAssert (egl_buffer->flags & IsTextureGenerated);
+
+      /* Get the texturing target.  */
+      tex_target = GetTextureTarget (egl_buffer);
+    }
+  else
+    /* This value is not actually used.  */
+    tex_target = 0;
 
   /* Find the program to use for compositing.  */
   program = FindProgram (egl_buffer);
-
-  /* Get the texturing target.  */
-  tex_target = GetTextureTarget (egl_buffer);
 
   /* Compute the transformation matrix to use to draw the given
      buffer.  */
@@ -1415,15 +1452,30 @@ Composite (RenderBuffer buffer, RenderTarget target,
   else
     glDisable (GL_BLEND);
 
-  glActiveTexture (GL_TEXTURE0);
-  glBindTexture (tex_target, egl_buffer->texture);
-  glTexParameteri (tex_target, GL_TEXTURE_MIN_FILTER,
-		   GL_NEAREST);
-  glTexParameteri (tex_target, GL_TEXTURE_MAG_FILTER,
-		   GL_NEAREST);
+  /* Single pixel buffers have no textures.  */
+  if (egl_buffer->u.type != SinglePixelBuffer)
+    {
+      glActiveTexture (GL_TEXTURE0);
+      glBindTexture (tex_target, egl_buffer->texture);
+      glTexParameteri (tex_target, GL_TEXTURE_MIN_FILTER,
+		       GL_NEAREST);
+      glTexParameteri (tex_target, GL_TEXTURE_MAG_FILTER,
+		       GL_NEAREST);
+    }
+
   glUseProgram (program->program);
 
-  glUniform1i (program->texture, 0);
+  /* Single pixel buffers have no textures.  */
+  if (egl_buffer->u.type != SinglePixelBuffer)
+    glUniform1i (program->texture, 0);
+  else
+    /* Attach the source color.  */
+    glUniform4f (program->source_color,
+		 egl_buffer->u.single_pixel.r,
+		 egl_buffer->u.single_pixel.g,
+		 egl_buffer->u.single_pixel.b,
+		 egl_buffer->u.single_pixel.a);
+
   glUniformMatrix3fv (program->source, 1, GL_FALSE,
 		      egl_buffer->matrix);
   glUniform1i (program->invert_y, egl_buffer->flags & InvertY);
@@ -1440,7 +1492,9 @@ Composite (RenderBuffer buffer, RenderTarget target,
   glDisableVertexAttribArray (program->position);
   glDisableVertexAttribArray (program->texcoord);
 
-  glBindTexture (tex_target, 0);
+  /* Single pixel buffers have no textures.  */
+  if (egl_buffer->u.type != SinglePixelBuffer)
+    glBindTexture (tex_target, 0);
 }
 
 static void
@@ -1880,6 +1934,35 @@ BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
   return (RenderBuffer) (void *) buffer;
 }
 
+static RenderBuffer
+BufferFromSinglePixel (uint32_t red, uint32_t green, uint32_t blue,
+		       uint32_t alpha, Bool *error)
+{
+  EglBuffer *buffer;
+
+  buffer = XLMalloc (EglBufferSize (EglSinglePixelBuffer));
+  buffer->flags = 0;
+  buffer->texture = EGL_NO_TEXTURE;
+  buffer->width = 1;
+  buffer->height = 1;
+  buffer->u.type = SinglePixelBuffer;
+
+  /* Copy over the identity transform.  */
+  MatrixIdentity (&buffer->matrix);
+
+  /* Record the buffer data.  */
+  buffer->u.single_pixel.r = red / (float) 0xffffffff;
+  buffer->u.single_pixel.g = green / (float) 0xffffffff;
+  buffer->u.single_pixel.b = blue / (float) 0xffffffff;
+  buffer->u.single_pixel.a = alpha / (float) 0xffffffff;
+
+  /* An alpha channel is present.  */
+  buffer->flags |= HasAlpha;
+
+  /* Return the buffer.  */
+  return (RenderBuffer) (void *) buffer;
+}
+
 static void
 FreeShmBuffer (RenderBuffer buffer)
 {
@@ -1908,6 +1991,20 @@ FreeDmabufBuffer (RenderBuffer buffer)
   /* Free the EGL image.  */
   IDestroyImage (egl_display, egl_buffer->u.dmabuf.image);
 
+  XLFree (buffer.pointer);
+}
+
+static void
+FreeSinglePixelBuffer (RenderBuffer buffer)
+{
+  EglBuffer *egl_buffer;
+
+  egl_buffer = buffer.pointer;
+
+  /* Make sure a texture was not created.  */
+  XLAssert (egl_buffer->texture == EGL_NO_TEXTURE);
+
+  /* Free the wrapper struct.  */
   XLFree (buffer.pointer);
 }
 
@@ -2193,6 +2290,10 @@ UpdateTexture (EglBuffer *buffer)
       /* The buffer's been copied to the texture.  It can now be
 	 released.  */
       buffer->flags |= CanRelease;
+      break;
+
+    default:
+      break;
     }
 
   /* Bind the target to nothing.  */
@@ -2326,6 +2427,10 @@ EnsureTexture (EglBuffer *buffer)
   if (buffer->flags & IsTextureGenerated)
     return;
 
+  /* If the buffer does not need textures, return.  */
+  if (buffer->u.type == SinglePixelBuffer)
+    return;
+
   /* Generate the name for the texture.  */
   glGenTextures (1, &buffer->texture);
 
@@ -2343,6 +2448,10 @@ UpdateBuffer (RenderBuffer buffer, pixman_region32_t *damage,
   EglBuffer *egl_buffer;
 
   egl_buffer = buffer.pointer;
+
+  /* Single pixel buffers don't need updates.  */
+  if (egl_buffer->u.type == SinglePixelBuffer)
+    return;
 
   if (!(egl_buffer->flags & IsTextureGenerated))
     /* No texture has been generated, so just create one and maybe
@@ -2373,6 +2482,9 @@ UpdateBuffer (RenderBuffer buffer, pixman_region32_t *damage,
 	case DmaBufBuffer:
 	  /* See comment in !damage branch.  */
 	  UpdateTexture (egl_buffer);
+	  break;
+
+	default:
 	  break;
 	}
     }
@@ -2411,8 +2523,10 @@ static BufferFuncs egl_buffer_funcs =
     .buffer_from_dma_buf_async = BufferFromDmaBufAsync,
     .buffer_from_shm = BufferFromShm,
     .validate_shm_params = ValidateShmParams,
+    .buffer_from_single_pixel = BufferFromSinglePixel,
     .free_shm_buffer = FreeShmBuffer,
     .free_dmabuf_buffer = FreeDmabufBuffer,
+    .free_single_pixel_buffer = FreeSinglePixelBuffer,
     .update_buffer_for_damage = UpdateBufferForDamage,
     .can_release_now = CanReleaseNow,
     .init_buffer_funcs = InitBufferFuncs,

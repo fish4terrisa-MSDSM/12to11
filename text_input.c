@@ -177,6 +177,9 @@ struct _TextInput
   /* The position of the preedit caret in characters.  */
   int caret;
 
+  /* The style of the caret.  */
+  XIMCaretStyle caret_style;
+
   /* The pending state.  */
   TextInputState pending_state;
 
@@ -1437,14 +1440,20 @@ UpdatePreedit (TextInput *input)
 	goto no_buffer;
 
       /* Obtain the caret position.  */
-      caret = TextPositionFromCharPosition (buffer, new_text_size,
-					    input->caret);
+
+      if (input->caret_style != XIMIsInvisible)
+	caret = TextPositionFromCharPosition (buffer, new_text_size,
+					      input->caret);
+      else
+	/* The caret is hidden, so don't send any caret position.  */
+	caret.bytepos = -1, caret.charpos = -1;
+
       DebugPrint ("caret position is: char %d, byte: %td",
 		  caret.charpos, caret.bytepos);
 
       PreeditString (input, buffer, new_text_size,
 		     /* caret.bytepos will be -1 if obtaining the
-			position failed.  */
+			position failed or the caret is hidden.  */
 		     caret.bytepos);
       XLFree (buffer);
     }
@@ -1478,6 +1487,9 @@ PreeditStartCallback (XIC ic, XPointer client_data, XPointer call_data)
 
   /* Create the preedit buffer.  */
   input->buffer = MakePreeditBuffer (locale);
+
+  /* Set the default caret style.  */
+  input->caret_style = XIMIsPrimary;
 
   /* There should be no limit on the number of bytes in a preedit
      string.  We make the string fit in 4000 bytes ourselves.  */
@@ -1596,6 +1608,9 @@ PreeditCaretCallback (XIC ic, XPointer client_data,
 
   /* Return the caret position.  */
   call_data->position = input->caret;
+
+  /* Set the caret style.  */
+  input->caret_style = call_data->style;
 
   /* Send change to the client.  */
   UpdatePreedit (input);
@@ -3381,7 +3396,7 @@ XLInitTextInput (void)
   InitInputStyles ();
 
   if (im_fontset == NULL)
-    fprintf (stderr, "Unable to load any usable fontset for input methods");
+    fprintf (stderr, "Unable to load any usable fontset for input methods\n");
 
   /* Register the IM callback.  */
   XRegisterIMInstantiateCallback (compositor.display,

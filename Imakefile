@@ -21,7 +21,8 @@ SRCS = 12to11.c run.c alloc.c fns.c output.c compositor.c       \
   dmabuf.c buffer.c select.c xdata.c xsettings.c dnd.c          \
   icon_surface.c primary_selection.c renderer.c                 \
   picture_renderer.c explicit_synchronization.c transform.c     \
-  wp_viewporter.c decoration.c text_input.c
+  wp_viewporter.c decoration.c text_input.c                     \
+  single_pixel_buffer.c
 
 OBJS = 12to11.o run.o alloc.o fns.o output.o compositor.o       \
   surface.o region.o shm.o atoms.o subcompositor.o positioner.o \
@@ -30,7 +31,8 @@ OBJS = 12to11.o run.o alloc.o fns.o output.o compositor.o       \
   dmabuf.o buffer.o select.o xdata.o xsettings.o dnd.o          \
   icon_surface.o primary_selection.o renderer.o                 \
   picture_renderer.o explicit_synchronization.o transform.o     \
-  wp_viewporter.o decoration.o text_input.o
+  wp_viewporter.o decoration.o text_input.o                     \
+  single_pixel_buffer.o
 
 GENHEADERS = transfer_atoms.h
 
@@ -112,6 +114,7 @@ ScannerTarget(linux-explicit-synchronization-unstable-v1)
 ScannerTarget(viewporter)
 ScannerTarget(xdg-decoration-unstable-v1)
 ScannerTarget(text-input-unstable-v3)
+ScannerTarget(single-pixel-buffer-v1)
 
 /* Make OBJS depend on scanner headers, and depend on both them and SRCS.  */
 $(OBJS): $(GENHEADERS)

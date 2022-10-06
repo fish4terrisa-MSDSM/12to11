@@ -1189,6 +1189,45 @@ ValidateShmParams (uint32_t format, uint32_t width, uint32_t height,
   return True;
 }
 
+static RenderBuffer
+BufferFromSinglePixel (uint32_t red, uint32_t green, uint32_t blue,
+		       uint32_t alpha, Bool *error)
+{
+  Picture picture;
+  Pixmap pixmap;
+  XRenderPictureAttributes picture_attrs;
+  XRenderColor color;
+  PictureBuffer *buffer;
+
+  /* Create the pixmap.  */
+  pixmap = XCreatePixmap (compositor.display,
+			  DefaultRootWindow (compositor.display),
+			  1, 1, compositor.n_planes);
+
+  /* Create the picture.  */
+  picture = XRenderCreatePicture (compositor.display, pixmap,
+				  compositor.argb_format, 0,
+				  &picture_attrs);
+
+  /* Free the pixmap.  */
+  XFreePixmap (compositor.display, pixmap);
+
+  /* Fill the picture with the single pixel.  */
+  color.red = red >> 16;
+  color.green = green >> 16;
+  color.blue = blue >> 16;
+  color.alpha = alpha >> 16;
+  XRenderFillRectangle (compositor.display, PictOpSrc,
+			picture, &color, 0, 0, 1, 1);
+
+  /* Create the wrapper object.  */
+  buffer = XLCalloc (1, sizeof *buffer);
+  buffer->picture = picture;
+
+  /* Return the picture.  */
+  return (RenderBuffer) (void *) buffer;
+}
+
 static void
 FreeShmBuffer (RenderBuffer buffer)
 {
@@ -1210,6 +1249,18 @@ FreeDmabufBuffer (RenderBuffer buffer)
 
   /* N.B. that the picture is the only reference to the pixmap
      here.  */
+  XRenderFreePicture (compositor.display,
+		      picture_buffer->picture);
+  XLFree (picture_buffer);
+}
+
+static void
+FreeSinglePixelBuffer (RenderBuffer buffer)
+{
+  PictureBuffer *picture_buffer;
+
+  picture_buffer = buffer.pointer;
+
   XRenderFreePicture (compositor.display,
 		      picture_buffer->picture);
   XLFree (picture_buffer);
@@ -1340,8 +1391,10 @@ static BufferFuncs picture_buffer_funcs =
     .buffer_from_dma_buf_async = BufferFromDmaBufAsync,
     .buffer_from_shm = BufferFromShm,
     .validate_shm_params = ValidateShmParams,
+    .buffer_from_single_pixel = BufferFromSinglePixel,
     .free_shm_buffer = FreeShmBuffer,
     .free_dmabuf_buffer = FreeDmabufBuffer,
+    .free_single_pixel_buffer = FreeSinglePixelBuffer,
     .can_release_now = CanReleaseNow,
     .init_buffer_funcs = InitBufferFuncs,
   };

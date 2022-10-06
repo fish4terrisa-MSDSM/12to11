@@ -227,6 +227,14 @@ RenderValidateShmParams (uint32_t format, uint32_t width, uint32_t height,
 					   offset, stride, pool_size);
 }
 
+RenderBuffer
+RenderBufferFromSinglePixel (uint32_t red, uint32_t green, uint32_t blue,
+			     uint32_t alpha, Bool *error)
+{
+  return buffer_funcs.buffer_from_single_pixel (red, green, blue,
+						alpha, error);
+}
+
 void
 RenderFreeShmBuffer (RenderBuffer buffer)
 {
@@ -235,6 +243,12 @@ RenderFreeShmBuffer (RenderBuffer buffer)
 
 void
 RenderFreeDmabufBuffer (RenderBuffer buffer)
+{
+  return buffer_funcs.free_dmabuf_buffer (buffer);
+}
+
+void
+RenderFreeSinglePixelBuffer (RenderBuffer buffer)
 {
   return buffer_funcs.free_dmabuf_buffer (buffer);
 }
@@ -299,6 +313,36 @@ InstallRenderer (Renderer *renderer)
   return True;
 }
 
+static const char *
+ReadRendererResource (void)
+{
+  XrmDatabase rdb;
+  XrmName namelist[3];
+  XrmClass classlist[3];
+  XrmValue value;
+  XrmRepresentation type;
+
+  rdb = XrmGetDatabase (compositor.display);
+
+  if (!rdb)
+    return NULL;
+
+  namelist[1] = XrmStringToQuark ("renderer");
+  namelist[0] = app_quark;
+  namelist[2] = NULLQUARK;
+
+  classlist[1] = XrmStringToQuark ("Renderer");
+  classlist[0] = resource_quark;
+  classlist[2] = NULLQUARK;
+
+  if (XrmQGetResource (rdb, namelist, classlist,
+		       &type, &value)
+      && type == QString)
+    return (const char *) value.addr;
+
+  return NULL;
+}
+
 static void
 PickRenderer (void)
 {
@@ -309,6 +353,9 @@ PickRenderer (void)
   XLAssert (renderers != NULL);
 
   selected = getenv ("RENDERER");
+
+  if (!selected)
+    selected = ReadRendererResource ();
 
   if (selected)
     {
