@@ -139,7 +139,7 @@ Destroy (struct wl_client *client, struct wl_resource *resource)
   wl_resource_destroy (resource);
 }
 
-void
+static void
 CreateU32RgbaBuffer (struct wl_client *client, struct wl_resource *resource,
 		     uint32_t id, uint32_t r, uint32_t g, uint32_t b,
 		     uint32_t a)
