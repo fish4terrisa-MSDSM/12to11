@@ -4017,10 +4017,31 @@ DispatchButton (Subcompositor *subcompositor, XIDeviceEvent *xev)
 		xev->event_x, xev->event_y);
 }
 
+static KeySym
+LookupKeysym (XIDeviceEvent *xev, KeyCode keycode)
+{
+  unsigned int state, mods_return;
+  KeySym keysym;
+
+  /* Convert the state to a core state mask.  */
+  state = ((xev->mods.effective & ~(1 << 13 | 1 << 14))
+	   | (xev->group.effective << 13));
+  keysym = 0;
+
+  /* Look up the keysym.  */
+  XkbLookupKeySym (compositor.display, keycode,
+		   state, &mods_return, &keysym);
+
+  /* Return the keysym.  */
+  return keysym;
+}
+
 static void
 DispatchKey (XIDeviceEvent *xev)
 {
   Seat *seat;
+  KeySym keysym;
+  KeyCode keycode;
 
   seat = XLLookUpAssoc (seats, xev->deviceid);
 
@@ -4033,10 +4054,12 @@ DispatchKey (XIDeviceEvent *xev)
 
   if (seat->focus_surface)
     {
+      keysym = 0;
+
       if (input_funcs
 	  && seat->flags & IsTextInputSeat
 	  && input_funcs->filter_input (seat, seat->focus_surface,
-					xev))
+					xev, &keysym))
 	/* The input method decided to filter the key.  */
 	return;
 
@@ -4044,13 +4067,33 @@ DispatchKey (XIDeviceEvent *xev)
       if (xev->flags & XIKeyRepeat)
 	return;
 
+      keycode = xev->detail;
+
+      /* If the input method specified a keysym to use, use it.  */
+
+      if (keysym)
+	{
+	  /* If looking up the event keycode also results in the
+	     keysym, then just use the keycode specified in the
+	     event.  */
+	  if (LookupKeysym (xev, keycode) == keysym)
+	    keycode = xev->detail;
+	  else
+	    keycode = XKeysymToKeycode (compositor.display, keysym);
+
+	  /* But if no corresponding keycode could be found, use the
+	     keycode provided in the event.  */
+	  if (!keycode)
+	    keycode = xev->detail;
+	}
+
       if (xev->evtype == XI_KeyPress)
 	SendKeyboardKey (seat, seat->focus_surface,
-			 xev->time, WaylandKeycode (xev->detail),
+			 xev->time, WaylandKeycode (keycode),
 			 WL_KEYBOARD_KEY_STATE_PRESSED);
       else
 	SendKeyboardKey (seat, seat->focus_surface,
-			 xev->time, WaylandKeycode (xev->detail),
+			 xev->time, WaylandKeycode (keycode),
 			 WL_KEYBOARD_KEY_STATE_RELEASED);
     }
 }

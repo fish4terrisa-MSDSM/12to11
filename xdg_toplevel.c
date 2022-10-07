@@ -1316,7 +1316,7 @@ RestoreStateTo (XdgToplevel *toplevel, int width, int height)
 static Bool
 HandleConfigureEvent (XdgToplevel *toplevel, XEvent *event)
 {
-  int width, height;
+  int width, height, configure_width, configure_height;
 
   if (event->xconfigure.send_event)
     /* Handle only synthetic events, since that's what the
@@ -1357,9 +1357,18 @@ HandleConfigureEvent (XdgToplevel *toplevel, XEvent *event)
 
   if (!MaybePostDelayedConfigure (toplevel, StatePendingConfigureSize))
     {
+      /* Scale the configure event width and height to the
+	 surface.  */
+      TruncateScaleToSurface (toplevel->role->surface,
+			      event->xconfigure.width,
+			      event->xconfigure.height,
+			      &configure_width,
+			      &configure_height);
+
+      /* Calculate the new window size.  */
       XLXdgRoleCalcNewWindowSize (toplevel->role,
-				  ConfigureWidth (event),
-				  ConfigureHeight (event),
+				  configure_width,
+				  configure_height,
 				  &width, &height);
 
       SendConfigure (toplevel, width, height);

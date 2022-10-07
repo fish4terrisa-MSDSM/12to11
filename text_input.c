@@ -241,6 +241,70 @@ static XIMStyle xim_style;
 /* The order in which XIM input styles will be searched for.  */
 static XimStyleKind xim_style_order[5];
 
+static int
+CurrentCursorX (TextInput *input)
+{
+  int x, y;
+
+  XLAssert (input->client_info->focus_surface != NULL);
+
+  /* Scale these coordinates into window coordinates.  */
+  TruncateSurfaceToWindow (input->client_info->focus_surface,
+			   input->current_state.cursor_x,
+			   input->current_state.cursor_y,
+			   &x, &y);
+
+  return x;
+}
+
+static int
+CurrentCursorY (TextInput *input)
+{
+  int x, y;
+
+  XLAssert (input->client_info->focus_surface != NULL);
+
+  /* Scale these coordinates into window coordinates.  */
+  TruncateSurfaceToWindow (input->client_info->focus_surface,
+			   input->current_state.cursor_x,
+			   input->current_state.cursor_y,
+			   &x, &y);
+
+  return y;
+}
+
+static int
+CurrentCursorWidth (TextInput *input)
+{
+  int width, height;
+
+  XLAssert (input->client_info->focus_surface != NULL);
+
+  /* Scale these coordinates into window coordinates.  */
+  TruncateScaleToWindow (input->client_info->focus_surface,
+			 input->current_state.cursor_width,
+			 input->current_state.cursor_height,
+			 &width, &height);
+
+  return width;
+}
+
+static int
+CurrentCursorHeight (TextInput *input)
+{
+  int width, height;
+
+  XLAssert (input->client_info->focus_surface != NULL);
+
+  /* Scale these coordinates into window coordinates.  */
+  TruncateScaleToWindow (input->client_info->focus_surface,
+			 input->current_state.cursor_width,
+			 input->current_state.cursor_height,
+			 &width, &height);
+
+  return height;
+}
+
 
 /* Byte-text position conversion.  */
 
@@ -558,7 +622,7 @@ static void
 DoGeometryAllocation (TextInput *input)
 {
   XPoint spot;
-  XRectangle area, needed;
+  XRectangle area, *needed;
   XVaNestedList attr;
   View *view;
   char *rc;
@@ -577,9 +641,9 @@ DoGeometryAllocation (TextInput *input)
 
       if (input->current_state.pending & PendingCursorRectangle)
 	{
-	  spot.x = input->current_state.cursor_x;
-	  spot.y = (input->current_state.cursor_y
-		    + input->current_state.cursor_height - 1);
+	  spot.x = CurrentCursorX (input);
+	  spot.y = (CurrentCursorY (input)
+		    + CurrentCursorHeight (input));
 	}
       else
 	{
@@ -611,44 +675,46 @@ DoGeometryAllocation (TextInput *input)
       if (!rc)
 	{
 	  DebugPrint ("IM suggested the given size: %d %d",
-		      needed.width, needed.height);
+		      needed->width, needed->height);
 
 	  /* Place the rectangle below and to the right of the
 	     caret.  */
 
 	  if (input->current_state.pending & PendingCursorRectangle)
 	    {
-	      needed.x = (input->current_state.cursor_x
-			  + input->current_state.cursor_width);
-	      needed.y = (input->current_state.cursor_y
-			  + input->current_state.cursor_height);
+	      needed->x = (CurrentCursorX (input)
+			   + CurrentCursorWidth (input));
+	      needed->y = (CurrentCursorY (input)
+			   + CurrentCursorHeight (input));
 
-	      FitRect (&needed, ViewWidth (view), ViewHeight (view),
-		       input->current_state.cursor_x,
-		       input->current_state.cursor_y,
-		       input->current_state.cursor_width,
-		       input->current_state.cursor_height);
+	      FitRect (needed, ViewWidth (view), ViewHeight (view),
+		       CurrentCursorX (input), CurrentCursorY (input),
+		       CurrentCursorWidth (input),
+		       CurrentCursorHeight (input));
 
 	      DebugPrint ("filled rectangle: %d %d %d %d",
-			  needed.x, needed.y, needed.width,
-			  needed.height);
+			  needed->x, needed->y, needed->width,
+			  needed->height);
 	    }
 	  else
 	    {
 	      /* No caret was specified... Place the preedit window on
-		 the bottom right corner of the view.  */
-	      needed.x = ViewWidth (view);
-	      needed.y = ViewHeight (view);
+		 the bottom left corner of the view.  */
+	      needed->x = 0;
+	      needed->y = ViewHeight (view) - needed->height;
 
 	      DebugPrint ("placed rectangle: %d %d %d %d",
-			  needed.x, needed.y, needed.width,
-			  needed.height);
+			  needed->x, needed->y, needed->width,
+			  needed->height);
 	    }
 
 	  /* Set the geometry.  */
-	  attr = XVaCreateNestedList (0, XNArea, &needed, NULL);
+	  attr = XVaCreateNestedList (0, XNArea, needed, NULL);
 	  XSetICValues (input->xic, XNPreeditAttributes, attr, NULL);
 	  XFree (attr);
+
+	  /* Free the rectangle returned.  */
+	  XFree (needed);
 	}
     }
 
@@ -671,44 +737,23 @@ DoGeometryAllocation (TextInput *input)
       if (!rc)
 	{
 	  DebugPrint ("IM suggested the given size: %d %d",
-		      needed.width, needed.height);
+		      needed->width, needed->height);
 
-	  /* Place the rectangle below and to the right of the
-	     caret.  */
+	  /* Place the rectangle at the bottom of the window.  */
+	  needed->x = ViewWidth (view) - needed->width;
+	  needed->y = ViewHeight (view) - needed->height;
 
-	  if (input->current_state.pending & PendingCursorRectangle)
-	    {
-	      needed.x = (input->current_state.cursor_x
-			  + input->current_state.cursor_width);
-	      needed.y = (input->current_state.cursor_y
-			  + input->current_state.cursor_height);
-
-	      FitRect (&needed, ViewWidth (view), ViewHeight (view),
-		       input->current_state.cursor_x,
-		       input->current_state.cursor_y,
-		       input->current_state.cursor_width,
-		       input->current_state.cursor_height);
-
-	      DebugPrint ("filled rectangle: %d %d %d %d",
-			  needed.x, needed.y, needed.width,
-			  needed.height);
-	    }
-	  else
-	    {
-	      /* No caret was specified... Place the preedit window on
-		 the bottom right corner of the view.  */
-	      needed.x = ViewWidth (view);
-	      needed.y = ViewHeight (view);
-
-	      DebugPrint ("placed rectangle: %d %d %d %d",
-			  needed.x, needed.y, needed.width,
-			  needed.height);
-	    }
+	  DebugPrint ("placed rectangle at bottom right: %d %d %d %d",
+		      needed->x, needed->y, needed->width,
+		      needed->height);
 
 	  /* Set the geometry.  */
-	  attr = XVaCreateNestedList (0, XNArea, &needed, NULL);
+	  attr = XVaCreateNestedList (0, XNArea, needed, NULL);
 	  XSetICValues (input->xic, XNStatusAttributes, attr, NULL);
 	  XFree (attr);
+
+	  /* Free the needed rectangle.  */
+	  XFree (needed);
 	}
     }
 }
@@ -770,11 +815,11 @@ Commit (struct wl_client *client, struct wl_resource *resource)
 	  else
 	    XFree (XmbResetIC (input->xic));
 
-	  if (input->xic)
-	    XSetICFocus (input->xic);
-
 	  /* Perform geometry/position allocation on the IC.  */
 	  DoGeometryAllocation (input);
+
+	  if (input->xic)
+	    XSetICFocus (input->xic);
 	}
       else
 	{
@@ -1512,12 +1557,62 @@ PreeditDoneCallback (XIC ic, XPointer client_data, XPointer call_data)
   UpdatePreedit (input);
 }
 
+static char *
+ConvertWcharString (PreeditBuffer *buffer, const wchar_t *input,
+		    size_t input_size, size_t *string_size)
+{
+  char *output, *oldlocale;
+  int rc;
+  size_t bytes;
+
+  /* Since the text is intended for BUFFER, switch to BUFFER's
+     locale.  */
+  oldlocale = XLStrdup (setlocale (LC_CTYPE, NULL));
+
+  /* Switch to the new locale.  */
+  if (!setlocale (LC_CTYPE, buffer->locale))
+    {
+      /* Setting the locale failed.  Return an empty string.  */
+      XLFree (oldlocale);
+      *string_size = 0;
+      return NULL;
+    }
+
+  output = XLCalloc (input_size + 1, MB_CUR_MAX);
+  bytes = 0;
+
+  while (input_size)
+    {
+      input_size--;
+      rc = wctomb (output + bytes, *input++);
+
+      if (rc == -1)
+	/* Invalid wide character code.  */
+	continue;
+
+      /* Otherwise, move the string forward this much.  */
+      bytes += rc;
+    }
+
+  /* Return the string and the number of bytes put in it.  */
+  *string_size = bytes;
+
+  /* Clear shift state.  */
+  wctomb (NULL, L'\0');
+
+  /* Restore the old locale.  */
+  setlocale (LC_CTYPE, oldlocale);
+  XLFree (oldlocale);
+  return output;
+}
+
 static void
 PreeditDrawCallback (XIC ic, XPointer client_data,
 		     XIMPreeditDrawCallbackStruct *call_data)
 {
   TextInput *input;
   size_t string_size;
+  char *multi_byte_string;
 
   input = (TextInput *) client_data;
   DebugPrint ("text input: %p", input);
@@ -1528,13 +1623,6 @@ PreeditDrawCallback (XIC ic, XPointer client_data,
   DebugPrint ("chg_first: %d, chg_length: %d",
 	      call_data->chg_first,
 	      call_data->chg_length);
-
-  if (call_data->text
-      && call_data->text->encoding_is_wchar)
-    {
-      DebugPrint ("wchar encoding not yet implemented");
-      return;
-    }
 
   /* Delete text between chg_first and chg_first + chg_length.  */
   if (call_data->chg_length
@@ -1547,17 +1635,35 @@ PreeditDrawCallback (XIC ic, XPointer client_data,
 
   if (call_data->text)
     {
-      /* The multibyte string should be NULL terminated.  */
-      string_size = strlen (call_data->text->string.multi_byte);
+      if (call_data->text->encoding_is_wchar)
+	{
+	  DebugPrint ("converting wide character string");
+
+	  multi_byte_string
+	    = ConvertWcharString (input->buffer,
+				  call_data->text->string.wide_char,
+				  call_data->text->length,
+				  &string_size);
+	}
+      else
+	{
+	  /* The multibyte string should be NULL terminated.  */
+	  string_size = strlen (call_data->text->string.multi_byte);
+	  multi_byte_string = call_data->text->string.multi_byte;
+	}
 
       DebugPrint ("inserting text of size %d, %zu",
 		  call_data->text->length, string_size);
 
       /* Now, insert whatever text was specified at chg_first.  */
       if (!PreeditInsertChars (input->buffer, call_data->chg_first,
-			       call_data->text->string.multi_byte,
-			       string_size, call_data->text->length))
+			       multi_byte_string, string_size,
+			       call_data->text->length))
 	DebugPrint ("insertion failed");
+
+      if (call_data->text->encoding_is_wchar)
+	/* We must free the conversion results.  */
+	XLFree (multi_byte_string);
     }
 
   /* Now set the caret position.  */
@@ -2279,9 +2385,9 @@ CreateIC (TextInput *input)
 
       if (input->current_state.pending & PendingCursorRectangle)
 	{
-	  spot.x = input->current_state.cursor_x;
-	  spot.y = (input->current_state.cursor_y
-		    + input->current_state.cursor_height - 1);
+	  spot.x = CurrentCursorX (input);
+	  spot.y = (CurrentCursorY (input)
+		    + CurrentCursorHeight (input));
 	}
       else
 	{
@@ -3021,6 +3127,12 @@ LookupString (TextInput *input, XEvent *event, KeySym *keysym_return)
   Status status;
   KeySym keysym;
 
+  if (event->xkey.type != KeyPress)
+    {
+      DebugPrint ("ignoring key release event");
+      return False;
+    }
+
   /* First, do XmbLookupString with the default buffer size.  */
   buffer = alloca (256);
   nbytes = XmbLookupString (input->xic, &event->xkey,
@@ -3059,11 +3171,12 @@ LookupString (TextInput *input, XEvent *event, KeySym *keysym_return)
   /* Convert the string.  */
   buffer = ConvertString (buffer, nbytes, &buffer_size);
 
-  /* If the string happens to consist of only 1 character and a keysym
-     was also found, give preference to the keysym.  */
-  if (buffer_size == 1 && status == XLookupBoth)
+  /* If the string happens to consist of only 1 control character and
+     a keysym was also found, give preference to the keysym.  */
+  if (buffer_size == 1 && status == XLookupBoth
+      && buffer[0] > 0 && buffer[0] < 32)
     {
-      DebugPrint ("using keysym in preference to single char");
+      DebugPrint ("using keysym in preference to single control char");
 
       XFree (buffer);
 
@@ -3081,7 +3194,8 @@ LookupString (TextInput *input, XEvent *event, KeySym *keysym_return)
 }
 
 static Bool
-FilterInputCallback (Seat *seat, Surface *surface, void *event)
+FilterInputCallback (Seat *seat, Surface *surface, void *event,
+		     KeySym *keysym)
 {
   XIDeviceEvent *xev;
   XEvent xkey;
@@ -3118,7 +3232,7 @@ FilterInputCallback (Seat *seat, Surface *surface, void *event)
       /* Otherwise, call XmbLookupString.  If a keysym is returned,
 	 return False.  Otherwise, commit the string looked up and
 	 return True.  */
-      return LookupString (input, &xkey, NULL);
+      return LookupString (input, &xkey, keysym);
     }
 
   /* Otherwise, do nothing.  */
@@ -3204,7 +3318,8 @@ XLTextInputDispatchCoreEvent (Surface *surface, XEvent *event)
 	  else
 	    {
 	      /* Since that failed, dispatch the event to the seat.  */
-	      DebugPrint ("lookup failed; dispatching event to seat");
+	      DebugPrint ("lookup failed; dispatching event to seat; "
+			  "keysym is: %lu", keysym);
 
 	      XLSeatDispatchCoreKeyEvent (im_seat, surface, event, keysym);
 	    }

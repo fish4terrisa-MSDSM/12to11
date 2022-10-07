@@ -1275,7 +1275,7 @@ struct _TextInputFuncs
   void (*focus_out) (Seat *);
 
   /* The last argument is actually an XIDeviceEvent *.  */
-  Bool (*filter_input) (Seat *, Surface *, void *);
+  Bool (*filter_input) (Seat *, Surface *, void *, KeySym *);
 };
 
 extern void XLTextInputDispatchCoreEvent (Surface *, XEvent *);
@@ -1517,7 +1517,4 @@ extern void XLInitSinglePixelBuffer (void);
 #define IntAddWrapv(a, b, r) 		__builtin_add_overflow (a, b, r)
 #define IntSubtractWrapv(a, b, r)	__builtin_sub_overflow (a, b, r)
 #define IntMultiplyWrapv(a, b, r)	__builtin_mul_overflow (a, b, r)
-
-#define ConfigureWidth(event)	((event)->xconfigure.width / global_scale_factor)
-#define ConfigureHeight(event)	((event)->xconfigure.height / global_scale_factor)
 
