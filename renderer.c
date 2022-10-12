@@ -69,15 +69,22 @@ AllocateRenderer (void)
 }
 
 RenderTarget
-RenderTargetFromWindow (Window window)
+RenderTargetFromWindow (Window window, unsigned long standard_event_mask)
 {
-  return render_funcs.target_from_window (window);
+  return render_funcs.target_from_window (window, standard_event_mask);
 }
 
 RenderTarget
 RenderTargetFromPixmap (Pixmap pixmap)
 {
   return render_funcs.target_from_pixmap (pixmap);
+}
+
+void
+RenderSetStandardEventMask (RenderTarget target,
+			    unsigned long standard_event_mask)
+{
+  render_funcs.set_standard_event_mask (target, standard_event_mask);
 }
 
 void
@@ -177,6 +184,37 @@ RenderGetFinishFence (Bool *error)
   return render_funcs.get_finish_fence (error);
 }
 
+PresentCompletionKey
+RenderPresentToWindow (RenderTarget target, RenderBuffer source,
+		       pixman_region32_t *damage,
+		       PresentCompletionFunc callback, void *data)
+{
+  if (!render_funcs.present_to_window)
+    return NULL;
+
+  return render_funcs.present_to_window (target, source,
+					 damage, callback,
+					 data);
+}
+
+void
+RenderCancelPresentationCallback (PresentCompletionKey key)
+{
+  if (!render_funcs.cancel_presentation_callback)
+    return;
+
+  render_funcs.cancel_presentation_callback (key);
+}
+
+void
+RenderCancelPresentation (RenderTarget target)
+{
+  if (!render_funcs.cancel_presentation)
+    return;
+
+  render_funcs.cancel_presentation (target);
+}
+
 DrmFormat *
 RenderGetDrmFormats (int *n_formats)
 {
@@ -267,6 +305,43 @@ Bool
 RenderCanReleaseNow (RenderBuffer buffer)
 {
   return buffer_funcs.can_release_now (buffer);
+}
+
+IdleCallbackKey
+RenderAddIdleCallback (RenderBuffer buffer, RenderTarget target,
+		       BufferIdleFunc function, void *data)
+{
+  return buffer_funcs.add_idle_callback (buffer, target, function, data);
+}
+
+void
+RenderCancelIdleCallback (IdleCallbackKey key)
+{
+  return buffer_funcs.cancel_idle_callback (key);
+}
+
+Bool
+RenderIsBufferIdle (RenderBuffer buffer, RenderTarget target)
+{
+  return buffer_funcs.is_buffer_idle (buffer, target);
+}
+
+void
+RenderWaitForIdle (RenderBuffer buffer, RenderTarget target)
+{
+  if (!buffer_funcs.wait_for_idle)
+    return;
+
+  buffer_funcs.wait_for_idle (buffer, target);
+}
+
+void
+RenderSetNeedWaitForIdle (RenderTarget target)
+{
+  if (!buffer_funcs.set_need_wait_for_idle)
+    return;
+
+  buffer_funcs.set_need_wait_for_idle (target);
 }
 
 void

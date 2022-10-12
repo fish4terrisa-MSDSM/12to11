@@ -90,6 +90,9 @@ struct _FrameClock
      unfrozen until EndFrame.  */
   Bool need_configure, frozen, frozen_until_end_frame;
 
+  /* Whether or not EndFrame was called after StartFrame.  */
+  Bool end_frame_called;
+
   /* The wanted configure value.  */
   uint64_t configure_id;
 
@@ -111,6 +114,9 @@ struct _FrameClock
 
   /* Data for that callback.  */
   void *freeze_callback_data;
+
+  /* Any pending frame synchronization counter value, or 0.  */
+  uint64_t pending_sync_value;
 };
 
 struct _CursorClockCallback
@@ -221,7 +227,51 @@ HandleEndFrame (Timer *timer, void *data, struct timespec time)
      the frame.  */
   RemoveTimer (timer);
   clock->end_frame_timer = NULL;
-  EndFrame (clock);
+
+  if (clock->end_frame_called)
+    EndFrame (clock);
+}
+
+/* Forward declaration.  */
+static void RunFrameCallbacks (FrameClock *);
+
+static void
+FreezeForValue (FrameClock *clock, uint64_t counter_value)
+{
+  /* If it took too long (1 second at 60fps) to obtain the counter
+     value, and said value is now out of date, don't do anything.  */
+
+  if (clock->next_frame_id > counter_value)
+    return;
+
+  /* The frame clock is now frozen, and we will have to wait for a
+     client to ack_configure and then commit something.  */
+
+  if (clock->end_frame_timer)
+    {
+      /* End the frame now, and clear in_frame early.  */
+      RemoveTimer (clock->end_frame_timer);
+      clock->end_frame_timer = NULL;
+
+      if (clock->end_frame_called)
+	EndFrame (clock);
+    }
+
+  /* counter_value - 240 is the value seen by the compositor when the
+     frame contents were frozen in response to a resize.  If it is
+     less than finished_frame_id, run frame callbacks now, or clients
+     like Chromium are confused and hang waiting for frame callbacks
+     to be called.  */
+  if (counter_value - 240 <= clock->finished_frame_id)
+    RunFrameCallbacks (clock);
+
+  /* The reason for clearing in_frame is that otherwise a future
+     Commit after the configuration is acknowledged will not be able
+     to start a new frame and restart the frame clock.  */
+  clock->in_frame = False;
+  clock->need_configure = True;
+  clock->configure_id = counter_value;
+  clock->frozen = True;
 }
 
 static void
@@ -320,6 +370,9 @@ StartFrame (FrameClock *clock, Bool urgent, Bool predict)
   if (clock->frozen_until_end_frame)
     return;
 
+  if (clock->in_frame)
+    return;
+
   if (clock->need_configure)
     {
       clock->next_frame_id = clock->configure_id;
@@ -327,6 +380,7 @@ StartFrame (FrameClock *clock, Bool urgent, Bool predict)
     }
 
   clock->in_frame = True;
+  clock->end_frame_called = False;
 
   /* Set the clock to an odd value; if we want the compositor to
      redraw this frame immediately (since it is running late), make it
@@ -371,6 +425,10 @@ EndFrame (FrameClock *clock)
 
   clock->frozen_until_end_frame = False;
 
+  /* Signal that end_frame was called and it is now safe to finish the
+     frame from the timer.  */
+  clock->end_frame_called = True;
+
   if (!clock->in_frame
       /* If the end of the frame has already been signalled, this
 	 function should just return instead of increasing the counter
@@ -388,6 +446,12 @@ EndFrame (FrameClock *clock)
      received.  */
   clock->next_frame_id += 1;
   clock->finished_frame_id = clock->next_frame_id;
+
+  /* The frame has ended.  Freeze the frame clock if there is a
+     pending sync value.  */
+  if (clock->pending_sync_value)
+    FreezeForValue (clock, clock->pending_sync_value);
+  clock->pending_sync_value = 0;
 
   if (!frame_sync_supported)
     return;
@@ -570,28 +634,15 @@ XLFrameClockHandleFrameEvent (FrameClock *clock, XEvent *event)
       if (value % 2)
 	value += 1;
 
-      /* The frame clock is now frozen, and we will have to wait for a
-	 client to ack_configure and then commit something.  */
-
-      if (clock->end_frame_timer)
-	{
-	  /* End the frame now, and clear in_frame early.  */
-	  RemoveTimer (clock->end_frame_timer);
-	  clock->end_frame_timer = NULL;
-	  EndFrame (clock);
-
-	  /* The reason for clearing in_frame is that otherwise a
-	     future Commit after the configuration is acknowledged
-	     will not be able to start a new frame and restart the
-	     frame clock.  */
-	  clock->in_frame = False;
-	}
-
-      clock->need_configure = True;
-      clock->configure_id = value;
-      clock->frozen = True;
+      /* If a frame is in progress, postpone this frame
+	 synchronization message.  */
+      if (clock->in_frame && !clock->end_frame_called)
+	clock->pending_sync_value = value;
+      else
+	FreezeForValue (clock, value);
 
       if (clock->freeze_callback)
+	/* Call the freeze callback in any case.  */
 	clock->freeze_callback (clock->freeze_callback_data);
     }
 }
@@ -729,6 +780,16 @@ XLFrameClockSetFreezeCallback (FrameClock *clock, void (*callback) (void *),
 {
   clock->freeze_callback = callback;
   clock->freeze_callback_data = data;
+}
+
+uint64_t
+XLFrameClockGetFrameTime (FrameClock *clock)
+{
+  /* Only return the time if it is actually a valid clock time.  */
+  if (!compositor.server_time_monotonic)
+    return 0;
+
+  return clock->last_frame_time;
 }
 
 

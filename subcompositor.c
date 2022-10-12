@@ -310,9 +310,6 @@ struct _View
 
 struct _Subcompositor
 {
-  /* Various flags describing the state of this subcompositor.  */
-  int state;
-
   /* List of all inferiors in compositing order.  */
   List *inferiors, *last;
 
@@ -334,8 +331,28 @@ struct _Subcompositor
   /* Function called with the bounds before each update.  */
   void (*note_bounds) (void *, int, int, int, int);
 
+  /* Function called with the frame counter on each update.  */
+  void (*note_frame) (FrameMode, uint64_t, void *);
+
+  /* The current frame counter, incremented with each frame.  */
+  uint64_t frame_counter;
+
   /* Data for those three functions.  */
   void *opaque_change_data, *input_change_data, *note_bounds_data;
+
+  /* Data for the fourth.  */
+  void *note_frame_data;
+
+  /* Buffers used to store that damage.  */
+  pixman_region32_t prior_damage[2];
+
+  /* The damage region of previous updates.  last_damage is what the
+     damage region was 1 update ago, and before_damage is what the
+     damage region was 2 updates ago.  */
+  pixman_region32_t *last_damage, *before_damage;
+
+  /* The last attached presentation callback, if any.  */
+  PresentCompletionKey present_key;
 
   /* The minimum origin of any surface in this subcompositor.  Used to
      compute the actual size of the subcompositor.  */
@@ -347,15 +364,10 @@ struct _Subcompositor
 
   /* An additional offset to apply when drawing to the target.  */
   int tx, ty;
-
-  /* Buffers used to store that damage.  */
-  pixman_region32_t prior_damage[2];
-
-  /* The damage region of previous updates.  last_damage is what the
-     damage region was 1 update ago, and before_damage is what the
-     damage region was 2 updates ago.  */
-  pixman_region32_t *last_damage, *before_damage;
 #endif
+
+  /* Various flags describing the state of this subcompositor.  */
+  int state;
 };
 
 #ifndef TEST
@@ -1807,6 +1819,16 @@ SubcompositorSetBoundsCallback (Subcompositor *subcompositor,
   subcompositor->note_bounds_data = data;
 }
 
+void
+SubcompositorSetNoteFrameCallback (Subcompositor *subcompositor,
+				   void (*note_frame) (FrameMode, uint64_t,
+						       void *),
+				   void *data)
+{
+  subcompositor->note_frame = note_frame;
+  subcompositor->note_frame_data = data;
+}
+
 static void
 FillBoxesWithTransparency (Subcompositor *subcompositor,
 			   pixman_box32_t *boxes, int nboxes)
@@ -1917,6 +1939,69 @@ IntersectBoxes (pixman_box32_t *in, pixman_box32_t *other,
   return True;
 }
 
+static Bool
+NoViewsAfter (View *first_view)
+{
+  List *list;
+  View *view;
+
+  list = first_view->link->next;
+
+  while (list != first_view->link)
+    {
+      view = list->view;
+
+      if (!view)
+	goto next_1;
+
+      if (IsViewUnmapped (view))
+	{
+	  /* Skip the unmapped view.  */
+	  list = view->inferior;
+	  goto next_1;
+	}
+
+      if (IsSkipped (view))
+	{
+	  /* We must skip this view, as it represents (for
+	     instance) a subsurface that has been added, but not
+	     committed.  */
+	  goto next_1;
+	}
+
+      if (!view->buffer)
+	goto next_1;
+
+      /* There is view in front of view that potentially obscures it.
+	 Bail out! */
+      return False;
+
+    next_1:
+      list = list->next;
+    }
+
+  return True;
+}
+
+static void
+PresentCompletedCallback (void *data)
+{
+  Subcompositor *subcompositor;
+
+  subcompositor = data;
+
+  /* The presentation callback should still be set here.  */
+  XLAssert (subcompositor->present_key != NULL);
+
+  subcompositor->present_key = NULL;
+
+  /* Call the presentation callback if it is still set.  */
+  if (subcompositor->note_frame)
+    subcompositor->note_frame (ModePresented,
+			       subcompositor->frame_counter,
+			       subcompositor->note_frame_data);
+}
+
 void
 SubcompositorUpdate (Subcompositor *subcompositor)
 {
@@ -1928,9 +2013,10 @@ SubcompositorUpdate (Subcompositor *subcompositor)
   int nboxes, i, tx, ty, view_width, view_height;
   Operation op;
   RenderBuffer buffer;
-  int min_x, min_y;
-  int age;
+  int min_x, min_y, age, n_seen;
   DrawParams draw_params;
+  Bool presented;
+  PresentCompletionKey key;
 
   /* Just return if no target was specified.  */
   if (!IsTargetAttached (subcompositor))
@@ -1939,6 +2025,13 @@ SubcompositorUpdate (Subcompositor *subcompositor)
   /* Likewise if the subcompositor is "frozen".  */
   if (IsFrozen (subcompositor))
     return;
+
+  if (subcompositor->present_key)
+    /* Cancel the presentation callback.  The next presentation will
+       either be to an unmapped window, cancel the presentation, or
+       start a new one.  */
+    RenderCancelPresentationCallback (subcompositor->present_key);
+  subcompositor->present_key = NULL;
 
   list = subcompositor->inferiors;
   min_x = subcompositor->min_x;
@@ -1949,6 +2042,8 @@ SubcompositorUpdate (Subcompositor *subcompositor)
   original_start = NULL;
   pixman_region32_init (&temp);
   pixman_region32_init (&update_region);
+  n_seen = 0;
+  presented = False;
 
   start = subcompositor->inferiors->next->view;
   original_start = subcompositor->inferiors->next->view;
@@ -2041,6 +2136,9 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 
 	  if (!view->buffer)
 	    goto next;
+
+	  /* Increase the number of views seen count.  */
+	  n_seen++;
 
 	  /* Obtain the view width and height here.  */
 	  view_width = ViewWidth (view);
@@ -2265,7 +2363,15 @@ SubcompositorUpdate (Subcompositor *subcompositor)
   /* If there's nothing to do, return.  */
 
   if (!start)
+    /* There is no starting view.  Presentation is not cancelled in
+       this case, because the surface should now be unmapped.  */
     goto complete;
+
+  /* Increase the frame count and announce the new frame number.  */
+  if (subcompositor->note_frame)
+    subcompositor->note_frame (ModeStarted,
+			       ++subcompositor->frame_counter,
+			       subcompositor->note_frame_data);
 
   /* Now update all views from start onwards.  */
 
@@ -2311,6 +2417,7 @@ SubcompositorUpdate (Subcompositor *subcompositor)
       view_width = ViewWidth (view);
       view_height = ViewHeight (view);
 
+      /* And the buffer.  */
       buffer = XLRenderBufferFromBuffer (view->buffer);
 
       if (IsGarbaged (subcompositor))
@@ -2337,8 +2444,67 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 				       &draw_params);
 	}
 
+      /* Compute the transform and put it in draw_params.  */
+      ViewComputeTransform (view, &draw_params, True);
+
       if (!first)
 	{
+	  /* See if the first mapped and visible view after start is eligible
+	     for direct presentation.  It is considered eligible if:
+
+	     - its bounds match that of the subcompositor.
+	     - its depth and masks match that of the subcompositor.
+	     - it is not occluded by any other view, above or below.
+	     - it has no transform whatsoever.
+
+	     Also, presentation is done asynchronously, so we only
+	     consider the view as eligible for presentation if
+	     completion callbacks are attached.  */
+
+	  if (!draw_params.flags
+	      && view->abs_x == subcompositor->min_x
+	      && view->abs_y == subcompositor->min_y
+	      && view_width == SubcompositorWidth (subcompositor)
+	      && view_height == SubcompositorHeight (subcompositor)
+	      /* N.B. that n_seen is not set (0) if the view is
+		 garbaged.  */
+	      && (n_seen == 1 || (!n_seen && NoViewsAfter (view)))
+	      && subcompositor->note_frame)
+	    {
+	      /* Direct presentation is okay.  Present the pixmap to
+		 the drawable.  */
+	      if (IsGarbaged (subcompositor))
+		key = RenderPresentToWindow (subcompositor->target, buffer,
+					     NULL, PresentCompletedCallback,
+					     subcompositor);
+	      else
+		key = RenderPresentToWindow (subcompositor->target, buffer,
+					     &update_region,
+					     PresentCompletedCallback,
+					     subcompositor);
+
+	      /* Now set presented to whether or not key is non-NULL.  */
+	      presented = key != NULL;
+
+	      /* And set the presentation callback.  */
+	      subcompositor->present_key = key;
+
+	      if (presented)
+		{
+		  /* If presentation succeeded, don't composite.
+		     Instead, just continue looping to set the input
+		     region if garbaged.  */
+
+		  if (!IsGarbaged (subcompositor) && (age >= 0 && age < 3))
+		    /* And if not garbaged, skip everything.  */
+		    goto present_success;
+		  else
+		    goto present_success_garbaged;
+		}
+	    }
+	  else
+	    RenderCancelPresentation (subcompositor->target);
+
 	  /* The first view with an attached buffer should be drawn
 	     with PictOpSrc so that transparency is applied correctly,
 	     if it contains the entire update region.  */
@@ -2388,10 +2554,11 @@ SubcompositorUpdate (Subcompositor *subcompositor)
       else
 	op = OperationOver;
 
-      first = view;
+      if (presented && (IsGarbaged (subcompositor)
+			|| age < 0 || age >= 3))
+	goto present_success_garbaged;
 
-      /* Compute the transform and put it in draw_params.  */
-      ViewComputeTransform (view, &draw_params, True);
+      first = view;
 
       if (!IsGarbaged (subcompositor) && (age >= 0 && age < 3))
 	{
@@ -2428,11 +2595,6 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 	}
       else
 	{
-	  /* Clear the damaged area, since it will either be drawn or
-	     be obscured.  We didn't get a chance to clear the damage
-	     earlier, since the compositor was garbaged.  */
-	  pixman_region32_clear (&view->damage);
-
 	  /* If the subcompositor is garbaged, composite the entire
 	     view to the right location.  */
 	  RenderComposite (buffer, subcompositor->target, op,
@@ -2446,6 +2608,12 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 			   view_width,
 			   /* height, draw-params.  */
 			   view_height, &draw_params);
+
+	present_success_garbaged:
+	  /* Clear the damaged area, since it will either be drawn or
+	     be obscured.  We didn't get a chance to clear the damage
+	     earlier, since the compositor was garbaged.  */
+	  pixman_region32_clear (&view->damage);
 
 	  /* Also adjust the opaque and input regions here.  */
 
@@ -2500,6 +2668,8 @@ SubcompositorUpdate (Subcompositor *subcompositor)
       list = list->next;
     }
   while (list != subcompositor->inferiors);
+
+ present_success:
 
   /* Swap changes to display.  */
 
@@ -2561,6 +2731,12 @@ SubcompositorUpdate (Subcompositor *subcompositor)
   subcompositor->state &= ~SubcompositorIsGarbaged;
   subcompositor->state &= ~SubcompositorIsOpaqueDirty;
   subcompositor->state &= ~SubcompositorIsInputDirty;
+
+  /* Call the frame complete function if presentation did not happen.  */
+  if (subcompositor->note_frame && !presented)
+    subcompositor->note_frame (ModeComplete,
+			       subcompositor->frame_counter,
+			       subcompositor->note_frame_data);
 }
 
 void
@@ -2734,6 +2910,10 @@ SubcompositorFree (Subcompositor *subcompositor)
   /* Finalize the buffers used to store previous damage.  */
   pixman_region32_fini (&subcompositor->prior_damage[0]);
   pixman_region32_fini (&subcompositor->prior_damage[1]);
+
+  /* Remove the presentation key.  */
+  if (subcompositor->present_key)
+    RenderCancelPresentationCallback (subcompositor->present_key);
 
   XLFree (subcompositor);
 }

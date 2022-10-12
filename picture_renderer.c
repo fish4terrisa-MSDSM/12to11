@@ -31,23 +31,164 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <X11/Xmd.h>
 #include <X11/extensions/dri3proto.h>
+#include <X11/extensions/Xpresent.h>
+#include <X11/extensions/Xfixes.h>
+#include <X11/extensions/shape.h>
 
 typedef struct _DrmFormatInfo DrmFormatInfo;
 typedef struct _DmaBufRecord DmaBufRecord;
 
 typedef struct _PictureBuffer PictureBuffer;
+typedef struct _PictureTarget PictureTarget;
+typedef struct _PresentRecord PresentRecord;
+
+typedef struct _BufferActivityRecord BufferActivityRecord;
+typedef struct _IdleCallback IdleCallback;
+typedef struct _PresentCompletionCallback PresentCompletionCallback;
+
+/* Structure describing an expected PresentIdleNotify from the X
+   server.  */
+
+struct _PresentRecord
+{
+  /* The next and last fields on the buffer.  */
+  PresentRecord *buffer_next, *buffer_last;
+
+  /* The next and last fields on the target.  */
+  PresentRecord *target_next, *target_last;
+
+  /* The buffer.  */
+  PictureBuffer *buffer;
+
+  /* The target.  */
+  PictureTarget *target;
+
+  /* The expected serial.  */
+  uint32_t serial;
+};
+
+/* Structure describing buffer activity.  It is linked onto 3 (!!!)
+   lists.  */
+
+struct _BufferActivityRecord
+{
+  /* The buffer.  */
+  PictureBuffer *buffer;
+
+  /* The target.  */
+  PictureTarget *target;
+
+  /* The counter ID.  */
+  uint64_t id;
+
+  /* The forward links to the three lists.  */
+  BufferActivityRecord *buffer_next, *target_next, *global_next;
+
+  /* The backlinks to the three lists.  */
+  BufferActivityRecord *buffer_last, *target_last, *global_last;
+};
+
+struct _IdleCallback
+{
+  /* The next and last callbacks in this list, attached to the
+     buffer.  */
+  IdleCallback *buffer_next, *buffer_last;
+
+  /* The next and last callbacks in this list, attached to the
+     target.  */
+  IdleCallback *target_next, *target_last;
+
+  /* The associated target.  */
+  PictureTarget *target;
+
+  /* The callback data.  */
+  void *data;
+
+  /* The callback function.  */
+  BufferIdleFunc function;
+};
+
+enum
+  {
+    CanPresent = 1,
+  };
 
 struct _PictureBuffer
 {
   /* The XID of the picture.  */
   Picture picture;
 
+  /* The picture's backing pixmap.  */
+  Pixmap pixmap;
+
+  /* The depth of the picture's backing pixmap.  */
+  int depth;
+
+  /* Flags.  */
+  int flags;
+
   /* The last draw params associated with the picture.  */
   DrawParams params;
+
+  /* List of release records.  */
+  PresentRecord pending;
+
+  /* List of idle callbacks.  */
+  IdleCallback idle_callbacks;
+
+  /* Ongoing buffer activity.  */
+  BufferActivityRecord activity;
+};
+
+enum
+  {
+    PresentationWindowMapped = 1,
+    NoPresentation	     = 2,
+  };
+
+struct _PictureTarget
+{
+  /* The XID of the picture.  */
+  Picture picture;
+
+  /* The backing window.  */
+  Window window;
+
+  /* The presentation window.  This is a window used to present
+     pixmaps to the source.  */
+  Window presentation_window;
+
+  /* Presentation event context.  */
+  XID presentation_event_context;
+
+  /* The standard event mask.  */
+  unsigned long standard_event_mask;
+
+  /* The last known bounds of this render target.  */
+  int width, height;
+
+  /* Flags.  */
+  int flags;
+
+  /* List of release records.  */
+  PresentRecord pending;
+
+  /* List of idle callbacks.  */
+  IdleCallback idle_callbacks;
+
+  /* Ongoing buffer activity.  */
+  BufferActivityRecord activity;
 };
 
 struct _DrmFormatInfo
 {
+  /* PictFormat associated with this format, or NULL if none were
+     found.  */
+  XRenderPictFormat *format;
+
+  /* List of supported screen modifiers.  */
+  uint64_t *supported_modifiers;
+
   /* The DRM format code.  */
   uint32_t format_code;
 
@@ -59,13 +200,6 @@ struct _DrmFormatInfo
 
   /* The number of bits per pixel.  */
   int bits_per_pixel;
-
-  /* PictFormat associated with this format, or NULL if none were
-     found.  */
-  XRenderPictFormat *format;
-
-  /* List of supported screen modifiers.  */
-  uint64_t *supported_modifiers;
 
   /* Number of supported screen modifiers.  */
   int n_supported_modifiers;
@@ -90,7 +224,34 @@ struct _DmaBufRecord
 
   /* The next and last pending buffers in this list.  */
   DmaBufRecord *next, *last;
+
+  /* The depth of the pixmap.  */
+  int depth;
 };
+
+/* Structure describing presentation callback.  The callback is run
+   upon a given presentation being completed.  */
+
+struct _PresentCompletionCallback
+{
+  /* The next and last presentation callbacks.  */
+  PresentCompletionCallback *next, *last;
+
+  /* The callback itself.  */
+  PresentCompletionFunc callback;
+
+  /* Data the callback will be called with.  */
+  void *data;
+
+  /* The function.  */
+  PresentCompletionFunc function;
+
+  /* The presentation ID.  */
+  uint32_t id;
+};
+
+/* Hash table mapping between presentation windows and targets.  */
+static XLAssocTable *xid_table;
 
 /* The identity transform.  */
 
@@ -152,6 +313,24 @@ static DrmFormatInfo all_formats[] =
       .alpha = 0xff,
       .bits_per_pixel = 32,
     },
+    {
+      .format_code = DRM_FORMAT_XRGB4444,
+      .depth = 15,
+      .red = 0xf00,
+      .green = 0xf0,
+      .blue = 0xf,
+      .alpha = 0x0,
+      .bits_per_pixel = 16,
+    },
+    {
+      .format_code = DRM_FORMAT_ARGB4444,
+      .depth = 16,
+      .red = 0xf00,
+      .green = 0xf0,
+      .blue = 0xf,
+      .alpha = 0xf000,
+      .bits_per_pixel = 16,
+    },
   };
 
 /* DRM formats reported to the caller.  */
@@ -178,8 +357,277 @@ static XPixmapFormatValues *x_formats;
 /* Number of those formats.  */
 static int num_x_formats;
 
-/* XRender and DRI3-based renderer.  A RenderTarget is just a
-   Picture.  */
+/* The serial for PresentNotify events.  */
+static uint32_t present_serial;
+
+/* The major opcode of the presentation extension.  */
+static int present_opcode;
+
+/* Ongoing buffer activity.  */
+static BufferActivityRecord all_activity;
+
+/* List of all presentations that have not yet been completed.  */
+static PresentCompletionCallback all_completion_callbacks;
+
+/* XRender, DRI3 and XPresent-based renderer.  A RenderTarget is just
+   a Picture.  Here is a rough explanation of how the buffer release
+   machinery works.
+
+   Normally, upon a request to composite a buffer to a target, certain
+   rendering commands are issued to the X server, after which a
+   counter is increased.  Once an event is received confirming the
+   increase in the counter (by which time all rendering requests
+   should have been processed by the server), the idle callback is run
+   for the pertinent target.
+
+   If the target is destroyed, the idle callback is not run.
+
+   However, the buffer is presented to a target instead of being
+   composited, that fact is noted, and the idle callback is run upon
+   receiving the PresentIdleNotify event instead.
+
+   And here is an explanation of pixmaps for dummies.
+
+   A pixmap is just a pixel buffer.  The X server supports several
+   pixel storage formats, each of which maps between a depth, the
+   number of bits per pixel, and the scanline pad.  The depth is the
+   number of significant bits inside each pixel, the bits per pixel
+   contains the number of bits taken up by a pixel (it is always a
+   multiple of 8), and the scanline pad is the value (in bits) by
+   which the stride must be padded.  So, given a depth of 24, a bpp of
+   32, and a scanline_pad of 32, the stride of a pixmap for a given
+   width is:
+
+     Pad (WIDTH * (32 / 8), 32 / 8)
+
+   Pixmaps themselves have no format information; they are simply a
+   collection of pixel values.  Normally, the visual tells the X
+   server how to put the pixel onto the display server, but in the X
+   rendering extension a picture format does instead.  The picture
+   format specifies the alpha, red, green, and blue channel masks that
+   are then used to put together the color corresponding to a pixel.
+
+   A buffer must thus consist of a picture format, and a pixmap with a
+   specified depth to be useful.
+
+   X always uses premultiplied alpha.  Thankfully, Wayland does
+   too.  */
+
+
+
+static uint64_t
+SendRoundtripMessage (void)
+{
+  XEvent event;
+  static uint64_t id;
+
+  /* Send a message to the X server with a monotonically increasing
+     counter.  This is necessary because the connection to the X
+     server does not behave synchronously, and receiving the message
+     tells us that the X server has finished processing all requests
+     that access the buffer.  */
+
+  memset (&event, 0, sizeof event);
+
+  id += 1;
+  event.xclient.type = ClientMessage;
+  event.xclient.window = round_trip_window;
+  event.xclient.message_type = _XL_BUFFER_RELEASE;
+  event.xclient.format = 32;
+
+  event.xclient.data.l[0] = id >> 31 >> 1;
+  event.xclient.data.l[1] = id & 0xffffffff;
+
+  XSendEvent (compositor.display, round_trip_window, False,
+	      NoEventMask, &event);
+  return id;
+}
+
+/* Find an existing buffer activity record matching the given buffer
+   and target.  */
+
+static BufferActivityRecord *
+FindBufferActivityRecord (PictureBuffer *buffer, PictureTarget *target)
+{
+  BufferActivityRecord *record;
+
+  /* Look through the global activity list for a record matching
+     the given values.  */
+  record = all_activity.global_next;
+  while (record != &all_activity)
+    {
+      if (record->buffer == buffer
+	  && record->target == target)
+	return record;
+
+      record = record->global_next;
+    }
+
+  return NULL;
+}
+
+/* Record buffer activity involving the given buffer and target.  */
+
+static void
+RecordBufferActivity (RenderBuffer src, RenderTarget dest)
+{
+  BufferActivityRecord *record;
+  PictureBuffer *buffer;
+  PictureTarget *target;
+
+  buffer = src.pointer;
+  target = dest.pointer;
+
+  /* Try to find an existing record.  */
+  record = FindBufferActivityRecord (buffer, target);
+
+  if (!record)
+    {
+      record = XLCalloc (1, sizeof *record);
+
+      /* Buffer activity is actually linked on 3 different lists:
+
+	 - a global list, which is used to actually look up buffer
+           activity in response to events.  A list is faster than a
+           hash table, as there is not much activity going on at any
+           given time.
+
+	 - a buffer list, which is used to remove buffer activity on
+           buffer destruction.
+
+	 - a target list, which is used to remove buffer activity on
+           target destruction.  */
+      record->buffer_next = buffer->activity.buffer_next;
+      record->buffer_last = &buffer->activity;
+      record->target_next = target->activity.target_next;
+      record->target_last = &target->activity;
+      record->global_next = all_activity.global_next;
+      record->global_last = &all_activity;
+      buffer->activity.buffer_next->buffer_last = record;
+      buffer->activity.buffer_next = record;
+      target->activity.target_next->target_last = record;
+      target->activity.target_next = record;
+      all_activity.global_next->global_last = record;
+      all_activity.global_next = record;
+
+      /* Set the appropriate values.  */
+      record->buffer = buffer;
+      record->target = target;
+    }
+
+  record->id = SendRoundtripMessage ();
+}
+
+static void
+RunIdleCallbacks (PictureBuffer *buffer, PictureTarget *target)
+{
+  IdleCallback *callback, *last;
+
+  callback = buffer->idle_callbacks.buffer_next;
+  while (callback != &buffer->idle_callbacks)
+    {
+      if (callback->target == target)
+	{
+	  /* Run the callback and then free it.  */
+	  callback->function ((RenderBuffer) (void *) buffer,
+			      callback->data);
+	  callback->buffer_next->buffer_last = callback->buffer_last;
+	  callback->buffer_last->buffer_next = callback->buffer_next;
+	  callback->target_next->target_last = callback->target_last;
+	  callback->target_last->target_next = callback->target_next;
+	  last = callback;
+	  callback = callback->buffer_next;
+	  XLFree (last);
+	}
+      else
+	callback = callback->buffer_next;
+    }
+
+  return;
+}
+
+static void
+MaybeRunIdleCallbacks (PictureBuffer *buffer, PictureTarget *target)
+{
+  BufferActivityRecord *record;
+  PresentRecord *presentation;
+
+  /* Look through BUFFER's list of activity and presentation records.
+     If there is nothing left pertaining to TARGET, then run idle
+     callbacks.  */
+  record = buffer->activity.buffer_next;
+  while (record != &buffer->activity)
+    {
+      if (record->target == target)
+	/* There is still pending activity.  */
+	return;
+
+      record = record->buffer_next;
+    }
+
+  /* Next, loop through BUFFER's list of presentation records.  If the
+     buffer is still busy on TARGET, then return.  */
+  presentation = buffer->pending.buffer_next;
+  while (presentation != &buffer->pending)
+    {
+      if (presentation->target == target)
+	/* There is still pending activity.  */
+	return;
+
+      presentation = presentation->buffer_next;
+    }
+
+  /* Run idle callbacks.  */
+  RunIdleCallbacks (buffer, target);
+}
+
+static void
+UnlinkActivityRecord (BufferActivityRecord *record)
+{
+  record->buffer_last->buffer_next = record->buffer_next;
+  record->buffer_next->buffer_last = record->buffer_last;
+  record->target_last->target_next = record->target_next;
+  record->target_next->target_last = record->target_last;
+  record->global_last->global_next = record->global_next;
+  record->global_next->global_last = record->global_last;
+}
+
+/* Handle an event saying that the X server has completed everything
+   up to ID.  */
+
+static void
+HandleActivityEvent (uint64_t counter)
+{
+  BufferActivityRecord *record;
+
+  /* Look through the global activity list for a record matching
+     counter.  */
+  record = all_activity.global_next;
+  while (record != &all_activity)
+    {
+      if (record->id == counter)
+	break;
+
+      record = record->global_next;
+    }
+
+  /* If record is all_activity (meaning no matching record was found),
+     return.  */
+  if (record == &all_activity)
+    return;
+
+  /* Remove the record.  Then, run any callbacks pertaining to it.
+     This code mandates that there only be a single activity record
+     for each buffer-target combination on the global list at any
+     given time.  */
+  UnlinkActivityRecord (record);
+  MaybeRunIdleCallbacks (record->buffer, record->target);
+
+  /* Free the record.  */
+  XLFree (record);
+}
+
+
 
 static Visual *
 PickVisual (int *depth)
@@ -212,44 +660,166 @@ PickVisual (int *depth)
 static Bool
 InitRenderFuncs (void)
 {
+  int major, minor, error_base, event_base;
+  XSetWindowAttributes attrs;
+
   /* Set up the default visual.  */
   compositor.visual = PickVisual (&compositor.n_planes);
+
+  /* Initialize the presentation extension.  */
+  if (!XPresentQueryExtension (compositor.display,
+			       &present_opcode,
+			       &error_base, &event_base)
+      || !XPresentQueryVersion (compositor.display,
+				&major, &minor))
+    {
+      fprintf (stderr, "the X presentation extension is not supported"
+	       " by this X server");
+      return False;
+    }
+
+  /* Create an unmapped, InputOnly window, that is used to receive
+     roundtrip events.  */
+  attrs.override_redirect = True;
+  round_trip_window = XCreateWindow (compositor.display,
+				     DefaultRootWindow (compositor.display),
+				     -1, -1, 1, 1, 0, CopyFromParent, InputOnly,
+				     CopyFromParent, CWOverrideRedirect,
+				     &attrs);
+
+  /* Initialize the hash table between presentation windows and
+     targets.  */
+  xid_table = XLCreateAssocTable (256);
 
   /* Return success if the visual was found.  */
   return compositor.visual != NULL;
 }
 
 static RenderTarget
-TargetFromDrawable (Drawable drawable)
+TargetFromDrawable (Drawable drawable, Window window,
+		    unsigned long standard_event_mask)
 {
   XRenderPictureAttributes picture_attrs;
+  PictureTarget *target;
 
   /* This is just to pacify GCC; picture_attrs is not used as mask is
      0.  */
   memset (&picture_attrs, 0, sizeof picture_attrs);
+  target = XLCalloc (1, sizeof *target);
+  target->window = window;
+  target->picture = XRenderCreatePicture (compositor.display,
+					  drawable,
+					  compositor.argb_format,
+					  0, &picture_attrs);
 
-  return (RenderTarget) XRenderCreatePicture (compositor.display,
-					      drawable,
-					      compositor.argb_format,
-					      0, &picture_attrs);
+  /* Initialize the list of release records.  */
+  target->pending.target_next = &target->pending;
+  target->pending.target_last = &target->pending;
+
+  /* Initialize the list of target activity.  */
+  target->activity.target_next = &target->activity;
+  target->activity.target_last = &target->activity;
+
+  /* And idle callbacks.  */
+  target->idle_callbacks.target_next = &target->idle_callbacks;
+  target->idle_callbacks.target_last = &target->idle_callbacks;
+
+  /* And the event mask.  */
+  target->standard_event_mask = standard_event_mask;
+
+  return (RenderTarget) (void *) target;
 }
 
 static RenderTarget
 TargetFromPixmap (Pixmap pixmap)
 {
-  return TargetFromDrawable (pixmap);
+  return TargetFromDrawable (pixmap, None, NoEventMask);
 }
 
 static RenderTarget
-TargetFromWindow (Window window)
+TargetFromWindow (Window window, unsigned long event_mask)
 {
-  return TargetFromDrawable (window);
+  return TargetFromDrawable (window, window, event_mask);
+}
+
+static void
+SetStandardEventMask (RenderTarget target, unsigned long standard_event_mask)
+{
+  PictureTarget *pict_target;
+
+  pict_target = target.pointer;
+
+  /* Set the standard event mask.  This is used to temporarily
+     suppress exposures.  */
+  pict_target->standard_event_mask = standard_event_mask;
+}
+
+static void
+NoteTargetSize (RenderTarget target, int width, int height)
+{
+  PictureTarget *pict_target;
+  XSetWindowAttributes attrs;
+
+  pict_target = target.pointer;
+
+  if (pict_target->presentation_window != None)
+    {
+      /* The presentation window already exists; resize it if the size
+	 changed.  */
+
+      if (pict_target->width != width
+	  || pict_target->height != height)
+	{
+	  XResizeWindow (compositor.display,
+			 pict_target->presentation_window,
+			 width, height);
+	  pict_target->width = width;
+	  pict_target->height = height;
+	}
+
+      return;
+    }
+
+  pict_target->width = width;
+  pict_target->height = height;
+
+  if (pict_target->window == None)
+    /* This is a pixmap target.  */
+    return;
+
+  /* Create a window that will be used to present pixmaps to the
+     screen.  */
+  pict_target->presentation_window
+    = XCreateWindow (compositor.display, pict_target->window,
+		     0, 0, width, height, 0, CopyFromParent,
+		     InputOutput, CopyFromParent, 0, &attrs);
+
+  /* Empty the input shape.  */
+  XShapeCombineRectangles (compositor.display,
+			   pict_target->presentation_window,
+			   ShapeInput, 0, 0, NULL, 0, ShapeSet,
+			   Unsorted);
+
+  /* Start selecting for presentation events from the given
+     window.  */
+  pict_target->presentation_event_context
+    = XPresentSelectInput (compositor.display,
+			   pict_target->presentation_window,
+			   PresentIdleNotifyMask
+			   | PresentCompleteNotifyMask);
+
+  /* Add the window to the hash table.  */
+  XLMakeAssoc (xid_table, pict_target->presentation_window,
+	       pict_target);
 }
 
 static Picture
 PictureFromTarget (RenderTarget target)
 {
-  return target.xid;
+  PictureTarget *pict_target;
+
+  pict_target = target.pointer;
+  return pict_target->picture;
 }
 
 static void
@@ -259,9 +829,72 @@ FreePictureFromTarget (Picture picture)
 }
 
 static void
+RemovePresentRecord (PresentRecord *record)
+{
+  record->target_next->target_last = record->target_last;
+  record->target_last->target_next = record->target_next;
+  record->buffer_next->buffer_last = record->buffer_last;
+  record->buffer_last->buffer_next = record->buffer_next;
+
+  XLFree (record);
+}
+
+static void
 DestroyRenderTarget (RenderTarget target)
 {
-  XRenderFreePicture (compositor.display, target.xid);
+  PictureTarget *pict_target;
+  PresentRecord *record, *last;
+  BufferActivityRecord *activity_record, *activity_last;
+  IdleCallback *idle, *idle_last;
+
+  pict_target = target.pointer;
+
+  if (pict_target->presentation_window)
+    {
+      XPresentFreeInput (compositor.display,
+			 pict_target->presentation_window,
+			 pict_target->presentation_event_context);
+      XDestroyWindow (compositor.display,
+		      pict_target->presentation_window);
+      XLDeleteAssoc (xid_table, pict_target->presentation_window);
+
+      /* Free attached presentation records.  */
+      record = pict_target->pending.target_next;
+      while (record != &pict_target->pending)
+	{
+	  last = record;
+	  record = record->target_next;
+
+	  /* Free the record.  */
+	  RemovePresentRecord (last);
+	}
+    }
+
+  /* Free all activity associated with this target.  */
+  activity_record = pict_target->activity.target_next;
+  while (activity_record != &pict_target->activity)
+    {
+      activity_last = activity_record;
+      activity_record = activity_record->target_next;
+
+      UnlinkActivityRecord (activity_last);
+      XLFree (activity_last);
+    }
+
+  /* Free all idle callbacks on this target.  */
+  idle = pict_target->idle_callbacks.target_next;
+  while (idle != &pict_target->idle_callbacks)
+    {
+      idle_last = idle;
+      idle = idle->target_next;
+
+      /* Free the callback without doing anything else with it.  */
+      XLFree (idle_last);
+    }
+
+  XRenderFreePicture (compositor.display,
+		      pict_target->picture);
+  XFree (pict_target);
 }
 
 static void
@@ -271,6 +904,9 @@ FillBoxesWithTransparency (RenderTarget target, pixman_box32_t *boxes,
   XRectangle *rects;
   static XRenderColor color;
   int i;
+  PictureTarget *pict_target;
+
+  pict_target = target.pointer;
 
   if (nboxes < 256)
     rects = alloca (sizeof *rects * nboxes);
@@ -286,19 +922,56 @@ FillBoxesWithTransparency (RenderTarget target, pixman_box32_t *boxes,
     }
 
   XRenderFillRectangles (compositor.display, PictOpClear,
-			 target.xid, &color, rects, nboxes);
+			 pict_target->picture, &color, rects,
+			 nboxes);
 
   if (nboxes >= 256)
     XLFree (rects);
 }
 
+static XserverRegion
+ServerRegionFromRegion (pixman_region32_t *region)
+{
+  XRectangle *rects;
+  int i, nboxes;
+  pixman_box32_t *boxes;
+  XserverRegion server_region;
+
+  boxes = pixman_region32_rectangles (region, &nboxes);
+
+  if (nboxes < 256)
+    rects = alloca (sizeof *rects * nboxes);
+  else
+    rects = XLMalloc (sizeof *rects * nboxes);
+
+  for (i = 0; i < nboxes; ++i)
+    {
+      rects[i].x = BoxStartX (boxes[i]);
+      rects[i].y = BoxStartY (boxes[i]);
+      rects[i].width = BoxWidth (boxes[i]);
+      rects[i].height = BoxHeight (boxes[i]);
+    }
+
+  server_region = XFixesCreateRegion (compositor.display, rects,
+				      nboxes);
+
+  if (nboxes >= 256)
+    XLFree (rects);
+
+  return server_region;
+}
+
 static void
 ClearRectangle (RenderTarget target, int x, int y, int width, int height)
 {
+  PictureTarget *pict_target;
   static XRenderColor color;
 
+  pict_target = target.pointer;
+
   XRenderFillRectangle (compositor.display, PictOpClear,
-			target.xid, &color, x, y, width, height);
+			pict_target->picture, &color, x, y,
+			width, height);
 }
 
 static int
@@ -416,8 +1089,10 @@ Composite (RenderBuffer buffer, RenderTarget target,
 	   int width, int height, DrawParams *draw_params)
 {
   PictureBuffer *picture_buffer;
+  PictureTarget *picture_target;
 
   picture_buffer = buffer.pointer;
+  picture_target = target.pointer;
 
   /* Maybe set the transform if the parameters changed.  (draw_params
      specifies a transform to apply to the buffer, not to the
@@ -426,11 +1101,15 @@ Composite (RenderBuffer buffer, RenderTarget target,
 
   /* Do the compositing.  */
   XRenderComposite (compositor.display, ConvertOperation (op),
-		    picture_buffer->picture, None, target.xid,
+		    picture_buffer->picture, None,
+		    picture_target->picture,
 		    /* src-x, src-y, mask-x, mask-y.  */
 		    src_x, src_y, 0, 0,
 		    /* dst-x, dst-y, width, height.  */
 		    x, y, width, height);
+
+  /* Record pending buffer activity.  */
+  RecordBufferActivity (buffer, target);
 }
 
 static int
@@ -471,11 +1150,191 @@ GetFinishFence (Bool *error)
   return -1;
 }
 
+static PresentRecord *
+FindPresentRecord (PictureBuffer *buffer, PictureTarget *target)
+{
+  PresentRecord *record;
+
+  record = buffer->pending.buffer_next;
+  while (record != &buffer->pending)
+    {
+      if (record->target == target)
+	return record;
+
+      record = record->buffer_next;
+    }
+
+  /* No matching record was found.  */
+  return NULL;
+}
+
+static PresentRecord *
+AllocateRecord (PictureBuffer *buffer, PictureTarget *target)
+{
+  PresentRecord *record;
+
+  /* Allocate a record and link it onto both BUFFER and TARGET.  */
+  record = XLCalloc (1, sizeof *record);
+  record->buffer_next = buffer->pending.buffer_next;
+  record->buffer_last = &buffer->pending;
+  buffer->pending.buffer_next->buffer_last = record;
+  buffer->pending.buffer_next = record;
+  record->target_next = target->pending.target_next;
+  record->target_last = &target->pending;
+  target->pending.target_next->target_last = record;
+  target->pending.target_next = record;
+  record->buffer = buffer;
+  record->target = target;
+
+  return record;
+}
+
+/* Direct presentation support.  When a surface has no transform
+   applied, its pixmap can be presented directly onto a window
+   target.  */
+
+static PresentCompletionKey
+PresentToWindow (RenderTarget target, RenderBuffer source,
+		 pixman_region32_t *damage,
+		 PresentCompletionFunc callback, void *data)
+{
+  PictureBuffer *buffer;
+  PictureTarget *pict_target;
+  XserverRegion region;
+  PresentRecord *record;
+  PresentCompletionCallback *callback_rec;
+
+  /* Present SOURCE onto TARGET.  Return False if the presentation is
+     not supported.  */
+  buffer = source.pointer;
+  pict_target = target.pointer;
+
+  if (pict_target->flags & NoPresentation)
+    return NULL;
+
+  /* If the depth is not the same as the window, don't present.  */
+  if (buffer->depth != compositor.n_planes)
+    return NULL;
+
+  if (!(buffer->flags & CanPresent))
+    return NULL;
+
+  if (pict_target->presentation_window == None)
+    return NULL;
+
+  /* Map the presentation window if necessary.  */
+
+  if (!(pict_target->flags & PresentationWindowMapped))
+    XMapWindow (compositor.display,
+		pict_target->presentation_window);
+
+  pict_target->flags |= PresentationWindowMapped;
+
+  /* Build the damage region.  */
+  if (damage)
+    region = ServerRegionFromRegion (damage);
+  else
+    region = None;
+
+  /* Present the pixmap now from the damage, immediately.  */
+  XPresentPixmap (compositor.display,
+		  pict_target->presentation_window, buffer->pixmap,
+		  ++present_serial, None, region, 0, 0, None,
+		  None, None, PresentOptionAsync, 0, 0, 0,
+		  NULL, 0);
+
+  if (region)
+    XFixesDestroyRegion (compositor.display, region);
+
+  /* Now, we must wait for pict_target to release the buffer.  See if
+     a presentation to this target has already been recorded.  */
+  record = FindPresentRecord (buffer, pict_target);
+
+  /* If it was, just set the serial.  */
+  if (record)
+    record->serial = present_serial;
+  else
+    {
+      /* Otherwise, allocate and attach a record.  */
+      record = AllocateRecord (buffer, pict_target);
+      record->serial = present_serial;
+    }
+
+  /* Allocate a presentation completion callback.  */
+  callback_rec = XLMalloc (sizeof *callback_rec);
+  callback_rec->id = present_serial;
+  callback_rec->next = all_completion_callbacks.next;
+  callback_rec->last = &all_completion_callbacks;
+  all_completion_callbacks.next->last = callback_rec;
+  all_completion_callbacks.next = callback_rec;
+  callback_rec->function = callback;
+  callback_rec->data = data;
+  callback_rec->id = present_serial;
+
+  return callback_rec;
+}
+
+/* Cancel the given presentation callback.  */
+
+static void
+CancelPresentationCallback (PresentCompletionKey key)
+{
+  PresentCompletionCallback *callback;
+
+  callback = key;
+  callback->next->last = callback->last;
+  callback->last->next = callback->next;
+
+  XLFree (callback);
+}
+
+static void
+CancelPresentation (RenderTarget target)
+{
+  PictureTarget *pict_target;
+  PictureBuffer *last_buffer;
+  PresentRecord *record, *last;
+
+  pict_target = target.pointer;
+
+  if (pict_target->flags & PresentationWindowMapped)
+    {
+      /* Temporarily suppress exposures on the parent.  */
+      XSelectInput (compositor.display, pict_target->window,
+		    pict_target->standard_event_mask &~ ExposureMask);
+
+      XUnmapWindow (compositor.display,
+		    pict_target->presentation_window);
+
+      /* Allow exposures again.  */
+      XSelectInput (compositor.display, pict_target->window,
+		    pict_target->standard_event_mask);
+    }
+
+  pict_target->flags &= ~PresentationWindowMapped;
+
+  /* Release every buffer presented up to this point.  */
+  record = pict_target->pending.target_next;
+  while (record != &pict_target->pending)
+    {
+      last = record;
+      record = record->target_next;
+
+      last_buffer = last->buffer;
+      RemovePresentRecord (last);
+
+      /* Run idle callbacks if this is now idle.  */
+      MaybeRunIdleCallbacks (last_buffer, pict_target);
+    }
+}
+
 static RenderFuncs picture_render_funcs =
   {
     .init_render_funcs = InitRenderFuncs,
     .target_from_window = TargetFromWindow,
     .target_from_pixmap = TargetFromPixmap,
+    .set_standard_event_mask = SetStandardEventMask,
+    .note_target_size = NoteTargetSize,
     .picture_from_target = PictureFromTarget,
     .free_picture_from_target = FreePictureFromTarget,
     .destroy_render_target = DestroyRenderTarget,
@@ -487,6 +1346,9 @@ static RenderFuncs picture_render_funcs =
     .wait_fence = WaitFence,
     .delete_fence = DeleteFence,
     .get_finish_fence = GetFinishFence,
+    .present_to_window = PresentToWindow,
+    .cancel_presentation_callback = CancelPresentationCallback,
+    .cancel_presentation = CancelPresentation,
     .flags = NeverAges,
   };
 
@@ -599,7 +1461,7 @@ FindSupportedModifiers (int *pair_count_return)
   Window check_window;
   xcb_dri3_get_supported_modifiers_cookie_t *cookies;
   xcb_dri3_get_supported_modifiers_reply_t *reply;
-  int i, length, pair_count;
+  int i, length, pair_count, j;
   uint64_t *mods;
 
   cookies = alloca (sizeof *cookies * ArrayElements (all_formats));
@@ -620,8 +1482,8 @@ FindSupportedModifiers (int *pair_count_return)
 
 	  /* pair_count is the number of format-modifier pairs that
 	     will be returned.  First, add one for each implicit
-	     modifier.  */
-	  pair_count += 1;
+	     modifier, and another one for the linear modifier.  */
+	  pair_count += 2;
 	}
     }
 
@@ -647,8 +1509,15 @@ FindSupportedModifiers (int *pair_count_return)
       all_formats[i].supported_modifiers = XLMalloc (sizeof *mods * length);
       all_formats[i].n_supported_modifiers = length;
 
-      /* Then, add length for each explicit modifier.  */
-      pair_count += length;
+      for (j = 0; j < length; ++j)
+	{
+	  /* Then, add length for each explicit modifier that wasn't
+	     already specified.  */
+
+	  if (mods[j] != DRM_FORMAT_MOD_INVALID
+	      && mods[j] != DRM_FORMAT_MOD_LINEAR)
+	    pair_count += length;
+	}
 
       memcpy (all_formats[i].supported_modifiers, mods,
 	      sizeof *mods * length);
@@ -689,13 +1558,28 @@ InitDrmFormats (void)
       drm_formats[n].drm_modifier = DRM_FORMAT_MOD_INVALID;
       n++;
 
+      /* Check n < pair_count.  */
+      XLAssert (n < pair_count);
+
+      /* And the linear modifier.  */
+      drm_formats[n].drm_format = all_formats[i].format_code;
+      drm_formats[n].drm_modifier = DRM_FORMAT_MOD_LINEAR;
+      n++;
+
       /* Now add every supported explicit modifier.  */
       for (j = 0; j < all_formats[i].n_supported_modifiers; ++i)
 	{
+	  if ((all_formats[i].supported_modifiers[j]
+	       == DRM_FORMAT_MOD_INVALID)
+	      || (all_formats[i].supported_modifiers[j]
+		  == DRM_FORMAT_MOD_LINEAR))
+	    /* Ignore previously specified modifiers.  */
+	    continue;
+
 	  /* Check n < pair_count.  */
 	  XLAssert (n < pair_count);
 
-	  /* Add the implicit modifier.  */
+	  /* Add the specified modifier.  */
 	  drm_formats[n].drm_format = all_formats[i].format_code;
 	  drm_formats[n].drm_modifier
 	    = all_formats[i].supported_modifiers[j];
@@ -827,6 +1711,18 @@ CloseFileDescriptors (DmaBufAttributes *attributes)
     close (attributes->fds[i]);
 }
 
+static Bool
+PictFormatIsPresentable (XRenderPictFormat *format)
+{
+  /* If format has the same masks as the visual format, then it is
+     presentable.  */
+  if (!memcmp (&format->direct, &compositor.argb_format->direct,
+	       sizeof format->direct))
+    return True;
+
+  return False;
+}
+
 static RenderBuffer
 BufferFromDmaBuf (DmaBufAttributes *attributes, Bool *error)
 {
@@ -881,11 +1777,28 @@ BufferFromDmaBuf (DmaBufAttributes *attributes, Bool *error)
 
   picture = XRenderCreatePicture (compositor.display, pixmap,
 				  format, 0, &picture_attrs);
-  XFreePixmap (compositor.display, pixmap);
 
   /* Create the wrapper object.  */
   buffer = XLCalloc (1, sizeof *buffer);
   buffer->picture = picture;
+  buffer->pixmap = pixmap;
+  buffer->depth = depth;
+
+  /* Initialize the list of release records.  */
+  buffer->pending.buffer_next = &buffer->pending;
+  buffer->pending.buffer_last = &buffer->pending;
+
+  /* And the list of idle funcs.  */
+  buffer->idle_callbacks.buffer_next = &buffer->idle_callbacks;
+  buffer->idle_callbacks.buffer_last = &buffer->idle_callbacks;
+
+  /* And the list of pending activity.  */
+  buffer->activity.buffer_next = &buffer->activity;
+  buffer->activity.buffer_last = &buffer->activity;
+
+  /* If the format is presentable, mark the buffer as presentable.  */
+  if (PictFormatIsPresentable (format))
+    buffer->flags |= CanPresent;
 
   return (RenderBuffer) (void *) buffer;
 
@@ -939,11 +1852,28 @@ FinishDmaBufRecord (DmaBufRecord *pending, Bool success)
 				      pending->pixmap,
 				      pending->format, 0,
 				      &picture_attrs);
-      XFreePixmap (compositor.display, pending->pixmap);
 
       /* Create the wrapper structure.  */
       buffer = XLCalloc (1, sizeof *buffer);
       buffer->picture = picture;
+      buffer->pixmap = pending->pixmap;
+      buffer->depth = pending->depth;
+
+      /* Initialize the list of release records.  */
+      buffer->pending.buffer_next = &buffer->pending;
+      buffer->pending.buffer_last = &buffer->pending;
+
+      /* And the list of idle funcs.  */
+      buffer->idle_callbacks.buffer_next = &buffer->idle_callbacks;
+      buffer->idle_callbacks.buffer_last = &buffer->idle_callbacks;
+
+      /* And the list of pending activity.  */
+      buffer->activity.buffer_next = &buffer->activity;
+      buffer->activity.buffer_last = &buffer->activity;
+
+      /* If the format is presentable, mark the buffer as presentable.  */
+      if (PictFormatIsPresentable (pending->format))
+	buffer->flags |= CanPresent;
 
       /* Call the creation success function with the new picture.  */
       pending->success_func ((RenderBuffer) (void *) buffer,
@@ -1029,6 +1959,7 @@ BufferFromDmaBufAsync (DmaBufAttributes *attributes,
   record->format
     = PictFormatForDmabufFormat (attributes->drm_format);
   record->pixmap = pixmap;
+  record->depth = depth;
   XLAssert (record->format != NULL);
 
   record->next = pending_success.next;
@@ -1117,15 +2048,32 @@ BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
 			 depth, seg, attributes->offset);
   xcb_shm_detach (compositor.conn, seg);
 
-  /* Create the picture for the pixmap, and free the pixmap.  */
+  /* Create the picture for the pixmap.  */
   picture = XRenderCreatePicture (compositor.display, pixmap,
 				  PictFormatForFormat (format),
 				  0, &picture_attrs);
-  XFreePixmap (compositor.display, pixmap);
 
   /* Create the wrapper object.  */
   buffer = XLCalloc (1, sizeof *buffer);
   buffer->picture = picture;
+  buffer->pixmap = pixmap;
+  buffer->depth = depth;
+
+  /* Initialize the list of release records.  */
+  buffer->pending.buffer_next = &buffer->pending;
+  buffer->pending.buffer_last = &buffer->pending;
+
+  /* And the list of idle funcs.  */
+  buffer->idle_callbacks.buffer_next = &buffer->idle_callbacks;
+  buffer->idle_callbacks.buffer_last = &buffer->idle_callbacks;
+
+  /* And the list of pending activity.  */
+  buffer->activity.buffer_next = &buffer->activity;
+  buffer->activity.buffer_last = &buffer->activity;
+
+  /* If the format is presentable, mark the buffer as presentable.  */
+  if (PictFormatIsPresentable (PictFormatForFormat (format)))
+    buffer->flags |= CanPresent;
 
   /* Return the picture.  */
   return (RenderBuffer) (void *) buffer;
@@ -1209,9 +2157,6 @@ BufferFromSinglePixel (uint32_t red, uint32_t green, uint32_t blue,
 				  compositor.argb_format, 0,
 				  &picture_attrs);
 
-  /* Free the pixmap.  */
-  XFreePixmap (compositor.display, pixmap);
-
   /* Fill the picture with the single pixel.  */
   color.red = red >> 16;
   color.green = green >> 16;
@@ -1223,47 +2168,100 @@ BufferFromSinglePixel (uint32_t red, uint32_t green, uint32_t blue,
   /* Create the wrapper object.  */
   buffer = XLCalloc (1, sizeof *buffer);
   buffer->picture = picture;
+  buffer->pixmap = pixmap;
+  buffer->depth = compositor.n_planes;
+
+  /* Initialize the list of release records.  */
+  buffer->pending.buffer_next = &buffer->pending;
+  buffer->pending.buffer_last = &buffer->pending;
+
+  /* And the list of idle funcs.  */
+  buffer->idle_callbacks.buffer_next = &buffer->idle_callbacks;
+  buffer->idle_callbacks.buffer_last = &buffer->idle_callbacks;
+
+  /* And the list of pending activity.  */
+  buffer->activity.buffer_next = &buffer->activity;
+  buffer->activity.buffer_last = &buffer->activity;
 
   /* Return the picture.  */
   return (RenderBuffer) (void *) buffer;
 }
 
 static void
-FreeShmBuffer (RenderBuffer buffer)
+FreeAnyBuffer (RenderBuffer buffer)
 {
   PictureBuffer *picture_buffer;
+  PresentRecord *record, *last;
+  IdleCallback *idle, *last_idle;
+  BufferActivityRecord *activity_record, *activity_last;
 
   picture_buffer = buffer.pointer;
 
+  XFreePixmap (compositor.display,
+	       picture_buffer->pixmap);
   XRenderFreePicture (compositor.display,
 		      picture_buffer->picture);
+
+  /* Free attached presentation records.  */
+  record = picture_buffer->pending.buffer_next;
+  while (record != &picture_buffer->pending)
+    {
+      last = record;
+      record = record->buffer_next;
+
+      /* Free the record.  */
+      RemovePresentRecord (last);
+    }
+
+  /* Free any activity involving this buffer.  */
+  activity_record = picture_buffer->activity.buffer_next;
+  while (activity_record != &picture_buffer->activity)
+    {
+      activity_last = activity_record;
+      activity_record = activity_record->buffer_next;
+
+      UnlinkActivityRecord (activity_last);
+      XLFree (activity_last);
+    }
+
+  /* Run and free all idle callbacks.  */
+  idle = picture_buffer->idle_callbacks.buffer_next;
+  while (idle != &picture_buffer->idle_callbacks)
+    {
+      last_idle = idle;
+      idle = idle->buffer_next;
+
+      /* Unlink the idle callback from the target.  */
+      last_idle->target_next->target_last = last_idle->target_last;
+      last_idle->target_last->target_next = last_idle->target_next;
+
+      /* Run it.  */
+      last_idle->function (buffer, last_idle->data);
+
+      /* Free it.  */
+      XLFree (last_idle);
+    }
+
+  /* Free the picture buffer itself.  */
   XLFree (picture_buffer);
+}
+
+static void
+FreeShmBuffer (RenderBuffer buffer)
+{
+  FreeAnyBuffer (buffer);
 }
 
 static void
 FreeDmabufBuffer (RenderBuffer buffer)
 {
-  PictureBuffer *picture_buffer;
-
-  picture_buffer = buffer.pointer;
-
-  /* N.B. that the picture is the only reference to the pixmap
-     here.  */
-  XRenderFreePicture (compositor.display,
-		      picture_buffer->picture);
-  XLFree (picture_buffer);
+  FreeAnyBuffer (buffer);
 }
 
 static void
 FreeSinglePixelBuffer (RenderBuffer buffer)
 {
-  PictureBuffer *picture_buffer;
-
-  picture_buffer = buffer.pointer;
-
-  XRenderFreePicture (compositor.display,
-		      picture_buffer->picture);
-  XLFree (picture_buffer);
+  FreeAnyBuffer (buffer);
 }
 
 static void
@@ -1382,6 +2380,134 @@ CanReleaseNow (RenderBuffer buffer)
   return False;
 }
 
+static IdleCallbackKey
+AddIdleCallback (RenderBuffer buffer, RenderTarget target,
+		 BufferIdleFunc function, void *data)
+{
+  PictureBuffer *pict_buffer;
+  PictureTarget *pict_target;
+  IdleCallback *key;
+
+  pict_buffer = buffer.pointer;
+  pict_target = target.pointer;
+
+  key = XLMalloc (sizeof *key);
+  key->function = function;
+  key->data = data;
+  key->target = target.pointer;
+  key->buffer_next = pict_buffer->idle_callbacks.buffer_next;
+  key->buffer_last = &pict_buffer->idle_callbacks;
+  key->target_next = pict_target->idle_callbacks.target_next;
+  key->target_last = &pict_target->idle_callbacks;
+  pict_buffer->idle_callbacks.buffer_next->buffer_last = key;
+  pict_buffer->idle_callbacks.buffer_next = key;
+  key->target->idle_callbacks.target_next->target_last = key;
+  key->target->idle_callbacks.target_next = key;
+
+  return key;
+}
+
+static void
+CancelIdleCallback (IdleCallbackKey key)
+{
+  IdleCallback *internal_key;
+
+  internal_key = key;
+  internal_key->target_next->target_last = internal_key->target_last;
+  internal_key->target_last->target_next = internal_key->target_next;
+  internal_key->buffer_next->buffer_last = internal_key->buffer_last;
+  internal_key->buffer_last->buffer_next = internal_key->buffer_next;
+
+  XLFree (internal_key);
+}
+
+static Bool
+IsBufferIdle (RenderBuffer buffer, RenderTarget target)
+{
+  BufferActivityRecord *record;
+  PresentRecord *presentation;
+  PictureBuffer *pict_buffer;
+  PictureTarget *pict_target;
+
+  pict_buffer = buffer.pointer;
+  pict_target = target.pointer;
+
+  /* A buffer is idle if it has no pending activity or
+     presentation on the given target.  */
+  record = pict_buffer->activity.buffer_next;
+  while (record != &pict_buffer->activity)
+    {
+      if (record->target == pict_target)
+	/* There is still pending activity.  */
+	return False;
+
+      record = record->buffer_next;
+    }
+
+  /* Next, loop through BUFFER's list of presentation records.  If the
+     buffer is still busy on TARGET, then return.  */
+  presentation = pict_buffer->pending.buffer_next;
+  while (presentation != &pict_buffer->pending)
+    {
+      if (presentation->target == pict_target)
+	/* There is still pending activity.  */
+	return False;
+
+      presentation = presentation->buffer_next;
+    }
+
+  /* The buffer is idle.  */
+  return True;
+}
+
+static Bool
+IdleEventPredicate (Display *display, XEvent *event, XPointer data)
+{
+  /* Return whether or not the event is relevant to buffer busy
+     tracking.  */
+  return ((event->type == GenericEvent
+	   && event->xgeneric.evtype == PresentIdleNotify)
+	  || (event->type == ClientMessage
+	      && event->xclient.message_type == _XL_BUFFER_RELEASE));
+}
+
+static void
+WaitForIdle (RenderBuffer buffer, RenderTarget target)
+{
+  XEvent event;
+
+  while (!IsBufferIdle (buffer, target))
+    {
+      XIfEvent (compositor.display, &event, IdleEventPredicate,
+		NULL);
+
+      /* We failed to get event data for a generic event, so there's
+	 no point in continuing.  */
+      if (event.type == GenericEvent
+	  && !XGetEventData (compositor.display, &event.xcookie))
+	abort ();
+
+      /* Handle the idle event.  */
+      HandleOneXEventForPictureRenderer (&event);
+
+      if (event.type == GenericEvent)
+	XFreeEventData (compositor.display, &event.xcookie);
+    }
+}
+
+static void
+SetNeedWaitForIdle (RenderTarget target)
+{
+  PictureTarget *pict_target;
+
+  /* Request that WaitForIdle be valid with buffers presented to the
+     given target.  All this normally does is disable presentation
+     onto the given target.  */
+
+  pict_target = target.pointer;
+  pict_target->flags |= NoPresentation;
+}
+
 static BufferFuncs picture_buffer_funcs =
   {
     .get_drm_formats = GetDrmFormats,
@@ -1396,6 +2522,11 @@ static BufferFuncs picture_buffer_funcs =
     .free_dmabuf_buffer = FreeDmabufBuffer,
     .free_single_pixel_buffer = FreeSinglePixelBuffer,
     .can_release_now = CanReleaseNow,
+    .add_idle_callback = AddIdleCallback,
+    .cancel_idle_callback = CancelIdleCallback,
+    .is_buffer_idle = IsBufferIdle,
+    .wait_for_idle = WaitForIdle,
+    .set_need_wait_for_idle = SetNeedWaitForIdle,
     .init_buffer_funcs = InitBufferFuncs,
   };
 
@@ -1431,6 +2562,95 @@ HandleErrorForPictureRenderer (XErrorEvent *error)
   return False;
 }
 
+static Bool
+HandlePresentCompleteNotify (XPresentCompleteNotifyEvent *complete)
+{
+  PresentCompletionCallback *callback, *last;
+
+  callback = all_completion_callbacks.next;
+  while (callback != &all_completion_callbacks)
+    {
+      last = callback;
+      callback = callback->next;
+
+      if (last->id == complete->serial_number)
+	{
+	  /* The presentation is complete.  Run and unlink the
+	     callback.  */
+	  last->function (last->data);
+	  last->next->last = last->last;
+	  last->last->next = last->next;
+	  XLFree (last);
+
+	  return True;
+	}
+    }
+
+  return False;
+}
+
+static Bool
+HandlePresentIdleNotify (XPresentIdleNotifyEvent *idle)
+{
+  PresentRecord *record;
+  PictureTarget *target;
+  PictureBuffer *buffer;
+
+  /* Handle a single idle notify event.  Find the target corresponding
+     to idle->window.  */
+  target = XLLookUpAssoc (xid_table, idle->window);
+
+  if (target)
+    {
+      /* Now, look for a corresponding presentation record.  */
+      record = target->pending.target_next;
+
+      while (record != &target->pending)
+	{
+	  if (record->buffer->pixmap == idle->pixmap)
+	    {
+	      /* The buffer was found.  Remove the presentation record
+		 if the serial matches, and return.  */
+	      if (record->serial == idle->serial_number)
+		{
+		  /* Save away buffer.  */
+		  buffer = record->buffer;
+
+		  /* Remove the presentation record.  */
+		  RemovePresentRecord (record);
+
+		  /* Run idle callbacks if this is now idle.  */
+		  MaybeRunIdleCallbacks (buffer, target);
+		}
+
+	      return True;
+	    }
+
+	  record = record->target_next;
+	}
+    }
+
+  return True;
+}
+
+static Bool
+HandlePresentationEvent (XGenericEventCookie *event)
+{
+  switch (event->evtype)
+    {
+    case PresentIdleNotify:
+      /* Find which pixmap became idle and note that it is now
+	 idle.  */
+      return HandlePresentIdleNotify (event->data);
+
+    case PresentCompleteNotify:
+      /* Find which presentation completed and call the callback.  */
+      return HandlePresentCompleteNotify (event->data);
+    }
+
+  return False;
+}
+
 Bool
 HandleOneXEventForPictureRenderer (XEvent *event)
 {
@@ -1454,29 +2674,42 @@ HandleOneXEventForPictureRenderer (XEvent *event)
       return True;
     }
 
+  if (event->type == ClientMessage
+      && event->xclient.message_type == _XL_BUFFER_RELEASE)
+    {
+      /* Values are masked against 0xffffffff, as Xlib sign-extends
+	 those longs.  */
+      high = event->xclient.data.l[0] & 0xffffffff;
+      low = event->xclient.data.l[1] & 0xffffffff;
+      id = low | (high << 32);
+
+      /* Handle the activity change.  */
+      HandleActivityEvent (id);
+      return True;
+    }
+
+  if (event->type == GenericEvent
+      /* If present_opcode was not initialized, then it is 0, which is
+	 not a valid extension opcode.  */
+      && event->xgeneric.extension == present_opcode)
+    return HandlePresentationEvent (&event->xcookie);
+
   return False;
 }
 
 void
 InitPictureRenderer (void)
 {
-  XSetWindowAttributes attrs;
-
   identity_transform.matrix[0][0] = 1;
   identity_transform.matrix[1][1] = 1;
   identity_transform.matrix[2][2] = 1;
 
   pending_success.next = &pending_success;
   pending_success.last = &pending_success;
-
-  /* Create an unmapped, InputOnly window, that is used to receive
-     roundtrip events.  */
-  attrs.override_redirect = True;
-  round_trip_window = XCreateWindow (compositor.display,
-				     DefaultRootWindow (compositor.display),
-				     -1, -1, 1, 1, 0, CopyFromParent, InputOnly,
-				     CopyFromParent, CWOverrideRedirect,
-				     &attrs);
+  all_activity.global_next = &all_activity;
+  all_activity.global_last = &all_activity;
+  all_completion_callbacks.next = &all_completion_callbacks;
+  all_completion_callbacks.last = &all_completion_callbacks;
 
   /* Initialize the renderer with our functions.  */
   RegisterStaticRenderer ("picture", &picture_render_funcs,

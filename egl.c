@@ -1077,7 +1077,7 @@ TryPreserveOnSwap (EGLSurface *surface)
 }
 
 static RenderTarget
-TargetFromWindow (Window window)
+TargetFromWindow (Window window, unsigned long standard_event_mask)
 {
   EglTarget *target;
 
@@ -1123,6 +1123,12 @@ TargetFromPixmap (Pixmap pixmap)
     abort ();
 
   return (RenderTarget) (void *) target;
+}
+
+static void
+SetStandardEventMask (RenderTarget target, unsigned long standard_event_mask)
+{
+  /* Ignored.  */
 }
 
 static void
@@ -1659,6 +1665,7 @@ static RenderFuncs egl_render_funcs =
     .init_render_funcs = InitRenderFuncs,
     .target_from_window = TargetFromWindow,
     .target_from_pixmap = TargetFromPixmap,
+    .set_standard_event_mask = SetStandardEventMask,
     .note_target_size = NoteTargetSize,
     .picture_from_target = PictureFromTarget,
     .free_picture_from_target = FreePictureFromTarget,

@@ -3,7 +3,7 @@
 12to11 - Wayland to X protocol translator
 .SH SYNOPSIS
 .B 12to11
-[\-\fBclass\fP \fIclass\fP] [\-\fBname\fP \fIname\fP] [\-\fBxrm\fP \fIresourcestring\fP]...
+[\-\fBclass\fP \fIclass\fP] [\-\fBname\fP \fIname\fP] [\-\fBxrm\fP \fIresourcestring\fP...]
 .SH DESCRIPTION
 .I 12to11
 starts a Wayland compositor on the next available socket;
@@ -212,6 +212,16 @@ Protocol	Version
 zwp_linux_explicit_synchronization_v1	2
 .TE
 .PP
+When the X server supports version 1.6 or later of the X Resize,
+Rotate and Reflect Extension, the following Wayland protocol is also
+supported:
+.TS H
+lb lb
+lb n .
+Protocol	Version
+wp_drm_lease_device_v1	1
+.TE
+.PP
 However, Wayland clients are allowed to continue to access data from
 the \fBCLIPBOARD\fP and \fBPRIMARY\fP selections even when they do not
 have the keyboard focus, against the restrictions put out in the
@@ -242,5 +252,5 @@ vast majority of clients seem not to make use of this feature, and
 implementing it would be a lot of trouble.
 .SH "SEE ALSO"
 X(7), Xorg(1)
-.SH AUTHOR
+.SH AUTHORS
 Various contributors.

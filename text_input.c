@@ -72,7 +72,7 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
    That means it is impossible to attribute forwarded events or
    committed text to the correct XIC, and thus it is impossible to
    look up which seat's TextInput resource an event is actually bound
-   for.  If one day we move to our own implementation of the XIC
+   for.  If one day we move to our own implementation of the XIM
    protocol, then it will become possible to properly support
    multi-seat setups, with one XIC per-client and per-seat.
 
@@ -86,7 +86,7 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
    converted string before being sent to the client.
 
    This code has many inherent race conditions, just like the
-   zwp_text_input_v3 protocol itself.  As described above, it only
+   zwp_text_input_v3 protocol itself.  And as described above, it only
    supports one seat due to limitations of the Xlib XIM wrapper.  */
 
 typedef struct _TextInputClientInfo TextInputClientInfo;

@@ -155,9 +155,14 @@ Setup (Surface *surface, Role *role)
 static void
 ReleaseBuffer (Surface *surface, Role *role, ExtBuffer *buffer)
 {
+  IconSurface *icon;
+
+  icon = IconSurfaceFromRole (role);
+
   /* Icon surfaces are not supposed to change much, so doing an XSync
-     here is okay.  */
-  XSync (compositor.display, False);
+     (or XIfEvent) here is okay.  */
+  RenderWaitForIdle (XLRenderBufferFromBuffer (buffer),
+		     icon->target);
 
   /* Now really release the buffer.  */
   XLReleaseBuffer (buffer);
@@ -213,17 +218,25 @@ NoteBounds (void *data, int min_x, int min_y, int max_x, int max_y)
 }
 
 static void
-RunFrameCallbacks (Surface *surface)
+RunFrameCallbacks (Surface *surface, FrameClock *clock)
 {
   struct timespec time;
+  uint64_t last_drawn_time;
 
   /* Surface can be NULL for various reasons, especially events
      arriving after the icon surface is detached.  */
   if (!surface)
     return;
 
-  clock_gettime (CLOCK_MONOTONIC, &time);
-  XLSurfaceRunFrameCallbacks (surface, time);
+  last_drawn_time = XLFrameClockGetFrameTime (clock);
+
+  if (!last_drawn_time)
+    {
+      clock_gettime (CLOCK_MONOTONIC, &time);
+      XLSurfaceRunFrameCallbacks (surface, time);
+    }
+  else
+    XLSurfaceRunFrameCallbacksMs (surface, last_drawn_time / 1000);
 }
 
 static void
@@ -246,7 +259,7 @@ AfterFrame (FrameClock *clock, void *data)
       return;
     }
 
-  RunFrameCallbacks (icon->role.surface);
+  RunFrameCallbacks (icon->role.surface, clock);
 }
 
 static void
@@ -410,7 +423,11 @@ XLGetIconSurface (Surface *surface)
 		   (unsigned char *) &_NET_WM_WINDOW_TYPE_DND, 1);
 
   /* Create a target associated with the window.  */
-  role->target = RenderTargetFromWindow (role->window);
+  role->target = RenderTargetFromWindow (role->window, None);
+
+  /* For simplicity reasons we do not handle idle notifications
+     asynchronously.  */
+  RenderSetNeedWaitForIdle (role->target);
 
   /* Create a subcompositor associated with the window.  */
   role->subcompositor = MakeSubcompositor ();

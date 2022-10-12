@@ -1599,6 +1599,19 @@ XLSurfaceRunFrameCallbacks (Surface *surface, struct timespec time)
     XLSurfaceRunFrameCallbacks (list->data, time);
 }
 
+void
+XLSurfaceRunFrameCallbacksMs (Surface *surface, uint32_t ms_time)
+{
+  XLList *list;
+
+  RunFrameCallbacks (&surface->current_state.frame_callbacks,
+		     ms_time);
+
+  /* Run frame callbacks for each attached subsurface as well.  */
+  for (list = surface->subsurfaces; list; list = list->next)
+    XLSurfaceRunFrameCallbacksMs (list->data, ms_time);
+}
+
 CommitCallback *
 XLSurfaceRunAtCommit (Surface *surface,
 		      void (*commit_func) (Surface *, void *),

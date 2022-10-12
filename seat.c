@@ -711,6 +711,10 @@ MaybeCreateCursor (CursorRing *ring, int index)
 		     compositor.n_planes);
   ring->targets[index]
     = RenderTargetFromPixmap (ring->pixmaps[index]);
+
+  /* For simplicity reasons we do not handle idle notifications
+     asynchronously.  */
+  RenderSetNeedWaitForIdle (ring->targets[index]);
 }
 
 static int
@@ -1208,9 +1212,20 @@ Setup (Surface *surface, Role *role)
 static void
 ReleaseBuffer (Surface *surface, Role *role, ExtBuffer *buffer)
 {
+  SeatCursor *cursor;
+  int i;
+
+  cursor = CursorFromRole (role);
+
   /* Cursors are generally committed only once, so syncing here is
      OK in terms of efficiency.  */
-  XSync (compositor.display, False);
+  for (i = 0; i < CursorRingElements; ++i)
+    {
+      if (cursor->cursor_ring->pixmaps[i])
+	RenderWaitForIdle (XLRenderBufferFromBuffer (buffer),
+			   cursor->cursor_ring->targets[i]);
+    }
+
   XLReleaseBuffer (buffer);
 }
 

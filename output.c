@@ -98,6 +98,9 @@ static ScaleChangeCallback scale_callbacks;
 /* The scale factor currently applied on a global basis.  */
 int global_scale_factor;
 
+/* Function run upon any kind of XRandR notify event.  */
+static void (*change_hook) (Time);
+
 static Bool
 ApplyEnvironment (const char *name, int *variable)
 {
@@ -903,9 +906,38 @@ XLGetOutputRectAt (int x, int y, int *x_out, int *y_out,
 Bool
 XLHandleOneXEventForOutputs (XEvent *event)
 {
+  XRRNotifyEvent *notify;
+  XRROutputPropertyNotifyEvent *property;
+  XRRResourceChangeNotifyEvent *resource;
+  Time time;
+
+  notify = (XRRNotifyEvent *) event;
+
   if (event->type == compositor.rr_event_base + RRNotify)
     {
       NoticeOutputsMaybeChanged ();
+
+      if (change_hook)
+	{
+	  time = CurrentTime;
+
+	  /* See if a timestamp of some sort can be extracted.  */
+	  switch (notify->subtype)
+	    {
+	    case RRNotify_OutputProperty:
+	      property = (XRROutputPropertyNotifyEvent *) notify;
+	      time = property->timestamp;
+	      break;
+
+	    case RRNotify_ResourceChange:
+	      resource = (XRRResourceChangeNotifyEvent *) notify;
+	      time = resource->timestamp;
+	      break;
+	    }
+
+	  change_hook (time);
+	}
+
       return True;
     }
 
@@ -1054,6 +1086,12 @@ XLClearOutputs (Surface *surface)
 }
 
 void
+XLOutputSetChangeFunction (void (*change_func) (Time))
+{
+  change_hook = change_func;
+}
+
+void
 XLInitRROutputs (void)
 {
   Bool extension;
@@ -1096,11 +1134,21 @@ XLInitRROutputs (void)
   scale_callbacks.next = &scale_callbacks;
   scale_callbacks.last = &scale_callbacks;
 
-  XRRSelectInput (compositor.display,
-		  DefaultRootWindow (compositor.display),
-		  (RRCrtcChangeNotifyMask
-		   | RROutputChangeNotifyMask
-		   | RROutputPropertyNotifyMask));
+  if (compositor.rr_major > 1
+      && (compositor.rr_major == 1
+	  && compositor.rr_minor >= 4))
+    XRRSelectInput (compositor.display,
+		    DefaultRootWindow (compositor.display),
+		    (RRCrtcChangeNotifyMask
+		     | RROutputChangeNotifyMask
+		     | RROutputPropertyNotifyMask
+		     | RRResourceChangeNotifyMask));
+  else
+    XRRSelectInput (compositor.display,
+		    DefaultRootWindow (compositor.display),
+		    (RRCrtcChangeNotifyMask
+		     | RROutputChangeNotifyMask
+		     | RROutputPropertyNotifyMask));
 
   all_outputs = BuildOutputTree ();
   MakeGlobalsForOutputTree (all_outputs);

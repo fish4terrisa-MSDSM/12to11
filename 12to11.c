@@ -98,7 +98,7 @@ HandleCmdline (Display *dpy, int argc, char **argv)
 	{
 	print_usage:
 	  fprintf (stderr,
-		   "usage: %s [-name name] [-class class] [-xrm resourcestring]...\n",
+		   "usage: %s [-name name] [-class class] [-xrm resourcestring...]\n",
 		   argv[0]);
 	  exit (!strcmp (argv[i], "-help") ? 0 : 1);
 	}
@@ -224,6 +224,7 @@ XLMain (int argc, char **argv)
   XLInitDecoration ();
   XLInitTextInput ();
   XLInitSinglePixelBuffer ();
+  XLInitDrmLease ();
 
   /* This has to come after the rest of the initialization.  */
   DetermineServerTime ();

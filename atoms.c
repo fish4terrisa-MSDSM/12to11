@@ -108,6 +108,7 @@ static const char *names[] =
     "_NET_WM_WINDOW_TYPE",
     "_NET_WM_WINDOW_TYPE_MENU",
     "_NET_WM_WINDOW_TYPE_DND",
+    "CONNECTOR_ID",
 
     /* These are automatically generated from mime.txt.  */
     DirectTransferAtomNames
@@ -129,7 +130,8 @@ Atom _NET_WM_OPAQUE_REGION, _XL_BUFFER_RELEASE, _NET_WM_SYNC_REQUEST_COUNTER,
   XdndActionPrivate, XdndActionList, XdndActionDescription, XdndProxy,
   XdndEnter, XdndPosition, XdndStatus, XdndLeave, XdndDrop, XdndFinished,
   _NET_WM_FRAME_TIMINGS, _NET_WM_BYPASS_COMPOSITOR, WM_STATE,
-  _NET_WM_WINDOW_TYPE, _NET_WM_WINDOW_TYPE_MENU, _NET_WM_WINDOW_TYPE_DND;
+  _NET_WM_WINDOW_TYPE, _NET_WM_WINDOW_TYPE_MENU, _NET_WM_WINDOW_TYPE_DND,
+  CONNECTOR_ID;
 
 XrmQuark resource_quark, app_quark, QString;
 
@@ -283,9 +285,10 @@ XLInitAtoms (void)
   _NET_WM_WINDOW_TYPE = atoms[58];
   _NET_WM_WINDOW_TYPE_MENU = atoms[59];
   _NET_WM_WINDOW_TYPE_DND = atoms[60];
+  CONNECTOR_ID = atoms[61];
 
   /* This is automatically generated.  */
-  DirectTransferAtomInit (atoms, 61);
+  DirectTransferAtomInit (atoms, 62);
 
   /* Now, initialize quarks.  */
   resource_quark = XrmPermStringToQuark (compositor.resource_name);

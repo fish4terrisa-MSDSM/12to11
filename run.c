@@ -139,6 +139,9 @@ HandleOneXEvent (XEvent *event)
   if (XLHandleXEventForXdgSurfaces (event))
     return;
 
+  if (HandleOneXEventForPictureRenderer (event))
+    return;
+
   if (XLHandleXEventForXdgToplevels (event))
     return;
 
@@ -155,9 +158,6 @@ HandleOneXEvent (XEvent *event)
   if (XLHandleOneXEventForDmabuf (event))
     return;
 #endif
-
-  if (HandleOneXEventForPictureRenderer (event))
-    return;
 
   if (XLHandleOneXEventForXData (event))
     return;

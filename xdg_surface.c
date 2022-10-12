@@ -44,6 +44,7 @@ enum
     StateMaybeConfigure		= (1 << 6),
     StateDirtyFrameExtents	= (1 << 7),
     StateTemporaryBounds	= (1 << 8),
+    StateFrameStarted		= (1 << 9),
   };
 
 typedef struct _XdgRole XdgRole;
@@ -106,6 +107,9 @@ struct _XdgRole
   /* The implementation of this role.  */
   XdgRoleImplementation *impl;
 
+  /* The pending frame ID.  */
+  uint64_t pending_frame;
+
   /* Various role state.  */
   int state;
 
@@ -123,7 +127,7 @@ struct _XdgRole
   XdgState current_state;
 
   /* Configure event serial.  */
-  uint32_t conf_serial;
+  uint32_t conf_serial, last_specified_serial;
 
   /* The current bounds of the subcompositor.  */
   int min_x, min_y, max_x, max_y;
@@ -156,12 +160,15 @@ struct _ReleaseLaterRecord
   /* A monotonically (overflow aside) increasing identifier.  */
   uint64_t id;
 
-  /* Key for the free func.  */
-  void *free_func_key;
-
   /* The buffer that should be released upon receiving this
      message.  */
   ExtBuffer *buffer;
+
+  /* The idle callback.  */
+  IdleCallbackKey key;
+
+  /* The XdgRole.  */
+  XdgRole *role;
 
   /* The next and last records.  */
   ReleaseLaterRecord *next, *last;
@@ -169,24 +176,6 @@ struct _ReleaseLaterRecord
 
 /* Event base of the XShape extension.  */
 int shape_base;
-
-static void
-RemoveRecord (ReleaseLaterRecord *record)
-{
-  /* Removing the sentinel record is invalid.  */
-  XLAssert (record->buffer != NULL);
-
-  /* First, make the rest of the list skip RECORD.  */
-  record->last->next = record->next;
-  record->next->last = record->last;
-
-  /* Next, remove the buffer listener.  */
-  XLBufferCancelRunOnFree (record->buffer,
-			   record->free_func_key);
-
-  /* Finally, free RECORD.  */
-  XLFree (record);
-}
 
 static void
 DeleteRecord (ReleaseLaterRecord *record)
@@ -216,10 +205,6 @@ FreeRecords (ReleaseLaterRecord *records)
 
       /* Release the buffer now.  */
       XLReleaseBuffer (last->buffer);
-
-      /* And cancel the destroy listener.  */
-      XLBufferCancelRunOnFree (last->buffer,
-			       last->free_func_key);
 
       /* Before freeing the record itself.  */
       XLFree (last);
@@ -312,23 +297,25 @@ FreeReconstrainCallbacks (XdgRole *role)
 }
 
 static void
-ReleaseLaterExtBufferFunc (ExtBuffer *buffer, void *data)
-{
-  DeleteRecord (data);
-}
-
-static void
 RunFrameCallbacks (Surface *surface, XdgRole *role)
 {
   struct timespec time;
+  uint64_t last_drawn_time;
 
   /* Surface can be NULL for various reasons, especially events
      arriving after the shell surface is detached.  */
   if (!surface)
     return;
 
-  clock_gettime (CLOCK_MONOTONIC, &time);
-  XLSurfaceRunFrameCallbacks (surface, time);
+  last_drawn_time = XLFrameClockGetFrameTime (role->clock);
+
+  if (!last_drawn_time)
+    {
+      clock_gettime (CLOCK_MONOTONIC, &time);
+      XLSurfaceRunFrameCallbacks (surface, time);
+    }
+  else
+    XLSurfaceRunFrameCallbacksMs (surface, last_drawn_time / 1000);
 }
 
 static void
@@ -344,25 +331,18 @@ RunFrameCallbacksConditionally (XdgRole *role)
 }
 
 static void
-HandleReleaseLaterMessage (XdgRole *role, uint64_t id)
+BufferIdleCallback (RenderBuffer buffer, void *data)
 {
   ReleaseLaterRecord *record;
+  XdgRole *role;
   Surface *surface;
 
-  record = role->release_records->last;
+  record = data;
+  role = record->role;
 
-  if (record == role->release_records)
-    return;
 
-  /* Since the list of release records is a (circular) queue, ID will
-     either be the last element or invalid as the buffer has been
-     destroyed.  */
-
-  if (record->id == id)
-    {
-      XLReleaseBuffer (record->buffer);
-      RemoveRecord (record);
-    }
+  XLReleaseBuffer (record->buffer);
+  DeleteRecord (record);
 
   surface = role->role.surface;
 
@@ -377,69 +357,11 @@ HandleReleaseLaterMessage (XdgRole *role, uint64_t id)
     }
 }
 
-/* It shouldn't be possible for billions of frames to pile up without
-   a response from the X server, so relying on wraparound to handle id
-   overflow should be fine.  */
-
-static void
-ReleaseLater (XdgRole *role, ExtBuffer *buffer)
-{
-  ReleaseLaterRecord *record;
-  XEvent event;
-  static uint64_t id;
-
-  /* Send a message to the X server; once it is received, release the
-     given buffer.  This is necessary because the connection to the X
-     server does not behave synchronously, and receiving the message
-     tells us that the X server has finished processing all requests
-     that access the buffer.  */
-
-  record = AddRecordAfter (role->release_records);
-  record->id = ++id;
-  record->buffer = buffer;
-  record->free_func_key
-    = XLBufferRunOnFree (buffer, ReleaseLaterExtBufferFunc,
-			 record);
-
-  memset (&event, 0, sizeof event);
-
-  event.xclient.type = ClientMessage;
-  event.xclient.window = role->window;
-  event.xclient.message_type = _XL_BUFFER_RELEASE;
-  event.xclient.format = 32;
-
-  event.xclient.data.l[0] = id >> 31 >> 1;
-  event.xclient.data.l[1] = id & 0xffffffff;
-
-  XSendEvent (compositor.display, role->window, False,
-	      NoEventMask, &event);
-}
-
 Bool
 XLHandleXEventForXdgSurfaces (XEvent *event)
 {
   XdgRole *role;
-  uint64_t id, low, high;
   Window window;
-
-  if (event->type == ClientMessage
-      && event->xclient.message_type == _XL_BUFFER_RELEASE)
-    {
-      role = XLLookUpAssoc (surfaces, event->xclient.window);
-
-      if (role)
-	{
-	  /* These values are masked because Xlib sign-extends 32-bit
-	     values to fit potentially 64-bit long.  */
-	  low = event->xclient.data.l[0] & 0xffffffff;
-	  high = event->xclient.data.l[1] & 0xffffffff;
-
-	  id = (low << 32) | high;
-	  HandleReleaseLaterMessage (role, id);
-	}
-
-      return True;
-    }
 
   if (event->type == ClientMessage
       && ((event->xclient.message_type == _NET_WM_FRAME_DRAWN
@@ -611,8 +533,29 @@ AckConfigure (struct wl_client *client, struct wl_resource *resource,
   if (!xdg_role->role.surface)
     return;
 
+#ifdef DEBUG_GEOMETRY_CALCULATION
+  fprintf (stderr, "ack_configure: %"PRIu32"\n", serial);
+#endif
+
+  if (serial < xdg_role->conf_serial)
+    {
+      /* The client specified an outdated serial.  */
+      wl_resource_post_error (resource, XDG_SURFACE_ERROR_INVALID_SERIAL,
+			      "serial specified not monotonic");
+      return;
+    }
+
+  if (serial && serial == xdg_role->last_specified_serial)
+    {
+      /* The client specified the same serial twice.  */
+      wl_resource_post_error (resource, XDG_SURFACE_ERROR_INVALID_SERIAL,
+			      "same serial specified twice");
+      return;
+    }
+
   if (serial == xdg_role->conf_serial)
     {
+      xdg_role->last_specified_serial = serial;
       xdg_role->state &= ~StateWaitingForAckConfigure;
 
       /* Garbage the subcompositor too, since contents could be
@@ -720,6 +663,12 @@ Commit (Surface *surface, Role *role)
   if (!IsRoleMapped (xdg_role))
     goto start_drawing;
 
+  /* If the frame clock is frozen but we are no longer waiting for the
+     configure event to be acknowledged by the client, unfreeze the
+     frame clock.  */
+  if (!(xdg_role->state & StateWaitingForAckConfigure))
+    Unfreeze (xdg_role);
+
   /* A frame is already in progress, so instead say that an urgent
      update is needed immediately after the frame completes.  In any
      case, don't run frame callbacks upon buffer release anymore.  */
@@ -727,8 +676,9 @@ Commit (Surface *surface, Role *role)
     {
       if (XLFrameClockCanBatch (xdg_role->clock))
 	/* But if we can squeeze the frame inside the vertical
-	   blanking period, go ahead.  */
-	goto just_draw_then_return;
+	   blanking period, or a frame is in progress but EndFrame has
+	   not yet been called, go ahead.  */
+	goto start_drawing;
 
       xdg_role->state |= StateLateFrame;
       xdg_role->state &= ~StatePendingFrameCallback;
@@ -743,38 +693,12 @@ Commit (Surface *surface, Role *role)
 
  start_drawing:
 
-  /* If the frame clock is frozen but we are no longer waiting for the
-     configure event to be acknowledged by the client, unfreeze the
-     frame clock.  */
-  if (!(xdg_role->state & StateWaitingForAckConfigure))
-    Unfreeze (xdg_role);
-
-  XLFrameClockStartFrame (xdg_role->clock, False);
   SubcompositorUpdate (xdg_role->subcompositor);
 
-  /* Also run role "commit inside frame" hook.  */
-  if (xdg_role->impl && xdg_role->impl->funcs.commit_inside_frame)
-    xdg_role->impl->funcs.commit_inside_frame (role, xdg_role->impl);
-  XLFrameClockEndFrame (xdg_role->clock);
-
-  /* Clients which commit when a configure event that has not yet been
-     acked still expect frame callbacks to be called; however, frame
-     callbacks are not provided by the frame clock while it is frozen.
-
-     If that happens, just run the frame callback immediately.  */
-  if (XLFrameClockIsFrozen (xdg_role->clock)
-      /* If the window is not mapped, then the native frame clock will
-	 not draw frames.  Some clients do commit before the initial
-	 configure event and wait for the frame callback to be called
-	 after or before ack_configure, leading to the mapping commit
-	 never being performed.  */
-      || !IsRoleMapped (xdg_role))
-    RunFrameCallbacksConditionally (xdg_role);
+  /* Do not end frames explicitly.  Instead, wait for the
+     NoteFrameCallback to end the frame.  */
 
   return;
-
- just_draw_then_return:
-  SubcompositorUpdate (xdg_role->subcompositor);
 }
 
 static Bool
@@ -887,7 +811,27 @@ Teardown (Surface *surface, Role *role)
 static void
 ReleaseBuffer (Surface *surface, Role *role, ExtBuffer *buffer)
 {
-  ReleaseLater (XdgRoleFromRole (role), buffer);
+  RenderBuffer render_buffer;
+  ReleaseLaterRecord *record;
+  XdgRole *xdg_role;
+
+  render_buffer = XLRenderBufferFromBuffer (buffer);
+  xdg_role = XdgRoleFromRole (role);
+
+  if (RenderIsBufferIdle (render_buffer, xdg_role->target))
+    /* If the buffer is already idle, release it now.  */
+    XLReleaseBuffer (buffer);
+  else
+    {
+      /* Release the buffer once it is destroyed or becomes idle.  */
+      record = AddRecordAfter (xdg_role->release_records);
+      record->buffer = buffer;
+      record->key = RenderAddIdleCallback (render_buffer,
+					   xdg_role->target,
+					   BufferIdleCallback,
+					   record);
+      record->role = xdg_role;
+    }
 }
 
 static Bool
@@ -915,7 +859,8 @@ Subframe (Surface *surface, Role *role)
     {
       if (XLFrameClockCanBatch (xdg_role->clock))
 	/* But if we can squeeze the frame inside the vertical
-	   blanking period, go ahead.  */
+	   blanking period, or a frame is in progress but EndFrame has
+	   not yet been called, go ahead.  */
 	return True;
 
       xdg_role->state |= StateLateFrame;
@@ -927,18 +872,14 @@ Subframe (Surface *surface, Role *role)
       return False;
     }
 
-  /* I guess subsurface updates don't count as urgent frames?  */
-  XLFrameClockStartFrame (xdg_role->clock, False);
   return True;
 }
 
 static void
 EndSubframe (Surface *surface, Role *role)
 {
-  XdgRole *xdg_role;
-
-  xdg_role = XdgRoleFromRole (role);
-  XLFrameClockEndFrame (xdg_role->clock);
+  /* Don't end the frame here; instead, wait for the frame callback to
+     note that drawing the frame has finished.  */
 }
 
 static Window
@@ -968,34 +909,6 @@ AfterFrame (FrameClock *clock, void *data)
   XdgRole *role;
 
   role = data;
-
-  if (role->state & StateLateFrame)
-    {
-      role->state &= ~StateLateFrame;
-
-      if (role->state & StateLateFrameAcked)
-	XLFrameClockUnfreeze (role->clock);
-
-      /* Since we are running late, make the compositor draw the frame
-	 now.  */
-      XLFrameClockStartFrame (clock, True);
-      SubcompositorUpdate (role->subcompositor);
-
-      /* Also run role "commit inside frame" hook.  */
-      if (role->impl
-	  && role->impl->funcs.commit_inside_frame)
-	role->impl->funcs.commit_inside_frame (&role->role,
-					       role->impl);
-      XLFrameClockEndFrame (clock);
-
-      /* See the comment in Commit about frame callbacks being
-	 attached while the frame clock is frozen.  */
-      if (XLFrameClockIsFrozen (role->clock)
-	  && role->role.surface)
-	RunFrameCallbacksConditionally (role);
-
-      return;
-    }
 
   /* If all pending frames have been drawn, run frame callbacks.
      Unless some buffers have not yet been released, in which case the
@@ -1235,6 +1148,63 @@ NoteBounds (void *data, int min_x, int min_y,
 }
 
 static void
+NoteFrame (FrameMode mode, uint64_t id, void *data)
+{
+  XdgRole *role;
+
+  role = data;
+
+  switch (mode)
+    {
+    case ModeStarted:
+      /* Record this frame counter as the pending frame.  */
+      role->pending_frame = id;
+
+      if (!(role->state & StateFrameStarted))
+	{
+	  role->state |= StateFrameStarted;
+	  XLFrameClockStartFrame (role->clock, False);
+	}
+
+      /* Also run role "commit inside frame" hook.  */
+      if (role->impl && role->impl->funcs.commit_inside_frame)
+	role->impl->funcs.commit_inside_frame (&role->role,
+					       role->impl);
+
+      break;
+
+    case ModePresented:
+    case ModeComplete:
+      /* The frame was completed.  */
+      if (id == role->pending_frame)
+	{
+	  /* End the frame.  */
+	  XLFrameClockEndFrame (role->clock);
+
+	  /* Clear the frame completed flag.  */
+	  role->state &= ~StateFrameStarted;
+
+	  /* Clients which commit when a configure event that has not
+	     yet been acked still expect frame callbacks to be called;
+	     however, frame callbacks are not provided by the frame
+	     clock while it is frozen.
+
+	     If that happens, just run the frame callback
+	     immediately.  */
+	  if (XLFrameClockIsFrozen (role->clock)
+	      /* If the window is not mapped, then the native frame
+		 clock will not draw frames.  Some clients do commit
+		 before the initial configure event and wait for the
+		 frame callback to be called after or before
+		 ack_configure, leading to the mapping commit never
+		 being performed.  */
+	      || !IsRoleMapped (role))
+	    RunFrameCallbacksConditionally (role);
+	}
+    }
+}
+
+static void
 ResizeForMap (XdgRole *role)
 {
   int min_x, min_y, max_x, max_y;
@@ -1387,6 +1357,10 @@ SelectExtraEvents (Surface *surface, Role *role,
   /* Select extra events for the input method.  */
   XSelectInput (compositor.display, xdg_role->window,
 		DefaultEventMask | event_mask);
+
+  /* Set the target standard event mask.  */
+  RenderSetStandardEventMask (xdg_role->target,
+			      DefaultEventMask | event_mask);
 }
 
 void
@@ -1482,7 +1456,7 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
 				0, 0, 20, 20, 0, compositor.n_planes,
 				InputOutput, compositor.visual, flags,
 				&attrs);
-  role->target = RenderTargetFromWindow (role->window);
+  role->target = RenderTargetFromWindow (role->window, DefaultEventMask);
 
   role->subcompositor = MakeSubcompositor ();
   role->clock = XLMakeFrameClockForWindow (role->window);
@@ -1496,6 +1470,8 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
 				  OpaqueRegionChanged, role);
   SubcompositorSetBoundsCallback (role->subcompositor,
 				  NoteBounds, role);
+  SubcompositorSetNoteFrameCallback (role->subcompositor,
+				     NoteFrame, role);
   XLSelectStandardEvents (role->window);
   XLMakeAssoc (surfaces, role->window, role);
 
@@ -1581,7 +1557,8 @@ XLXdgRoleSendConfigure (Role *role, uint32_t serial)
   xdg_role->state &= ~StateMaybeConfigure;
 
 #ifdef DEBUG_GEOMETRY_CALCULATION
-  fprintf (stderr, "Waiting for ack_configure...\n");
+  fprintf (stderr, "Waiting for ack_configure (%"PRIu32")...\n",
+	   xdg_role->conf_serial);
 #endif
 
   xdg_surface_send_configure (role->resource, serial);

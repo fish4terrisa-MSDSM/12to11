@@ -121,8 +121,14 @@ typedef struct _ShmFormat ShmFormat;
 
 typedef enum _Operation Operation;
 
+typedef void *IdleCallbackKey;
+typedef void *PresentCompletionKey;
+
 typedef void (*DmaBufSuccessFunc) (RenderBuffer, void *);
 typedef void (*DmaBufFailureFunc) (void *);
+
+typedef void (*BufferIdleFunc) (RenderBuffer, void *);
+typedef void (*PresentCompletionFunc) (void *);
 
 enum _Operation
   {
@@ -250,10 +256,13 @@ struct _RenderFuncs
   Bool (*init_render_funcs) (void);
 
   /* Create a rendering target for the given window.  */
-  RenderTarget (*target_from_window) (Window);
+  RenderTarget (*target_from_window) (Window, unsigned long);
 
   /* Create a rendering target for the given pixmap.  */
   RenderTarget (*target_from_pixmap) (Pixmap);
+
+  /* Set the standard event mask of the target.  */
+  void (*set_standard_event_mask) (RenderTarget, unsigned long);
 
   /* Set the target width and height.  This can be NULL.  */
   void (*note_target_size) (RenderTarget, int, int);
@@ -326,6 +335,22 @@ struct _RenderFuncs
      the completion of all drawing commands made before it is
      called.  */
   int (*get_finish_fence) (Bool *);
+
+  /* Directly present the given buffer to the window, without copying,
+     and possibly flip the buffer contents to the screen, all while
+     possibly being synchronized with the vertical refresh.  Call the
+     supplied callback when the presentation completes.  May be
+     NULL.  */
+  PresentCompletionKey (*present_to_window) (RenderTarget, RenderBuffer,
+					     pixman_region32_t *,
+					     PresentCompletionFunc, void *);
+
+  /* Cancel the given presentation callback.  */
+  void (*cancel_presentation_callback) (PresentCompletionKey);
+  
+  /* Cancel any presentation that might have happened to the window
+     backing the given target.  */
+  void (*cancel_presentation) (RenderTarget);
 
   /* Some flags.  NeverAges means targets always preserve contents
      that were previously drawn.  */
@@ -404,6 +429,28 @@ struct _BufferFuncs
      by being copied to an offscreen buffer.  */
   Bool (*can_release_now) (RenderBuffer);
 
+  /* Run a callback once the buffer contents become idle on the given
+     target.  NULL if flags contains ImmediateRelease.  The callback
+     is also run when the buffer is destroyed, but not when the target
+     is destroyed; in that case, the callback key simply becomes
+     invalid.  */
+  IdleCallbackKey (*add_idle_callback) (RenderBuffer, RenderTarget,
+					BufferIdleFunc, void *);
+
+  /* Cancel the given idle callback.  */
+  void (*cancel_idle_callback) (IdleCallbackKey);
+
+  /* Return whether or not the buffer is idle.  NULL if flags contains
+     ImmediateRelease.  */
+  Bool (*is_buffer_idle) (RenderBuffer, RenderTarget);
+
+  /* Wait for a buffer to become idle on the given target.  May be
+     NULL.  */
+  void (*wait_for_idle) (RenderBuffer, RenderTarget);
+
+  /* Ensure wait_for_idle can be called.  May be NULL.  */
+  void (*set_need_wait_for_idle) (RenderTarget);
+
   /* Called during renderer initialization.  */
   void (*init_buffer_funcs) (void);
 };
@@ -414,8 +461,9 @@ extern void RegisterStaticRenderer (const char *, RenderFuncs *,
 				    BufferFuncs *);
 extern void InitRenderers (void);
 
-extern RenderTarget RenderTargetFromWindow (Window);
+extern RenderTarget RenderTargetFromWindow (Window, unsigned long);
 extern RenderTarget RenderTargetFromPixmap (Pixmap);
+extern void RenderSetStandardEventMask (RenderTarget, unsigned long);
 extern void RenderNoteTargetSize (RenderTarget, int, int);
 extern Picture RenderPictureFromTarget (RenderTarget);
 extern void RenderFreePictureFromTarget (Picture);
@@ -432,6 +480,12 @@ extern RenderFence RenderImportFdFence (int, Bool *);
 extern void RenderWaitFence (RenderFence);
 extern void RenderDeleteFence (RenderFence);
 extern int RenderGetFinishFence (Bool *);
+extern PresentCompletionKey RenderPresentToWindow (RenderTarget, RenderBuffer,
+						   pixman_region32_t *,
+						   PresentCompletionFunc,
+						   void *);
+extern void RenderCancelPresentationCallback (PresentCompletionKey);
+extern void RenderCancelPresentation (RenderTarget);
 
 extern DrmFormat *RenderGetDrmFormats (int *);
 extern dev_t RenderGetRenderDevice (Bool *);
@@ -450,6 +504,12 @@ extern void RenderFreeSinglePixelBuffer (RenderBuffer);
 extern void RenderUpdateBufferForDamage (RenderBuffer, pixman_region32_t *,
 					 DrawParams *);
 extern Bool RenderCanReleaseNow (RenderBuffer);
+extern IdleCallbackKey RenderAddIdleCallback (RenderBuffer, RenderTarget,
+					      BufferIdleFunc, void *);
+extern void RenderCancelIdleCallback (IdleCallbackKey);
+extern Bool RenderIsBufferIdle (RenderBuffer, RenderTarget);
+extern void RenderWaitForIdle (RenderBuffer, RenderTarget);
+extern void RenderSetNeedWaitForIdle (RenderTarget);
 
 /* Defined in run.c.  */
 
@@ -610,6 +670,15 @@ typedef struct _View View;
 typedef struct _List List;
 typedef struct _Subcompositor Subcompositor;
 
+typedef enum _FrameMode FrameMode;
+
+enum _FrameMode
+  {
+    ModeStarted,
+    ModeComplete,
+    ModePresented,
+  };
+
 extern void SubcompositorInit (void);
 
 extern Subcompositor *MakeSubcompositor (void);
@@ -634,6 +703,10 @@ extern void SubcompositorSetBoundsCallback (Subcompositor *,
 					    void (*) (void *, int, int,
 						      int, int),
 					    void *);
+extern void SubcompositorSetNoteFrameCallback (Subcompositor *,
+					       void (*) (FrameMode, uint64_t,
+							 void *),
+					       void *);
 extern void SubcompositorBounds (Subcompositor *, int *, int *, int *, int *);
 extern void SubcompositorSetProjectiveTransform (Subcompositor *, int, int);
 
@@ -964,6 +1037,7 @@ extern void XLDefaultCommit (Surface *);
 extern void XLStateAttachBuffer (State *, ExtBuffer *);
 extern void XLStateDetachBuffer (State *);
 extern void XLSurfaceRunFrameCallbacks (Surface *, struct timespec);
+extern void XLSurfaceRunFrameCallbacksMs (Surface *, uint32_t);
 extern CommitCallback *XLSurfaceRunAtCommit (Surface *,
 					     void (*) (Surface *, void *),
 					     void *);
@@ -1004,6 +1078,7 @@ extern Bool XLGetOutputRectAt (int, int, int *, int *, int *, int *);
 extern void *XLAddScaleChangeCallback (void *, void (*) (void *, int));
 extern void XLRemoveScaleChangeCallback (void *);
 extern void XLClearOutputs (Surface *);
+extern void XLOutputSetChangeFunction (void (*) (Time));
 
 /* Defined in atoms.c.  */
 
@@ -1022,7 +1097,8 @@ extern Atom _NET_WM_OPAQUE_REGION, _XL_BUFFER_RELEASE,
   XdndActionAsk, XdndActionPrivate, XdndActionList, XdndActionDescription,
   XdndProxy, XdndEnter, XdndPosition, XdndStatus, XdndLeave, XdndDrop,
   XdndFinished, _NET_WM_FRAME_TIMINGS, _NET_WM_BYPASS_COMPOSITOR, WM_STATE,
-  _NET_WM_WINDOW_TYPE, _NET_WM_WINDOW_TYPE_MENU, _NET_WM_WINDOW_TYPE_DND;
+  _NET_WM_WINDOW_TYPE, _NET_WM_WINDOW_TYPE_MENU, _NET_WM_WINDOW_TYPE_DND,
+  CONNECTOR_ID;
 
 extern XrmQuark resource_quark, app_quark, QString;
 
@@ -1062,6 +1138,7 @@ extern void XLFrameClockSetPredictRefresh (FrameClock *);
 extern void XLFrameClockDisablePredictRefresh (FrameClock *);
 extern void XLFrameClockSetFreezeCallback (FrameClock *, void (*) (void *),
 					   void *);
+extern uint64_t XLFrameClockGetFrameTime (FrameClock *);
 extern void *XLAddCursorClockCallback (void (*) (void *, struct timespec),
 				       void *);
 extern void XLStopCursorClockCallback (void *);
@@ -1476,6 +1553,10 @@ extern void XLInitDecoration (void);
 /* Defined in single_pixel_buffer.c.  */
 
 extern void XLInitSinglePixelBuffer (void);
+
+/* Defined in drm_lease.h.  */
+
+extern void XLInitDrmLease (void);
 
 /* Utility functions that don't belong in a specific file.  */
 
