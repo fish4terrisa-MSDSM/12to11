@@ -74,9 +74,6 @@ typedef struct _Buffer
   int refcount;
 } Buffer;
 
-/* List of all resources for our shared memory global.  */
-static XLList *all_shms;
-
 /* The shared memory global.  */
 static struct wl_global *global_shm;
 
@@ -413,12 +410,6 @@ static const struct wl_shm_pool_interface wl_shm_pool_impl =
   };
 
 static void
-HandleResourceDestroy (struct wl_resource *resource)
-{
-  all_shms = XLListRemove (all_shms, resource);
-}
-
-static void
 CreatePool (struct wl_client *client, struct wl_resource *resource,
 	    uint32_t id, int32_t fd, int32_t size)
 {
@@ -533,8 +524,7 @@ HandleBind (struct wl_client *client, void *data,
     }
 
   wl_resource_set_implementation (resource, &wl_shm_impl,
-				  NULL, HandleResourceDestroy);
-  all_shms = XLListPrepend (all_shms, resource);
+				  NULL, NULL);
 
   PostFormats (resource);
 }

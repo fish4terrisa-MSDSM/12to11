@@ -90,11 +90,6 @@ struct _XdgRole
   /* The role object.  */
   Role role;
 
-  /* Number of references to this role.  Used when the client
-     terminates and the Wayland library destroys objects out of
-     order.  */
-  int refcount;
-
   /* The window backing this role.  */
   Window window;
 
@@ -109,6 +104,11 @@ struct _XdgRole
 
   /* The pending frame ID.  */
   uint64_t pending_frame;
+
+  /* Number of references to this role.  Used when the client
+     terminates and the Wayland library destroys objects out of
+     order.  */
+  int refcount;
 
   /* Various role state.  */
   int state;
@@ -126,6 +126,9 @@ struct _XdgRole
   /* The current xdg_surface state.  */
   XdgState current_state;
 
+  /* List of callbacks run upon a ConfigureNotify event.  */
+  ReconstrainCallback reconstrain_callbacks;
+
   /* Configure event serial.  */
   uint32_t conf_serial, last_specified_serial;
 
@@ -142,17 +145,14 @@ struct _XdgRole
      events to wait for before ignoring those coordinates.  */
   int pending_synth_configure;
 
-  /* The type of the attached role.  */
-  XdgRoleImplementationType type;
-
   /* The input region of the attached subsurface.  */
   pixman_region32_t input_region;
 
-  /* List of callbacks run upon a ConfigureNotify event.  */
-  ReconstrainCallback reconstrain_callbacks;
-
   /* The number of desynchronous children of this toplevel.  */
   int n_desync_children;
+
+  /* The type of the attached role.  */
+  XdgRoleImplementationType type;
 };
 
 struct _ReleaseLaterRecord
@@ -537,15 +537,7 @@ AckConfigure (struct wl_client *client, struct wl_resource *resource,
   fprintf (stderr, "ack_configure: %"PRIu32"\n", serial);
 #endif
 
-  if (serial < xdg_role->conf_serial)
-    {
-      /* The client specified an outdated serial.  */
-      wl_resource_post_error (resource, XDG_SURFACE_ERROR_INVALID_SERIAL,
-			      "serial specified not monotonic");
-      return;
-    }
-
-  if (serial && serial == xdg_role->last_specified_serial)
+  if (serial && serial <= xdg_role->last_specified_serial)
     {
       /* The client specified the same serial twice.  */
       wl_resource_post_error (resource, XDG_SURFACE_ERROR_INVALID_SERIAL,
@@ -1005,12 +997,19 @@ NoteConfigure (XdgRole *role, XEvent *event)
   if (role->pending_synth_configure)
     role->pending_synth_configure--;
 
-  /* Update the surface that the surface is inside.  */
   if (role->role.surface)
-    XLUpdateSurfaceOutputs (role->role.surface,
-			    event->xconfigure.x + role->min_x,
-			    event->xconfigure.y + role->min_y,
-			    -1, -1);
+    {
+      /* Update the list of outputs that the surface is inside.  */
+      XLUpdateSurfaceOutputs (role->role.surface,
+			      event->xconfigure.x + role->min_x,
+			      event->xconfigure.y + role->min_y,
+			      -1, -1);
+
+      /* Update pointer constraints.  */
+      XLPointerConstraintsSurfaceMovedTo (role->role.surface,
+					  event->xconfigure.x,
+					  event->xconfigure.y);
+    }
 
   RunReconstrainCallbacksForXEvent (role, event);
 }

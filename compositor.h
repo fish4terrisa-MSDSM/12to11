@@ -89,6 +89,7 @@ struct _Compositor
 /* Forward declarations from seat.c.  */
 
 typedef struct _Seat Seat;
+typedef struct _Pointer Pointer;
 
 /* Forward declarations from primary_selection.c.  */
 
@@ -749,6 +750,8 @@ extern void ViewClearViewport (View *);
 extern void ViewSetData (View *, void *);
 extern void *ViewGetData (View *);
 
+extern void ViewSetMaybeResizedFunction (View *, void (*) (View *));
+
 extern void ViewTranslate (View *, int, int, int *, int *);
 
 extern void ViewFree (View *);
@@ -860,6 +863,7 @@ typedef struct _DestroyCallback DestroyCallback;
 enum _ClientDataType
   {
     SubsurfaceData,
+    PointerConfinementData,
     MaxClientData,
   };
 
@@ -1398,9 +1402,15 @@ extern unsigned int XLSeatGetEffectiveModifiers (Seat *);
 extern Bool XLSeatResizeInProgress (Seat *);
 extern void XLSeatSetTextInputFuncs (TextInputFuncs *);
 extern int XLSeatGetKeyboardDevice (Seat *);
+extern int XLSeatGetPointerDevice (Seat *);
 extern Seat *XLSeatGetInputMethodSeat (void);
 extern void XLSeatDispatchCoreKeyEvent (Seat *, Surface *, XEvent *,
 					KeySym);
+extern Seat *XLPointerGetSeat (Pointer *);
+extern void XLSeatGetMouseData (Seat *, Surface **, double *, double *,
+				double *, double *);
+extern void XLSeatLockPointer (Seat *);
+extern void XLSeatUnlockPointer (Seat *);
 
 extern Cursor InitDefaultCursor (void);
 
@@ -1554,9 +1564,19 @@ extern void XLInitDecoration (void);
 
 extern void XLInitSinglePixelBuffer (void);
 
-/* Defined in drm_lease.h.  */
+/* Defined in drm_lease.c.  */
 
 extern void XLInitDrmLease (void);
+
+/* Defined in pointer_constraints.c.  */
+
+extern void XLInitPointerConstraints (void);
+extern void XLPointerBarrierCheck (Seat *, Surface *, double, double,
+				   double, double);
+extern void XLPointerBarrierLeft (Seat *, Surface *);
+extern void XLPointerConstraintsSurfaceMovedTo (Surface *, int, int);
+extern void XLPointerConstraintsSubsurfaceMoved (Surface *);
+extern void XLPointerConstraintsReconfineSurface (Surface *);
 
 /* Utility functions that don't belong in a specific file.  */
 

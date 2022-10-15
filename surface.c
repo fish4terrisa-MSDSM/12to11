@@ -634,6 +634,10 @@ ApplyInputRegion (Surface *surface)
       ViewSetInput (surface->view, &temp);
       pixman_region32_fini (&temp);
     }
+
+  /* The input region has changed, so pointer confinement must be
+     redone.  */
+  XLPointerConstraintsReconfineSurface (surface);
 }
 
 static void
@@ -828,6 +832,9 @@ HandleScaleChanged (void *data, int new_scale)
 	    surface->role->funcs.end_subframe (surface, surface->role);
 	}
     }
+
+  /* The scale has changed, so pointer confinement must be redone.  */
+  XLPointerConstraintsReconfineSurface (surface);
 }
 
 static void
@@ -1428,6 +1435,18 @@ HandleSurfaceDestroy (struct wl_resource *resource)
   XLFree (surface);
 }
 
+static void
+MaybeResized (View *view)
+{
+  Surface *surface;
+
+  surface = ViewGetData (view);
+
+  /* The view may have been resized; recompute pointer confinement
+     area if necessary.  */
+  XLPointerConstraintsReconfineSurface (surface);
+}
+
 void
 XLCreateSurface (struct wl_client *client,
 		 struct wl_resource *resource,
@@ -1467,6 +1486,9 @@ XLCreateSurface (struct wl_client *client,
   /* Make it so that seat.c can associate the surface with the
      view.  */
   ViewSetData (surface->view, surface);
+
+  /* Make it so pointer confinement stuff can run after resize.  */
+  ViewSetMaybeResizedFunction (surface->view, MaybeResized);
 
   /* Initialize the sentinel node for the commit callback list.  */
   surface->commit_callbacks.last = &surface->commit_callbacks;
@@ -1702,8 +1724,7 @@ Window
 XLWindowFromSurface (Surface *surface)
 {
   if (!surface->role
-      || !surface->role->funcs.get_window (surface,
-					   surface->role))
+      || !surface->role->funcs.get_window)
     return None;
 
   return surface->role->funcs.get_window (surface,

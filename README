@@ -2,10 +2,7 @@ This is a tool for running Wayland applications on an X server,
 preferably with a compositing manager running.
 
 It is not yet complete.  What is not yet implemented includes support
-for touchscreens, input methods, device switching in dmabuf feedback,
-and the single-pixel buffer protocol extension.
-
-There are also problems with output reporting in subsurfaces.
+for touchscreens, and device switching in dmabuf feedback.
 
 It is not portable to systems other than recent versions of GNU/Linux
 running the X.Org server 1.20 or later, and has not been tested on
@@ -20,20 +17,19 @@ extensions:
   Nonrectangular Window Shape Extension, version 1.1 or later
   MIT Shared Memory Extension, version 1.2 or later
   X Resize, Rotate and Reflect Extension, version 1.3 or later
-    (this will soon be 1.4, once support for multiple GPU
-     systems is fully implemented)
   X Synchronization Extension, version 1.0 or later
   X Rendering Extension, version 1.2 or later
   X Input Extension, version 2.3 or later
   Direct Rendering Interface 3, version 1.2 or later
-  X Fixes Extension, version 1 or later
+  X Fixes Extension, version 1.5 or later
+  X Presentation Extension, version 1.0 or later
 
 In addition, it requires Xlib to be built with the XCB transport, and
 the XCB bindings for MIT-SHM and DRI3 to be available.
 
 Sometimes, it might be desirable to build with EGL, and use OpenGL ES
 2.0 for i.e. YUV video format support.  To do so, uncomment the block
-of code for EGL support in libraries.def before running `xmkmf'.  This
+of code for EGL support in 12to11.conf before running `xmkmf'.  This
 will additionally require the EGL and GLESv2 development files, and
 for the following EGL and GLES extensions to be present at runtime:
 
@@ -69,10 +65,17 @@ complete degree:
   'zxdg_decoration_manager_v1',                 version:  1
   'zwp_text_input_manager_v3',                  version:  1
   'wp_single_pixel_buffer_manager_v1',          version:  1
+  'zwp_pointer_constraints_v1',                 version:  1
 
 When built with EGL, the following Wayland protocol is also supported:
 
   'zwp_linux_explicit_synchronization_v1',      version:  2
+
+When the X server supports version 1.6 or later of the X Resize,
+Rotate and Reflect Extension, the following Wayland protocol is also
+supported:
+
+  'wp_drm_lease_device_v1',                     version: 1
 
 With the main caveat being that zwp_linux_dmabuf_v1 has no real
 support for multiple-provider setups (help wanted).
@@ -85,7 +88,7 @@ It would also be nice to have pinch gesture support.
 This directory is organized as follows:
 
   Imakefile     - the top level Makefile template
-  libraries.def - files for libraries that don't provide Imakefiles
+  12to11.conf   - configuration
   *.xml         - Wayland protocol definition source
   *.c, *.h      - C source code
   *.awk         - scripts used to generate headers
@@ -93,7 +96,7 @@ This directory is organized as follows:
                   those containing MIME types or shaders
 
 Building the source code is simple, provided that you have the
-necessary libwayland-server library, pixman, XCB, and X extension
+necessary libwayland-server library, pixman, XCB, DRM, and X extension
 libraries installed:
 
   xmkmf # to generate the Makefile

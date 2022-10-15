@@ -62,11 +62,11 @@ struct _BufferParams
   /* Entries for each plane.  DRI3 only supports up to 4 planes.  */
   TemporarySetEntry entries[4];
 
-  /* Some flags.  */
-  int flags;
-
   /* The struct wl_resource associated with this object.  */
   struct wl_resource *resource;
+
+  /* Some flags.  */
+  int flags;
 
   /* The width and height of the buffer that will be created.  */
   int width, height;
@@ -80,14 +80,14 @@ struct _Buffer
   /* The RenderBuffer associated with this buffer.  */
   RenderBuffer render_buffer;
 
-  /* The width and height of this buffer.  */
-  unsigned int width, height;
-
   /* The wl_resource corresponding to this buffer.  */
   struct wl_resource *resource;
 
   /* List of "destroy listeners" connected to this buffer.  */
   XLList *destroy_listeners;
+
+  /* The width and height of this buffer.  */
+  unsigned int width, height;
 
   /* The number of references to this buffer.  */
   int refcount;

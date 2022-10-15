@@ -557,6 +557,9 @@ MoveFractional (Subsurface *subsurface)
      purposes.  */
   subsurface->role.surface->input_delta_x = x - x_int;
   subsurface->role.surface->input_delta_y = y - y_int;
+
+  /* Apply pointer constraints.  */
+  XLPointerConstraintsSubsurfaceMoved (subsurface->role.surface);
 }
 
 static void

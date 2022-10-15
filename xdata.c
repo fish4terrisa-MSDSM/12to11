@@ -50,11 +50,11 @@ struct _ReadTargetsData
   /* Array of atoms read from the selection.  */
   Atom *atoms;
 
-  /* Number of atoms read.  */
-  int n_atoms;
-
   /* What selection is being read from.  */
   Atom selection;
+
+  /* Number of atoms read.  */
+  int n_atoms;
 };
 
 struct _TargetMapping
@@ -145,11 +145,11 @@ struct _ConversionTransferInfo
   /* And the amount of data used in the output buffer.  */
   size_t outsize;
 
-  /* The data format conversion context.  */
-  iconv_t cd;
-
   /* Any active file descriptor write callback.  */
   WriteFd *write_callback;
+
+  /* The data format conversion context.  */
+  iconv_t cd;
 };
 
 enum
@@ -202,16 +202,16 @@ struct _ConversionWriteInfo
 struct _TargetMappingTable
 {
   /* Array of indices into direct_transfer.  */
-  unsigned short *buckets[32];
-
-  /* Number of elements in each array.  */
-  unsigned short n_elements[32];
-
-  /* Array of indices into direct_transfer.  */
   unsigned short *atom_buckets[16];
 
-  /* Number of elements in each array.  */
+  /* Array of indices into direct_transfer.  */
+  unsigned short *buckets[32];
+
+  /* Number of elements in each atom bucket.  */
   unsigned short n_atom_elements[16];
+
+  /* Number of elements in each bucket.  */
+  unsigned short n_elements[32];
 };
 
 /* Base event code of the Xfixes extension.  */
@@ -2228,7 +2228,7 @@ XLInitXData (void)
   rc = XFixesQueryVersion (compositor.display,
 			   &major, &minor);
 
-  if (!rc || major < 1)
+  if (!rc || major < 5)
     {
       fprintf (stderr, "The X server does not support the "
 	       "right version of the XFixes protocol extension\n");

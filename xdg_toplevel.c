@@ -134,26 +134,6 @@ struct _XdgToplevel
   /* The wl_resource associated with this toplevel.  */
   struct wl_resource *resource;
 
-  /* The number of references to this toplevel.  */
-  int refcount;
-
-  /* Some state associated with this toplevel.  */
-  int state;
-
-  /* The serial of the last configure sent.  */
-  uint32_t conf_serial;
-
-  /* Whether or not we are waiting for a reply to a configure
-     event.  */
-  Bool conf_reply;
-
-  /* Array of states.  */
-  struct wl_array states;
-
-  /* The current width and height of this toplevel as received in the
-     last ConfigureNotify event.  */
-  int width, height;
-
   /* The Motif window manager hints associated with this toplevel.  */
   PropMotifWmHints motif;
 
@@ -163,22 +143,14 @@ struct _XdgToplevel
   /* All resize callbacks currently posted.  */
   XLList *resize_callbacks;
 
-  /* Minimum size of this toplevel.  */
-  int min_width, min_height;
-
-  /* Maximim size of this toplevel.  */
-  int max_width, max_height;
-
-  /* Pending values.  */
-  int pending_max_width, pending_max_height;
-  int pending_min_height, pending_min_width;
-
-  /* How much to move upon the next ack_configure.  Used to resize a
-     window westwards or northwards.  */
-  int ack_west, ack_north;
-
-  /* X Windows size hints.  */
-  XSizeHints size_hints;
+  /* Timer for completing window state changes.  The order of
+     _NET_WM_STATE changes and ConfigureNotify events is not
+     predictable, so we batch up both kinds of events with a 0.01
+     second delay by default, before sending the resulting
+     ConfigureNotify event.  However, if drag-to-resize is in
+     progress, no such delay is effected.  */
+#define DefaultStateDelayNanoseconds 10000000
+  Timer *configuration_timer;
 
   /* List of callbacks run upon unmapping.  The callbacks are then
      deleted.  */
@@ -189,6 +161,9 @@ struct _XdgToplevel
 
   /* The unmap callback for the parent toplevel.  */
   XdgUnmapCallback *parent_callback;
+
+  /* Any decoration resource associated with this toplevel.  */
+  XdgDecoration *decoration;
 
   /* Various geometries before a given state change.
 
@@ -210,6 +185,20 @@ struct _XdgToplevel
   int width01, height01, width10, height10;
   int width00, height00, width11, height11;
 
+  /* Minimum size of this toplevel.  */
+  int min_width, min_height;
+
+  /* Maximim size of this toplevel.  */
+  int max_width, max_height;
+
+  /* Pending values.  */
+  int pending_max_width, pending_max_height;
+  int pending_min_height, pending_min_width;
+
+  /* How much to move upon the next ack_configure.  Used to resize a
+     window westwards or northwards.  */
+  int ack_west, ack_north;
+
   /* The width, height, west and north motion of the next resize.  */
   int resize_width, resize_height, resize_west, resize_north;
 
@@ -218,24 +207,35 @@ struct _XdgToplevel
      _NET_WM_ALLOWED_ACTIONS.  */
   int supported;
 
-  /* Timer for completing window state changes.  The order of
-     _NET_WM_STATE changes and ConfigureNotify events is not
-     predictable, so we batch up both kinds of events with a 0.01
-     second delay by default, before sending the resulting
-     ConfigureNotify event.  However, if drag-to-resize is in
-     progress, no such delay is effected.  */
-#define DefaultStateDelayNanoseconds 10000000
-  Timer *configuration_timer;
+  /* The number of references to this toplevel.  */
+  int refcount;
+
+  /* Some state associated with this toplevel.  */
+  int state;
+
+  /* The serial of the last configure sent.  */
+  uint32_t conf_serial;
+
+  /* Whether or not we are waiting for a reply to a configure
+     event.  */
+  Bool conf_reply;
+
+  /* The current width and height of this toplevel as received in the
+     last ConfigureNotify event.  */
+  int width, height;
 
   /* The width and height used by that timer if
      StatePendingConfigureSize is set.  */
   int configure_width, configure_height;
 
-  /* Any decoration resource associated with this toplevel.  */
-  XdgDecoration *decoration;
+  /* Array of states.  */
+  struct wl_array states;
 
   /* The decoration mode.  */
   DecorationMode decor;
+
+  /* X Windows size hints.  */
+  XSizeHints size_hints;
 };
 
 struct _XdgDecoration

@@ -59,9 +59,6 @@ struct _DndState
   /* The target window.  */
   Window target_window;
 
-  /* The protocol version in use.  */
-  int proto;
-
   /* The seat that is being used.  */
   Seat *seat;
 
@@ -72,6 +69,19 @@ struct _DndState
      protocol, making our interaction with Wayland clients very
      convenient.  */
   char **targets;
+
+  /* The timestamp to use for accessing selection data.  */
+  Time timestamp;
+
+  /* The toplevel or child surface the pointer is currently
+     inside.  */
+  Surface *child;
+
+  /* The unmap callback for that child.  */
+  UnmapCallback *unmap_callback;
+
+  /* The protocol version in use.  */
+  int proto;
 
   /* Number of targets in that array.  */
   int ntargets;
@@ -111,16 +121,6 @@ struct _DndState
   /* Whether or not the drop has already happened.  */
   Bool dropped;
 
-  /* The timestamp to use for accessing selection data.  */
-  Time timestamp;
-
-  /* The toplevel or child surface the pointer is currently
-     inside.  */
-  Surface *child;
-
-  /* The unmap callback for that child.  */
-  UnmapCallback *unmap_callback;
-
   /* The version of the XDND protocol being used.  */
   int version;
 };
@@ -153,6 +153,12 @@ struct _DragState
   /* The window cache.  */
   WindowCache *window_cache;
 
+  /* The time at which ownership of the selection was obtained.  */
+  Time timestamp;
+
+  /* The selected action.  */
+  Atom action;
+
   /* The last coordinates the pointer was seen at.  */
   int last_root_x, last_root_y;
 
@@ -172,12 +178,6 @@ struct _DragState
   /* Rectangle within which further position events should not be
      sent.  */
   XRectangle mouse_rect;
-
-  /* The time at which ownership of the selection was obtained.  */
-  Time timestamp;
-
-  /* The selected action.  */
-  Atom action;
 
   /* The modifiers currently held down.  */
   unsigned int modifiers;
@@ -215,18 +215,8 @@ struct _WindowCacheEntry
      is really a WindowCacheEntryHeader.  */
   WindowCacheEntry *children;
 
-  /* The bounds of the window relative to its parents.  */
-  int x, y, width, height;
-
-  /* Some flags.  The protocol version is flags >> 16 & 0xff; 0 means
-     XDND is not supported.  */
-  int flags;
-
   /* The XDND proxy window.  Usually None.  */
   Window dnd_proxy;
-
-  /* The region describing its shape.  */
-  pixman_region32_t shape;
 
   /* The window cache.  */
   WindowCache *cache;
@@ -236,6 +226,16 @@ struct _WindowCacheEntry
 
   /* The key for input selection, if this is the root window.  */
   RootWindowSelection *input_key;
+
+  /* The bounds of the window relative to its parents.  */
+  int x, y, width, height;
+
+  /* Some flags.  The protocol version is flags >> 16 & 0xff; 0 means
+     XDND is not supported.  */
+  int flags;
+
+  /* The region describing its shape.  */
+  pixman_region32_t shape;
 };
 
 /* The global drop state.  */

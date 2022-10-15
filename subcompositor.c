@@ -273,6 +273,9 @@ struct _View
      attached.  */
   ExtBuffer *buffer;
 
+  /* Function called upon the view potentially being resized.  */
+  void (*maybe_resized) (View *);
+
   /* The damaged and opaque regions.  */
   pixman_region32_t damage, opaque;
 
@@ -1262,13 +1265,17 @@ main (int argc, char **argv)
 
 /* Notice that VIEW's size has changed, while VIEW itself has not
    moved.  Recompute the max_x, min_x, min_y, and max_y of its
-   subcompositor.  */
+   subcompositor.  In addition, run the view's resize function, if
+   any.  */
 
 static void
 ViewAfterSizeUpdate (View *view)
 {
   int doflags;
   Bool mapped;
+
+  if (view->maybe_resized)
+    view->maybe_resized (view);
 
   if (!view->subcompositor || !ViewVisibilityState (view, &mapped)
       || !mapped || IsSkipped (view))
@@ -1332,7 +1339,7 @@ ViewAttachBuffer (View *view, ExtBuffer *buffer)
 	     as well.  */
 	  SetGarbaged (view->subcompositor);
 
-	  /* Recompute view bounds.  */
+	  /* Recompute view and subcompositor bounds.  */
 	  ViewAfterSizeUpdate (view);
 	}
     }
@@ -2989,6 +2996,12 @@ void
 ViewSetData (View *view, void *data)
 {
   view->data = data;
+}
+
+void
+ViewSetMaybeResizedFunction (View *view, void (*func) (View *))
+{
+  view->maybe_resized = func;
 }
 
 void

@@ -87,6 +87,7 @@ enum
     IsDragging	      = (1 << 3),
     IsDropped	      = (1 << 4),
     IsTextInputSeat   = (1 << 5),
+    IsPointerLocked   = (1 << 6),
   };
 
 enum
@@ -215,22 +216,22 @@ struct _SeatCursor
   /* The seat this cursor is for.  */
   Seat *seat;
 
-  /* The hotspot of the cursor.  */
-  int hotspot_x, hotspot_y;
-
   /* The subcompositor for this cursor.  */
   Subcompositor *subcompositor;
 
   /* The frame callback for this cursor.  */
   void *cursor_frame_key;
 
-  /* Whether or not this cursor is currently keeping the cursor clock
-     active.  */
-  Bool holding_cursor_clock;
-
   /* Ring of render targets for cursors.  This allows updating the
      cursor while not creating a new render target each time.  */
   CursorRing *cursor_ring;
+
+  /* The hotspot of the cursor.  */
+  int hotspot_x, hotspot_y;
+
+  /* Whether or not this cursor is currently keeping the cursor clock
+     active.  */
+  Bool holding_cursor_clock;
 };
 
 struct _ResizeDoneCallback
@@ -250,8 +251,8 @@ struct _ScrollValuator
   /* The next scroll valuator in this list.  */
   ScrollValuator *next;
 
-  /* The direction of this valuator.  */
-  Direction direction;
+  /* The serial of the last event to have updated this valuator.  */
+  unsigned long enter_serial;
 
   /* The current value of this valuator.  */
   double value;
@@ -262,8 +263,8 @@ struct _ScrollValuator
   /* The number of this valuator.  */
   int number;
 
-  /* The serial of the last event to have updated this valuator.  */
-  unsigned long enter_serial;
+  /* The direction of this valuator.  */
+  Direction direction;
 };
 
 struct _Pointer
@@ -309,17 +310,17 @@ struct _SeatClientInfo
   /* The next and last structures in the client info chain.  */
   SeatClientInfo *next, *last;
 
-  /* List of pointer objects on this seat for this client.  */
-  Pointer pointers;
-
-  /* List of keyboard objects on this seat for this client.  */
-  Keyboard keyboards;
-
   /* The client corresponding to this object.  */
   struct wl_client *client;
 
+  /* List of pointer objects on this seat for this client.  */
+  Pointer pointers;
+
   /* The serial of the last enter event sent.  */
   uint32_t last_enter_serial;
+
+  /* List of keyboard objects on this seat for this client.  */
+  Keyboard keyboards;
 };
 
 struct _ModifierChangeCallback
@@ -336,14 +337,14 @@ struct _ModifierChangeCallback
 
 struct _Seat
 {
+  /* wl_global associated with this seat.  */
+  struct wl_global *global;
+
   /* XI device ID of the master keyboard device.  */
   int master_keyboard;
 
   /* XI device ID of the master pointer device.  */
   int master_pointer;
-
-  /* wl_global associated with this seat.  */
-  struct wl_global *global;
 
   /* Number of references to this seat.  */
   int refcount;
@@ -382,9 +383,6 @@ struct _Seat
   /* How many times the grab is held on this seat.  */
   int grab_held;
 
-  /* Array of keys currently held down.  */
-  struct wl_array keys;
-
   /* Modifier masks.  */
   unsigned int base, locked, latched;
 
@@ -402,41 +400,17 @@ struct _Seat
   /* The current cursor attached to this seat.  */
   SeatCursor *cursor;
 
-  /* The serial of the last button event sent.  */
-  uint32_t last_button_serial;
-
-  /* The serial of the last button press event sent.  GTK 4 sends this
-     even when grabbing a popup in response to a button release
-     event.  */
-  uint32_t last_button_press_serial;
-
-  /* The last serial used to obtain a grab.  */
-  uint32_t last_grab_serial;
-
-  /* The last edge used to obtain a grab.  */
-  WhatEdge last_grab_edge;
-
-  /* The last timestamp used to obtain a grab.  */
-  Time last_grab_time;
-
-  /* The button of the last button event sent, and the root_x and
-     root_y of the last button or motion event.  */
-  int last_button, its_root_x, its_root_y;
-
-  /* When it was sent.  */
-  Time its_press_time;
-
-  /* The serial of the last key event sent.  */
-  uint32_t last_keyboard_serial;
-
-  /* The time of the last key event sent.  */
-  Time its_depress_time;
-
-  /* Whether or not a resize is in progress.  */
-  Bool resize_in_progress;
+  /* The icon surface.  */
+  IconSurface *icon_surface;
 
   /* Callbacks run after a resize completes.  */
   ResizeDoneCallback resize_callbacks;
+
+  /* The drag-and-drop grab window.  This is a 1x1 InputOnly window
+     with an empty input region at 0, 0, used to differentiate between
+     events delivered to a surface during drag and drop, and events
+     delivered due to the grab.  */
+  Window grab_window;
 
   /* List of scroll valuators on this seat.  */
   ScrollValuator *valuators;
@@ -452,6 +426,67 @@ struct _Seat
 
   /* Unmap callback for that surface.  */
   UnmapCallback *resize_surface_callback;
+
+  /* The last edge used to obtain a grab.  */
+  WhatEdge last_grab_edge;
+
+  /* The last timestamp used to obtain a grab.  */
+  Time last_grab_time;
+
+  /* When it was sent.  */
+  Time its_press_time;
+
+  /* The time of the last key event sent.  */
+  Time its_depress_time;
+
+  /* The grab surface.  While it exists, events for different clients
+     will be reported relative to it.  */
+  Surface *grab_surface;
+
+  /* The unmap callback.  */
+  UnmapCallback *grab_surface_callback;
+
+  /* The data source for drag-and-drop.  */
+  DataSource *data_source;
+
+  /* The destroy callback for the data source.  */
+  void *data_source_destroy_callback;
+
+  /* The surface on which this drag operation started.  */
+  Surface *drag_start_surface;
+
+  /* The UnmapCallback for that surface.  */
+  UnmapCallback *drag_start_unmap_callback;
+
+  /* The last surface to be entered during drag-and-drop.  */
+  Surface *drag_last_surface;
+
+  /* The destroy callback for that surface.  */
+  DestroyCallback *drag_last_surface_destroy_callback;
+
+  /* The time the active grab was acquired.  */
+  Time drag_grab_time;
+
+  /* The button of the last button event sent, and the root_x and
+     root_y of the last button or motion event.  */
+  int last_button, its_root_x, its_root_y;
+
+  /* The serial of the last button event sent.  */
+  uint32_t last_button_serial;
+
+  /* The serial of the last button press event sent.  GTK 4 sends this
+     even when grabbing a popup in response to a button release
+     event.  */
+  uint32_t last_button_press_serial;
+
+  /* The last serial used to obtain a grab.  */
+  uint32_t last_grab_serial;
+
+  /* The serial of the last key event sent.  */
+  uint32_t last_keyboard_serial;
+
+  /* Whether or not a resize is in progress.  */
+  Bool resize_in_progress;
 
   /* Where that resize started.  */
   int resize_start_root_x, resize_start_root_y;
@@ -483,45 +518,14 @@ struct _Seat
   /* The root_x and root_y of the last motion or crossing event.  */
   double last_motion_x, last_motion_y;
 
-  /* The grab surface.  While it exists, events for different clients
-     will be reported relative to it.  */
-  Surface *grab_surface;
-
-  /* The unmap callback.  */
-  UnmapCallback *grab_surface_callback;
-
-  /* The data source for drag-and-drop.  */
-  DataSource *data_source;
-
-  /* The destroy callback for the data source.  */
-  void *data_source_destroy_callback;
-
-  /* The surface on which this drag operation started.  */
-  Surface *drag_start_surface;
-
-  /* The UnmapCallback for that surface.  */
-  UnmapCallback *drag_start_unmap_callback;
-
-  /* The last surface to be entered during drag-and-drop.  */
-  Surface *drag_last_surface;
-
-  /* The destroy callback for that surface.  */
-  DestroyCallback *drag_last_surface_destroy_callback;
-
-  /* The time the active grab was acquired.  */
-  Time drag_grab_time;
-
-  /* The icon surface.  */
-  IconSurface *icon_surface;
-
-  /* The drag-and-drop grab window.  This is a 1x1 InputOnly window
-     with an empty input region at 0, 0, used to differentiate between
-     events delivered to a surface during drag and drop, and events
-     delivered due to the grab.  */
-  Window grab_window;
+  /* The x and y of the last surface movement.  */
+  double last_surface_x, last_surface_y;
 
   /* List of all modifier change callbacks attached to this seat.  */
   ModifierChangeCallback modifier_callbacks;
+
+  /* Array of keys currently held down.  */
+  struct wl_array keys;
 };
 
 struct _DeviceInfo
@@ -3056,9 +3060,13 @@ SendMotion (Seat *seat, Surface *surface, double x, double y,
 	  pointer->info->last_enter_serial = serial;
 	}
 
-      wl_pointer_send_motion (pointer->resource, time,
-			      wl_fixed_from_double (x),
-			      wl_fixed_from_double (y));
+      /* If the seat is locked, don't send any motion events at
+	 all.  */
+
+      if (!(seat->flags & IsPointerLocked))
+	wl_pointer_send_motion (pointer->resource, time,
+				wl_fixed_from_double (x),
+				wl_fixed_from_double (y));
 
       if (wl_resource_get_version (pointer->resource) >= 5)
 	wl_pointer_send_frame (pointer->resource);
@@ -3312,6 +3320,10 @@ EnteredSurface (Seat *seat, Surface *surface, Time time,
 	    FreeCursor (seat->cursor);
 	}
 
+      /* Cancel any pointer confinement.  */
+      XLPointerBarrierLeft (seat, seat->last_seen_surface);
+
+      /* Clear the surface.  */
       XLSurfaceCancelRunOnFree (seat->last_seen_surface_callback);
       seat->last_seen_surface = NULL;
       seat->last_seen_surface_callback = NULL;
@@ -3322,6 +3334,8 @@ EnteredSurface (Seat *seat, Surface *surface, Time time,
       seat->last_seen_surface = surface;
       seat->last_seen_surface_callback
 	= XLSurfaceRunOnFree (surface, ClearLastSeenSurface, seat);
+      seat->last_surface_x = x;
+      seat->last_surface_y = y;
 
       if (seat->flags & IsDragging)
 	DragEnter (seat, surface, x, y);
@@ -3682,6 +3696,16 @@ HandleValuatorMotion (Seat *seat, Surface *dispatch, double x, double y,
 }
 
 static void
+CheckPointerBarrier (Seat *seat, Surface *dispatch, double x, double y,
+		     double root_x, double root_y)
+{
+  /* Check if DISPATCH has a pointer confinement that would be
+     activated by this motion.  */
+
+  XLPointerBarrierCheck (seat, dispatch, x, y, root_x, root_y);
+}
+
+static void
 DispatchMotion (Subcompositor *subcompositor, XIDeviceEvent *xev)
 {
   Seat *seat;
@@ -3774,7 +3798,19 @@ DispatchMotion (Subcompositor *subcompositor, XIDeviceEvent *xev)
       if (seat->flags & IsDragging)
 	DragMotion (seat, dispatch, x, y, xev->time);
       else
-	SendMotion (seat, dispatch, x, y, xev->time);
+	{
+	  /* Send the motion event.  */
+	  SendMotion (seat, dispatch, x, y, xev->time);
+
+	  /* Check if this motion would cause a pointer constraint to
+	     activate.  */
+	  CheckPointerBarrier (seat, dispatch, x, y, xev->root_x,
+			       xev->root_y);
+	}
+
+      /* Set the last movement location.  */
+      seat->last_surface_x = x;
+      seat->last_surface_y = y;
     }
 
   /* These values are for tracking the output that a cursor is in.  */
@@ -5422,6 +5458,12 @@ XLSeatGetKeyboardDevice (Seat *seat)
   return seat->master_keyboard;
 }
 
+int
+XLSeatGetPointerDevice (Seat *seat)
+{
+  return seat->master_pointer;
+}
+
 Seat *
 XLSeatGetInputMethodSeat (void)
 {
@@ -5508,4 +5550,34 @@ XLSeatDispatchCoreKeyEvent (Seat *seat, Surface *surface, XEvent *event,
   /* Restore the modifiers.  */
   if (group != seat->effective_group || state != effective)
     SendKeyboardModifiers (seat, surface);
+}
+
+Seat *
+XLPointerGetSeat (Pointer *pointer)
+{
+  return pointer->seat;
+}
+
+void
+XLSeatGetMouseData (Seat *seat, Surface **last_seen_surface,
+		    double *last_surface_x, double *last_surface_y,
+		    double *its_root_x, double *its_root_y)
+{
+  *last_seen_surface = seat->last_seen_surface;
+  *last_surface_x = seat->last_surface_x;
+  *last_surface_y = seat->last_surface_y;
+  *its_root_x = seat->its_root_x;
+  *its_root_y = seat->its_root_y;
+}
+
+void
+XLSeatLockPointer (Seat *seat)
+{
+  seat->flags |= IsPointerLocked;
+}
+
+void
+XLSeatUnlockPointer (Seat *seat)
+{
+  seat->flags &= ~IsPointerLocked;
 }
