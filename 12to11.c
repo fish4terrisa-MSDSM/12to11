@@ -235,6 +235,7 @@ XLMain (int argc, char **argv)
   XLInitSinglePixelBuffer ();
   XLInitDrmLease ();
   XLInitPointerConstraints ();
+  XLInitRelativePointer ();
 
   /* This has to come after the rest of the initialization.  */
   DetermineServerTime ();

@@ -66,6 +66,7 @@ complete degree:
   'zwp_text_input_manager_v3',                  version:  1
   'wp_single_pixel_buffer_manager_v1',          version:  1
   'zwp_pointer_constraints_v1',                 version:  1
+  'zwp_relative_pointer_manager_v1',            version:  1
 
 When built with EGL, the following Wayland protocol is also supported:
 

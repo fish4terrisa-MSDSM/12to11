@@ -88,6 +88,7 @@ enum
     IsDropped	      = (1 << 4),
     IsTextInputSeat   = (1 << 5),
     IsPointerLocked   = (1 << 6),
+    IsSurfaceCoordSet = (1 << 7),
   };
 
 enum
@@ -105,6 +106,7 @@ typedef struct _Seat Seat;
 typedef struct _SeatClientInfo SeatClientInfo;
 typedef struct _Pointer Pointer;
 typedef struct _Keyboard Keyboard;
+typedef struct _RelativePointer RelativePointer;
 typedef struct _SeatCursor SeatCursor;
 typedef struct _ResizeDoneCallback ResizeDoneCallback;
 typedef struct _ScrollValuator ScrollValuator;
@@ -288,7 +290,7 @@ struct _Pointer
 
 struct _Keyboard
 {
-  /* The keyboard this pointer object refers to.  */
+  /* The seat this keyboard object refers to.  */
   Seat *seat;
 
   /* The struct wl_resource associated with this keyboard.  */
@@ -302,25 +304,45 @@ struct _Keyboard
   Keyboard *next, *next1, *last, *last1;
 };
 
+struct _RelativePointer
+{
+  /* The seat this relative pointer refers to.  */
+  Seat *seat;
+
+  /* The struct wl_resource associated with this relative pointer.  */
+  struct wl_resource *resource;
+
+  /* The seat client info associated with this relative pointer
+     resource.  */
+  SeatClientInfo *info;
+
+  /* The next and last relative pointers attached to the seat client
+     info.  */
+  RelativePointer *next, *last;
+};
+
 struct _SeatClientInfo
 {
-  /* Number of references to this seat client information.  */
-  int refcount;
-
   /* The next and last structures in the client info chain.  */
   SeatClientInfo *next, *last;
 
   /* The client corresponding to this object.  */
   struct wl_client *client;
 
-  /* List of pointer objects on this seat for this client.  */
-  Pointer pointers;
+  /* Number of references to this seat client information.  */
+  int refcount;
 
   /* The serial of the last enter event sent.  */
   uint32_t last_enter_serial;
 
+  /* List of pointer objects on this seat for this client.  */
+  Pointer pointers;
+
   /* List of keyboard objects on this seat for this client.  */
   Keyboard keyboards;
+
+  /* List of relative pointers on this seat for this client.  */
+  RelativePointer relative_pointers;
 };
 
 struct _ModifierChangeCallback
@@ -653,6 +675,8 @@ CreateSeatClientInfo (Seat *seat, struct wl_client *client)
       info->pointers.last = &info->pointers;
       info->keyboards.next = &info->keyboards;
       info->keyboards.last = &info->keyboards;
+      info->relative_pointers.next = &info->relative_pointers;
+      info->relative_pointers.last = &info->relative_pointers;
     }
 
   /* Increase the reference count of info.  */
@@ -671,6 +695,7 @@ ReleaseSeatClientInfo (SeatClientInfo *info)
   /* Assert that there are no more keyboards or pointers attached.  */
   XLAssert (info->keyboards.next == &info->keyboards);
   XLAssert (info->pointers.next == &info->pointers);
+  XLAssert (info->relative_pointers.next == &info->relative_pointers);
 
   /* Unlink the client info structure if it is still linked.  */
   if (info->next)
@@ -3082,6 +3107,40 @@ SendMotion (Seat *seat, Surface *surface, double x, double y,
 }
 
 static void
+SendRelativeMotion (Seat *seat, Surface *surface, double dx, double dy,
+		    Time time)
+{
+  SeatClientInfo *info;
+  uint64_t microsecond_time;
+  RelativePointer *relative_pointer;
+
+  /* Unfortunately there is no way to determine whether or not a
+     valuator specified in a raw event really corresponds to pointer
+     motion, so we can't get unaccelerated deltas.  It may be worth
+     wiring up raw events for the X.org server, since we do know how
+     it specifically behaves.  */
+
+  info = ClientInfoForResource (seat, surface->resource);
+
+  if (!info)
+    return;
+
+  /* Hmm... */
+  microsecond_time = time * 1000;
+
+  relative_pointer = info->relative_pointers.next;
+  while (relative_pointer != &info->relative_pointers)
+    {
+      /* Send the relative deltas.  */
+      XLRelativePointerSendRelativeMotion (relative_pointer->resource,
+					   microsecond_time, dx, dy);
+
+      /* Move to the next relative pointer.  */
+      relative_pointer = relative_pointer->next;
+    }
+}
+
+static void
 SendLeave (Seat *seat, Surface *surface)
 {
   Pointer *pointer;
@@ -3333,6 +3392,9 @@ EnteredSurface (Seat *seat, Surface *surface, Time time,
       XLSurfaceCancelRunOnFree (seat->last_seen_surface_callback);
       seat->last_seen_surface = NULL;
       seat->last_seen_surface_callback = NULL;
+
+      /* Mark the last surface motion coords as no longer set.  */
+      seat->flags &= ~IsSurfaceCoordSet;
     }
 
   if (surface)
@@ -3811,6 +3873,16 @@ DispatchMotion (Subcompositor *subcompositor, XIDeviceEvent *xev)
 	  /* Send the motion event.  */
 	  SendMotion (seat, dispatch, x, y, xev->time);
 
+	  /* Send relative motion.  Relative motion is handled by
+	     subtracting x and y from seat->last_surface_x and
+	     seat->last_surface_y, unless pointer motion reporting is
+	     locked, in which case XI barrier motion events are used
+	     instead.  */
+	  if (x - seat->last_surface_x != 0.0
+	      || y - seat->last_surface_y != 0.0)
+	    SendRelativeMotion (seat, dispatch, x - seat->last_surface_x,
+				y - seat->last_surface_y, xev->time);
+
 	  /* Check if this motion would cause a pointer constraint to
 	     activate.  */
 	  CheckPointerBarrier (seat, dispatch, x, y, xev->root_x,
@@ -3820,6 +3892,7 @@ DispatchMotion (Subcompositor *subcompositor, XIDeviceEvent *xev)
       /* Set the last movement location.  */
       seat->last_surface_x = x;
       seat->last_surface_y = y;
+      seat->flags |= IsSurfaceCoordSet;
     }
 
   /* These values are for tracking the output that a cursor is in.  */
@@ -4156,6 +4229,27 @@ DispatchKey (XIDeviceEvent *xev)
 			 xev->time, WaylandKeycode (keycode),
 			 WL_KEYBOARD_KEY_STATE_RELEASED);
     }
+}
+
+static void
+DispatchBarrierHit (XIBarrierEvent *barrier)
+{
+  Seat *seat;
+
+  seat = XLLookUpAssoc (seats, barrier->deviceid);
+
+  if (!seat)
+    return;
+
+  /* Report a barrier hit event as relative motion.  */
+
+  if (seat->focus_surface)
+    SendRelativeMotion (seat, seat->focus_surface,
+			barrier->dx, barrier->dy,
+			barrier->time);
+
+  /* Set the last user time.  */
+  seat->last_user_time = TimestampFromServerTime (barrier->time);
 }
 
 static void
@@ -4614,6 +4708,7 @@ XLGetGEWindowForSeats (XEvent *event)
   XIFocusInEvent *focusin;
   XIEnterEvent *enter;
   XIDeviceEvent *xev;
+  XIBarrierEvent *barrier;
 
   if (event->type == GenericEvent
       && event->xgeneric.extension == xi2_opcode)
@@ -4637,6 +4732,10 @@ XLGetGEWindowForSeats (XEvent *event)
 	case XI_Leave:
 	  enter = event->xcookie.data;
 	  return enter->event;
+
+	case XI_BarrierHit:
+	  barrier = event->xcookie.data;
+	  return barrier->event;
 	}
     }
 
@@ -4665,6 +4764,7 @@ XLSelectStandardEvents (Window window)
   XISetMask (mask.mask, XI_ButtonRelease);
   XISetMask (mask.mask, XI_KeyPress);
   XISetMask (mask.mask, XI_KeyRelease);
+  XISetMask (mask.mask, XI_BarrierHit);
 
   XISelectEvents (compositor.display, window, &mask, 1);
 }
@@ -4688,6 +4788,8 @@ XLDispatchGEForSeats (XEvent *event, Surface *surface,
   else if (event->xgeneric.evtype == XI_KeyPress
 	   || event->xgeneric.evtype == XI_KeyRelease)
     DispatchKey (event->xcookie.data);
+  else if (event->xgeneric.evtype == XI_BarrierHit)
+    DispatchBarrierHit (event->xcookie.data);
 }
 
 Cursor
@@ -5588,4 +5690,45 @@ void
 XLSeatUnlockPointer (Seat *seat)
 {
   seat->flags &= ~IsPointerLocked;
+}
+
+RelativePointer *
+XLSeatGetRelativePointer (Seat *seat, struct wl_resource *resource)
+{
+  RelativePointer *relative_pointer;
+  SeatClientInfo *info;
+
+  /* Create a relative pointer object for the relative pointer
+     resource RESOURCE.  */
+
+  relative_pointer = XLCalloc (1, sizeof *relative_pointer);
+  info = CreateSeatClientInfo (seat, wl_resource_get_client (resource));
+
+  /* Link the relative pointer onto the seat client info.  */
+  relative_pointer->next = info->relative_pointers.next;
+  relative_pointer->last = &info->relative_pointers;
+  info->relative_pointers.next->last = relative_pointer;
+  info->relative_pointers.next = relative_pointer;
+  relative_pointer->info = info;
+
+  /* Then, the seat.  */
+  relative_pointer->seat = seat;
+  RetainSeat (seat);
+
+  /* Add the resource.  */
+  relative_pointer->resource = resource;
+
+  return relative_pointer;
+}
+
+void
+XLSeatDestroyRelativePointer (RelativePointer *relative_pointer)
+{
+  relative_pointer->last->next = relative_pointer->next;
+  relative_pointer->next->last = relative_pointer->last;
+
+  ReleaseSeatClientInfo (relative_pointer->info);
+  ReleaseSeat (relative_pointer->seat);
+
+  XLFree (relative_pointer);
 }

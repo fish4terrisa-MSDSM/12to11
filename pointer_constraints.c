@@ -905,7 +905,8 @@ HandleResourceDestroy (struct wl_resource *resource)
       confinement->surface = NULL;
 
       /* Remove the commit callback.  */
-      XLSurfaceCancelCommitCallback (confinement->commit_callback);
+      if (confinement->commit_callback)
+	XLSurfaceCancelCommitCallback (confinement->commit_callback);
       confinement->commit_callback = NULL;
     }
 
@@ -961,7 +962,8 @@ HandleSeatDestroyed (void *data)
       confinement->surface = NULL;
 
       /* Cancel the commit callback.  */
-      XLSurfaceCancelCommitCallback (confinement->commit_callback);
+      if (confinement->commit_callback)
+	XLSurfaceCancelCommitCallback (confinement->commit_callback);
       confinement->commit_callback = NULL;
     }
 

@@ -90,6 +90,7 @@ struct _Compositor
 
 typedef struct _Seat Seat;
 typedef struct _Pointer Pointer;
+typedef struct _RelativePointer RelativePointer;
 
 /* Forward declarations from primary_selection.c.  */
 
@@ -1444,6 +1445,8 @@ extern void XLSeatGetMouseData (Seat *, Surface **, double *, double *,
 				double *, double *);
 extern void XLSeatLockPointer (Seat *);
 extern void XLSeatUnlockPointer (Seat *);
+extern RelativePointer *XLSeatGetRelativePointer (Seat *, struct wl_resource *);
+extern void XLSeatDestroyRelativePointer (RelativePointer *);
 
 extern Cursor InitDefaultCursor (void);
 
@@ -1610,6 +1613,12 @@ extern void XLPointerBarrierLeft (Seat *, Surface *);
 extern void XLPointerConstraintsSurfaceMovedTo (Surface *, int, int);
 extern void XLPointerConstraintsSubsurfaceMoved (Surface *);
 extern void XLPointerConstraintsReconfineSurface (Surface *);
+
+/* Defined in relative_pointer.c.  */
+
+extern void XLInitRelativePointer (void);
+extern void XLRelativePointerSendRelativeMotion (struct wl_resource *,
+						 uint64_t, double, double);
 
 /* Utility functions that don't belong in a specific file.  */
 

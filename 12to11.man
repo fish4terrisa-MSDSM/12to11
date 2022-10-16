@@ -202,6 +202,7 @@ zxdg_decoration_manager_v1	1
 zwp_text_input_manager_v3	1
 wp_single_pixel_buffer_manager_v1	1
 zwp_pointer_constraints_v1	1
+zwp_relative_pointer_manager	1
 .TE
 .PP
 When the protocol translator is built with EGL support, the following
@@ -234,11 +235,6 @@ fullscreen or maximized state may abruptly return to their maximized
 size.  Setting the
 .B APPLY_STATE_WORKAROUND
 environment variable may help.
-.PP
-Mozilla Firefox also does not work correctly.  Resizing the Firefox
-window leads to screen tearing, and Firefox often resizes its toplevel
-windows outside their normal boundaries, causing invalid screen
-contents to be displayed over other applications.
 .PP
 Using this protocol translator under a window manager that does not at
 least support the
