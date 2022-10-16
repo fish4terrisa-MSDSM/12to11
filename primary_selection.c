@@ -101,7 +101,7 @@ static PDataSource foreign_selection_key;
 static CreateOfferFuncs foreign_selection_functions;
 
 /* The time the foreign selection was set.  */
-static Time foreign_selection_time;
+static Timestamp foreign_selection_time;
 
 /* Forward declaration.  */
 
@@ -354,7 +354,7 @@ UpdateSingleReferenceWithForeignOffer (struct wl_client *client,
 				       PDataDevice *reference)
 {
   struct wl_resource *scratch, *resource;
-  Time time;
+  Timestamp time;
 
   time = foreign_selection_time;
   resource = foreign_selection_functions.create_offer (client, time);
@@ -721,12 +721,12 @@ HandleBind (struct wl_client *client, void *data, uint32_t version,
 
 
 void
-XLSetForeignPrimary (Time time, CreateOfferFuncs functions)
+XLSetForeignPrimary (Timestamp time, CreateOfferFuncs functions)
 {
   uint32_t serial;
   struct wl_resource *scratch;
 
-  if (time < foreign_selection_time)
+  if (TimestampIs (time, Earlier, foreign_selection_time))
     return;
 
   serial = wl_display_next_serial (compositor.wl_display);
@@ -754,9 +754,9 @@ XLSetForeignPrimary (Time time, CreateOfferFuncs functions)
 }
 
 void
-XLClearForeignPrimary (Time time)
+XLClearForeignPrimary (Timestamp time)
 {
-  if (time < foreign_selection_time)
+  if (TimestampIs (time, Earlier, foreign_selection_time))
     return;
 
   if (primary_selection == &foreign_selection_key)

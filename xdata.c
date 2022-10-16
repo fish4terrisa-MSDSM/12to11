@@ -245,14 +245,14 @@ static DataConversion data_conversions[] =
   };
 
 /* The time of the last X selection change.  */
-static Time last_x_selection_change;
+static Timestamp last_x_selection_change;
 
 /* The time ownership was last asserted over CLIPBOARD, and the last
    time any client did that.  */
-static Time last_clipboard_time, last_clipboard_change;
+static Timestamp last_clipboard_time, last_clipboard_change;
 
 /* The last time ownership over PRIMARY changed.  */
-static Time last_primary_time;
+static Timestamp last_primary_time;
 
 /* The currently supported selection targets.  */
 static Atom *x_selection_targets;
@@ -688,7 +688,7 @@ PostReceiveDirect (Time time, Atom selection, Atom target, int fd)
 static void PostReceiveConversion (Time, Atom, Atom, int);
 
 #define ReceiveBody(selection, primary)					\
-  Time time;								\
+  Timestamp time;							\
   TargetMapping *translation;						\
 									\
   DebugPrint ("Receiving %s from X " #selection " \n",			\
@@ -696,7 +696,7 @@ static void PostReceiveConversion (Time, Atom, Atom, int);
 									\
   /* Cast to intptr_t to silence warnings when the pointer type is	\
      larger than long.  */						\
-  time = (Time) (intptr_t) wl_resource_get_user_data (resource);	\
+  time = *(Timestamp *) wl_resource_get_user_data (resource);		\
 									\
   /* Find which selection target corresponds to MIME_TYPE.  */		\
   translation = FindTranslationForMimeType (mime_type, primary);	\
@@ -705,11 +705,11 @@ static void PostReceiveConversion (Time, Atom, Atom, int);
     {									\
       if (!translation->translation_func)				\
 	/* If a corresponding target exists, ask to receive it.  */	\
-	PostReceiveDirect (time, selection,				\
+	PostReceiveDirect (time.milliseconds, selection,	       	\
 			   MappingAtom (translation), fd);		\
       else								\
 	/* Otherwise, use the translation function.  */			\
-	translation->translation_func (time, selection,			\
+	translation->translation_func (time.milliseconds, selection,	\
 				       MappingAtom (translation),	\
 				       fd);				\
     }									\
@@ -753,8 +753,29 @@ static const struct wl_data_offer_interface wl_data_offer_impl =
     .set_actions = SetActions,
   };
 
+static void
+HandleOfferResourceDestroy (struct wl_resource *resource)
+{
+  Timestamp *timestamp;
+
+  timestamp = wl_resource_get_user_data (resource);
+
+  XLFree (timestamp);
+}
+
+static Timestamp *
+AllocateTimestamp (Timestamp timestamp)
+{
+  Timestamp *data;
+
+  data = XLMalloc (sizeof *data);
+  *data = timestamp;
+
+  return data;
+}
+
 static struct wl_resource *
-CreateOffer (struct wl_client *client, Time time)
+CreateOffer (struct wl_client *client, Timestamp time)
 {
   struct wl_resource *resource;
 
@@ -768,7 +789,8 @@ CreateOffer (struct wl_client *client, Time time)
   /* Otherwise, set the user_data to the time of the selection
      change.  */
   wl_resource_set_implementation (resource, &wl_data_offer_impl,
-				  (void *) time, NULL);
+				  AllocateTimestamp (time),
+				  HandleOfferResourceDestroy);
   return resource;
 }
 
@@ -786,7 +808,7 @@ static struct zwp_primary_selection_offer_v1_interface primary_offer_impl =
   };
 
 static struct wl_resource *
-CreatePrimaryOffer (struct wl_client *client, Time time)
+CreatePrimaryOffer (struct wl_client *client, Timestamp time)
 {
   struct wl_resource *resource;
 
@@ -800,7 +822,8 @@ CreatePrimaryOffer (struct wl_client *client, Time time)
   /* Otherwise, set the user_data to the time of the selection
      change.  */
   wl_resource_set_implementation (resource, &primary_offer_impl,
-				  (void *) time, NULL);
+				  AllocateTimestamp (time),
+				  HandleOfferResourceDestroy);
   return resource;
 }
 
@@ -883,9 +906,9 @@ SendOffers1 (struct wl_resource *resource, int ntargets, Atom *targets,
 }
 
 static void
-SendOffers (struct wl_resource *resource, Time time)
+SendOffers (struct wl_resource *resource, Timestamp time)
 {
-  if (time < last_x_selection_change)
+  if (TimestampIs (time, Earlier, last_x_selection_change))
     /* This offer is out of date.  */
     return;
 
@@ -894,9 +917,9 @@ SendOffers (struct wl_resource *resource, Time time)
 }
 
 static void
-SendPrimaryOffers (struct wl_resource *resource, Time time)
+SendPrimaryOffers (struct wl_resource *resource, Timestamp time)
 {
-  if (time < last_primary_time)
+  if (TimestampIs (time, Earlier, last_primary_time))
     /* This offer is out of date.  */
     return;
 
@@ -916,7 +939,7 @@ HandleNewSelection (Time time, Atom selection, Atom *targets,
       /* The primary selection changed, and now has the given
 	 targets.  */
 
-      if (time < last_primary_time)
+      if (TimeIs (time, Earlier, last_primary_time))
 	{
 	  XLFree (targets);
 	  return;
@@ -926,21 +949,21 @@ HandleNewSelection (Time time, Atom selection, Atom *targets,
       XLFree (x_primary_targets);
       x_primary_targets = targets;
       num_x_primary_targets = ntargets;
-      last_primary_time = time;
+      last_primary_time = TimestampFromClientTime (time);
 
       /* Add the right functions and set them as the foreign primary
 	 selection handler at TIME.  */
       funcs.create_offer = CreatePrimaryOffer;
       funcs.send_offers = SendPrimaryOffers;
 
-      XLSetForeignPrimary (time, funcs);
+      XLSetForeignPrimary (last_primary_time, funcs);
       return;
     }
 
   /* Else, the selection that changed is CLIPBOARD.  */
   
   /* Ignore outdated selection changes.  */
-  if (time < last_x_selection_change)
+  if (TimeIs (time, Earlier, last_x_selection_change))
     {
       /* We are responsible for deallocating targets.  */
       XLFree (targets);
@@ -953,7 +976,7 @@ HandleNewSelection (Time time, Atom selection, Atom *targets,
   x_selection_targets = targets;
   num_x_selection_targets = ntargets;
 
-  last_x_selection_change = time;
+  last_x_selection_change = TimestampFromClientTime (time);
 
   /* Add the right functions and set them as the foreign selection
      handler at TIME.  */
@@ -961,7 +984,7 @@ HandleNewSelection (Time time, Atom selection, Atom *targets,
   funcs.create_offer = CreateOffer;
   funcs.send_offers = SendOffers;
 
-  XLSetForeignSelection (time, funcs);
+  XLSetForeignSelection (last_x_selection_change, funcs);
 }
 
 static void
@@ -1071,13 +1094,13 @@ static void
 NoticeClipboardCleared (Time time)
 {
   /* Ignore outdated events.  */
-  if (time < last_x_selection_change)
+  if (TimeIs (time, Earlier, last_x_selection_change))
     return;
 
   DebugPrint ("CLIPBOARD was cleared at %lu\n", time);
 
-  last_x_selection_change = time;
-  XLClearForeignSelection (time);
+  last_x_selection_change = TimestampFromServerTime (time);
+  XLClearForeignSelection (last_x_selection_change);
 
   /* Free data that is no longer used.  */
   XLFree (x_selection_targets);
@@ -1089,13 +1112,13 @@ static void
 NoticePrimaryCleared (Time time)
 {
   /* Ignore outdated events.  */
-  if (time < last_primary_time)
+  if (TimeIs (time, Earlier, last_primary_time))
     return;
 
   DebugPrint ("PRIMARY was cleared at %lu\n", time);
 
-  last_primary_time = time;
-  XLClearForeignPrimary (time);
+  last_primary_time = TimestampFromServerTime (time);
+  XLClearForeignPrimary (last_primary_time);
 
   /* Free data that is no longer used.  */
   XLFree (x_primary_targets);
@@ -1111,14 +1134,16 @@ HandleSelectionNotify (XFixesSelectionNotifyEvent *event)
     return;
 
   if (event->selection == CLIPBOARD
-      && event->selection_timestamp > last_clipboard_change)
+      && TimeIs (event->selection_timestamp, Later, last_clipboard_change))
     /* This time is used to keep track of whether or not things like
        disowning the selection were successful.  */
-    last_clipboard_change = event->selection_timestamp;
+    last_clipboard_change
+      = TimestampFromServerTime (event->selection_timestamp);
 
   if (event->selection == XA_PRIMARY
-      && event->selection_timestamp > last_primary_time)
-    last_primary_time = event->selection_timestamp;
+      && TimeIs (event->selection_timestamp, Later, last_primary_time))
+    last_primary_time
+      = TimestampFromServerTime (event->selection_timestamp);
 
   if (event->owner != None
       && event->selection == CLIPBOARD)
@@ -1957,9 +1982,10 @@ XLNoteSourceDestroyed (DataSource *source)
 {
   if (source == selection_data_source)
     {
-      DebugPrint ("Disowning CLIPBOARD at %lu (vs. last change %lu)\n"
+      DebugPrint ("Disowning CLIPBOARD at %u (vs. last change %u)\n"
 		  "This is being done in response to the source being destroyed.\n",
-		  last_clipboard_time, last_x_selection_change);
+		  last_clipboard_time.milliseconds,
+		  last_x_selection_change.milliseconds);
 
       /* Disown the selection.  */
       DisownSelection (CLIPBOARD);
@@ -2006,15 +2032,15 @@ FindTargetInArray (Atom *targets, int ntargets, Atom atom)
    macros...  */
 
 #define NoteLocalSelectionBody(callback, time_1, time_2, atom, field, foreign, n_foreign)	\
-  Time time;											\
+  Timestamp time;										\
   Atom *targets;										\
   int ntargets, i, n_data_conversions;								\
   Bool rc;											\
 												\
   if (source == NULL)										\
     {												\
-      DebugPrint ("Disowning " #atom " at %lu (vs. last change %lu)\n",				\
-		  time_1, time_2);								\
+      DebugPrint ("Disowning " #atom " at %u (vs. last change %u)\n",				\
+		  time_1.milliseconds, time_2.milliseconds);					\
 												\
       /* Disown the selection.  */								\
       DisownSelection (atom);									\
@@ -2022,18 +2048,19 @@ FindTargetInArray (Atom *targets, int ntargets, Atom atom)
 												\
       /* Return whether or not the selection was actually					\
 	 disowned.  */										\
-      return time_1 >= time_2;									\
+      return TimestampIs (time_1, Later, time_2);						\
     }												\
 												\
   time = XLSeatGetLastUserTime (seat);								\
 												\
-  DebugPrint ("Acquiring ownership of " #atom " at %lu\n", time);				\
+  DebugPrint ("Acquiring ownership of " #atom " at %u\n", time.milliseconds);			\
 												\
-  if (!time)											\
+  if (!time.months && !time.milliseconds)							\
     /* Nothing has yet happened on the seat.  */						\
     return False;										\
 												\
-  if (time < time_1 || time < time_2)								\
+  if (TimestampIs (time, Earlier, time_1)							\
+      || TimestampIs (time, Earlier, time_2))							\
     /* TIME is out of date.  */									\
     return False;										\
 												\
@@ -2081,7 +2108,7 @@ FindTargetInArray (Atom *targets, int ntargets, Atom atom)
   /* And own the selection.  */									\
   field = source;										\
 												\
-  rc = OwnSelection (time, atom, callback, targets, ntargets);					\
+  rc = OwnSelection (time.milliseconds, atom, callback, targets, ntargets);			\
   XLFree (targets);										\
   return rc											\
 

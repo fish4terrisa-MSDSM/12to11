@@ -103,6 +103,35 @@ typedef struct _ViewportExt ViewportExt;
 
 extern Compositor compositor;
 
+/* Defined in time.c.  */
+
+typedef struct _Timestamp Timestamp;
+typedef enum _TimestampDifference TimestampDifference;
+
+struct _Timestamp
+{
+  /* Number of server months passed.  */
+  unsigned int months;
+
+  /* Millisecond time into those months.  */
+  unsigned int milliseconds;
+};
+
+enum _TimestampDifference
+  {
+    Earlier,
+    Same,
+    Later,
+  };
+
+extern Timestamp TimestampFromServerTime (Time);
+extern Timestamp TimestampFromClientTime (Time);
+extern TimestampDifference CompareTimestamps (Timestamp, Timestamp);
+extern TimestampDifference CompareTimeWith (Time, Timestamp);
+
+#define TimestampIs(a, op, b)	(CompareTimestamps ((a), (b)) == (op))
+#define TimeIs(a, op, b)	(CompareTimeWith ((a), (b)) == (op))
+
 /* Defined in renderer.c.  */
 
 typedef struct _RenderFuncs RenderFuncs;
@@ -1301,12 +1330,16 @@ typedef struct _DataSource DataSource;
 typedef struct _CreateOfferFuncs CreateOfferFuncs;
 typedef struct _DndOfferFuncs DndOfferFuncs;
 
-typedef struct wl_resource *(*CreateOfferFunc) (struct wl_client *, Time);
-typedef void (*SendDataFunc) (struct wl_resource *, Time);
+typedef struct wl_resource *(*CreateOfferFunc) (struct wl_client *,
+						Timestamp);
+typedef void (*SendDataFunc) (struct wl_resource *, Timestamp);
 
 struct _CreateOfferFuncs
 {
+  /* Function called to create data offers.  */
   CreateOfferFunc create_offer;
+
+  /* Function called to send data offers.  */
   SendDataFunc send_offers;
 };
 
@@ -1321,8 +1354,8 @@ extern void XLRetainDataDevice (DataDevice *);
 extern void XLReleaseDataDevice (DataDevice *);
 extern void XLDataDeviceClearSeat (DataDevice *);
 extern void XLDataDeviceHandleFocusChange (DataDevice *);
-extern void XLSetForeignSelection (Time, CreateOfferFuncs);
-extern void XLClearForeignSelection (Time);
+extern void XLSetForeignSelection (Timestamp, CreateOfferFuncs);
+extern void XLClearForeignSelection (Timestamp);
 extern int XLDataSourceTargetCount (DataSource *);
 extern void XLDataSourceGetTargets (DataSource *, Atom *);
 extern struct wl_resource *XLResourceFromDataSource (DataSource *);
@@ -1391,7 +1424,7 @@ extern Bool XLSeatIsInert (Seat *);
 extern Bool XLSeatIsClientFocused (Seat *, struct wl_client *);
 extern Surface *XLSeatGetFocus (Seat *);
 extern void XLSeatShowWindowMenu (Seat *, Surface *, int, int);
-extern Time XLSeatGetLastUserTime (Seat *);
+extern Timestamp XLSeatGetLastUserTime (Seat *);
 extern void XLSeatBeginDrag (Seat *, DataSource *, Surface *,
 			     Surface *, uint32_t);
 extern DataSource *XLSeatGetDragDataSource (Seat *);
@@ -1507,8 +1540,8 @@ extern Bool XLIsWindowIconSurface (Window);
 /* Defined in primary_selection.c.  */
 
 extern void XLInitPrimarySelection (void);
-extern void XLSetForeignPrimary (Time, CreateOfferFuncs);
-extern void XLClearForeignPrimary (Time);
+extern void XLSetForeignPrimary (Timestamp, CreateOfferFuncs);
+extern void XLClearForeignPrimary (Timestamp);
 extern Bool XLNoteLocalPrimary (Seat *, PDataSource *);
 extern void XLPrimarySelectionHandleFocusChange (Seat *);
 extern struct wl_resource *XLResourceFromPDataSource (PDataSource *);

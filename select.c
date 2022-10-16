@@ -757,19 +757,23 @@ GetTransferFunction (SelectionOwnerInfo *info,
 }
 
 static WriteTransfer *
-FindWriteTransfer (Window requestor, Atom property)
+FindWriteTransfer (Window requestor, Atom property,
+		   int ignore_state)
 {
   WriteTransfer *transfer;
 
-  transfer = write_transfers.next;
+  transfer = write_transfers.last;
 
   while (transfer != &write_transfers)
     {
       if (transfer->requestor == requestor
-	  && transfer->property == property)
+	  && transfer->property == property
+	  && (!ignore_state
+	      || ((transfer->state & ignore_state)
+		  != ignore_state)))
 	return transfer;
 
-      transfer = transfer->next;
+      transfer = transfer->last;
     }
 
   return NULL;
@@ -1036,12 +1040,12 @@ TransferFinished (WriteTransfer *transfer)
 	      transfer if nothing has previously been written.  */
 	   || !(transfer->state & IsFlushed))
     {
+      DebugPrint ("Transfer finished, but there is still property data"
+		  " unwritten (offset %td)\n", transfer->offset);
+
       /* There is still property data left to be written.  */
       FlushTransfer (transfer, True);
       transfer->state |= IsFinished;
-
-      DebugPrint ("Transfer finished, but there is still property data"
-		  " unwritten\n");
     }
   else
     /* The transfer is really finished.  */
@@ -1107,8 +1111,9 @@ TransferBecameReadable (WriteTransfer *transfer)
     }
   else
     {
-      DebugPrint ("Transfer complete, bytes read as part of EOF: %td, off: %td\n",
-		  transfer->offset, transfer->size);
+      DebugPrint ("Transfer complete, bytes read as part of EOF: %td, "
+		  "off: %td size: %td\n", bytes_read, transfer->offset,
+		  transfer->size);
 
       transfer->offset += bytes_read;
       TransferFinished (transfer);
@@ -1239,11 +1244,12 @@ ConvertSelectionMultiple (SelectionOwnerInfo *info, XEvent *event,
       DebugPrint ("Verifying MULTIPLE transfer; target = %lu, property = %lu\n",
 		  atoms[i + 0], atoms[i + 1]);
 
-      if (FindWriteTransfer (event->xselectionrequest.requestor, atoms[1])
+      if (FindWriteTransfer (event->xselectionrequest.requestor, atoms[1], 0)
 	  || FindQueuedTransfer (event->xselectionrequest.requestor, atoms[1]))
 	{
 	  DebugPrint ("Found ongoing selection transfer with same requestor "
-		      "and property; this MULTIPLE request will have to be queued.\n");
+		      "and property; this MULTIPLE request will have to be "
+		      "queued.\n");
 
 	  QueueTransfer (event);
 
@@ -1390,7 +1396,7 @@ static Bool
 HandleSelectionRequest (XEvent *event)
 {
   XEvent notify;
-  WriteTransfer *transfer;
+  WriteTransfer *transfer, *existing_transfer;
   long quantum;
   SelectionOwnerInfo *info;
 
@@ -1428,8 +1434,51 @@ HandleSelectionRequest (XEvent *event)
 
   /* If a selection request with the same property and window already
      exists, delay this request for later.  */
-  if (FindWriteTransfer (event->xselectionrequest.requestor,
-			 event->xselectionrequest.property)
+  existing_transfer
+    = FindWriteTransfer (event->xselectionrequest.requestor,
+			 event->xselectionrequest.property,
+			 /* Ignore write transfers that are finished
+			    but pending property deletion.  If the
+			    existing transfer is finished, but we are
+			    still waiting for property deletion, allow
+			    the new transfer to take place.  This is
+			    because some very popular programs ask for
+			    TARGETS, and then ask for STRING with the
+			    same property, but only delete the
+			    property for the first request after the
+			    data for the second request arrives.  This
+			    is against the ICCCM, as it says:
+
+			      The requestor should set the property
+			      argument to the name of a property that
+			      the owner can use to report the value of
+			      the selection.  Requestors should ensure
+			      that the named property does not exist
+			      on the window before issuing the
+			      ConvertSelection request.
+
+			    and:
+
+			      Once all the data in the selection has
+			      been retrieved (which may require
+			      getting the values of several properties
+			      -- see the section called "Use of
+			      Selection Properties". ), the requestor
+			      should delete the property in the
+			      SelectionNotify request by using a
+			      GetProperty request with the delete
+			      argument set to True.  As previously
+			      discussed, the owner has no way of
+			      knowing when the data has been
+			      transferred to the requestor unless the
+			      property is removed.
+
+			    Both paragraphs mean that the property
+			    should have been deleted by the time the
+			    second request is made! */
+			 IsFinished | IsWaitingForDelete);
+
+  if (existing_transfer
       /* We need to look at the queue too; otherwise, events from the
 	 future might be handled out of order, if the original write
 	 transfer is gone, but some events are still queued.  */
@@ -1549,9 +1598,9 @@ DrainQueuedTransfers (void)
 
   /* Then, read from the other side of the queue, and handle
      everything.  */
-  item = queued_transfers.last;
+  item = temp.last;
 
-  while (item != &queued_transfers)
+  while (item != &temp)
     {
       last = item;
       item = item->last;
@@ -1601,53 +1650,63 @@ HandleSelectionNotify (XEvent *event)
 static Bool
 HandlePropertyDelete (XEvent *event)
 {
-  WriteTransfer *transfer;
+  WriteTransfer *transfer, *last;
 
-  transfer = FindWriteTransfer (event->xproperty.window,
-				event->xproperty.atom);
-  if (!transfer)
-    return False;
+  transfer = write_transfers.last;
 
-  DebugPrint ("Handling property deletion for %lu\n",
-	      event->xproperty.atom);
+  DebugPrint ("Handling property deletion for %lu; window %lu\n",
+	      event->xproperty.atom, event->xproperty.window);
 
-  if (transfer->state & IsFinished)
+  while (transfer != &write_transfers)
     {
-      DebugPrint ("Completing transfer\n");
+      last = transfer->last;
 
-      /* The transfer is now complete; finish it by freeing its data,
-	 and potentially writing zero-length data.  */
-      FreeTransfer (transfer);
-    }
-  else if (transfer->state & IsWaitingForIncr)
-    {
-      /* If transfer is waiting for the INCR property to be deleted, mark
-	 it as started, and flush it again to write the first piece of
-	 property data.  */
+      /* There can be multiple finished transfers with the same
+	 property pending deletion if a client not compliant with the
+	 ICCCM is in use.  See the large comment in
+	 HandleSelectionRequest.  */
+      DebugPrint ("Handling transfer %p\n", event);
 
-      DebugPrint ("Starting transfer in response to INCR property deletion\n");
-
-      transfer->state |= IsStarted;
-      transfer->state &= ~IsWaitingForIncr;
-      transfer->state &= ~IsWaitingForDelete;
-
-      /* Flush the transfer again to write the property data.  */
-      FlushTransfer (transfer, False);
-    }
-  else
-    {
-      DebugPrint ("Continuing transfer\n");
-
-      /* Clear IsWaitingForRelease.  */
-      transfer->state &= ~IsWaitingForDelete;
-
-      if (transfer->state & IsReadable)
+      if (transfer->state & IsFinished)
 	{
-	  DebugPrint ("Picking read back up from where it was left\n");
+	  DebugPrint ("Completing transfer\n");
 
-	  /* And signal that the transfer is readable again.  */
-	  TransferBecameReadable (transfer);
+	  /* The transfer is now complete; finish it by freeing its
+	     data, and potentially writing zero-length data.  */
+	  FreeTransfer (transfer);
 	}
+      else if (transfer->state & IsWaitingForIncr)
+	{
+	  /* If transfer is waiting for the INCR property to be
+	     deleted, mark it as started, and flush it again to write
+	     the first piece of property data.  */
+
+	  DebugPrint ("Starting transfer in response to INCR property deletion\n");
+
+	  transfer->state |= IsStarted;
+	  transfer->state &= ~IsWaitingForIncr;
+	  transfer->state &= ~IsWaitingForDelete;
+
+	  /* Flush the transfer again to write the property data.  */
+	  FlushTransfer (transfer, False);
+	}
+      else
+	{
+	  DebugPrint ("Continuing transfer\n");
+
+	  /* Clear IsWaitingForRelease.  */
+	  transfer->state &= ~IsWaitingForDelete;
+
+	  if (transfer->state & IsReadable)
+	    {
+	      DebugPrint ("Picking read back up from where it was left\n");
+
+	      /* And signal that the transfer is readable again.  */
+	      TransferBecameReadable (transfer);
+	    }
+	}
+
+      transfer = last;
     }
 
   return True;
@@ -1657,6 +1716,22 @@ static Bool
 HandlePropertyNotify (XEvent *event)
 {
   ReadTransfer *transfer;
+
+  if (event->xproperty.window != DefaultRootWindow (compositor.display))
+    /* Xlib selects for PropertyNotifyMask on the root window, which
+       results in a lot of noise here.  */
+    DebugPrint ("PropertyNotify event:\n"
+		"serial:\t%lu\n"
+		"window:\t%lu\n"
+		"atom:\t%lu\n"
+		"time:\t%lu\n"
+		"state:\t%s\n",
+		event->xproperty.serial,
+		event->xproperty.window,
+		event->xproperty.atom,
+		event->xproperty.time,
+		(event->xproperty.state == PropertyNewValue
+		 ? "PropertyNewValue" : "PropertyDelete"));
 
   if (event->xproperty.state != PropertyNewValue)
     return HandlePropertyDelete (event);

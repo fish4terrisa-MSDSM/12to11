@@ -673,8 +673,8 @@ InitRenderFuncs (void)
       || !XPresentQueryVersion (compositor.display,
 				&major, &minor))
     {
-      fprintf (stderr, "the X presentation extension is not supported"
-	       " by this X server");
+      fprintf (stderr, "The X presentation extension is not supported"
+	       " by this X server\n");
       return False;
     }
 

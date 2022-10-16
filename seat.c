@@ -337,6 +337,9 @@ struct _ModifierChangeCallback
 
 struct _Seat
 {
+  /* The last user time.  */
+  Timestamp last_user_time;
+
   /* wl_global associated with this seat.  */
   struct wl_global *global;
 
@@ -2367,6 +2370,9 @@ HandleRawKey (XIRawEvent *event)
 
   /* This is used for tracking grabs.  */
   seat->its_depress_time = event->time;
+
+  /* Update the last user time.  */
+  seat->last_user_time = TimestampFromServerTime (event->time);
 }
 
 static void
@@ -3730,6 +3736,9 @@ DispatchMotion (Subcompositor *subcompositor, XIDeviceEvent *xev)
   seat->its_root_y = xev->root_y;
   seat->its_press_time = xev->time;
 
+  /* Update the last user time.  */
+  seat->last_user_time = TimestampFromServerTime (xev->time);
+
   actual_dispatch = FindSurfaceUnder (subcompositor, xev->event_x,
 				      xev->event_y);
 
@@ -4375,11 +4384,10 @@ IdentifySeat (WhatEdge *edge, uint32_t serial)
   return NULL;
 }
 
-static Time
+static Timestamp
 GetLastUserTime (Seat *seat)
 {
-  return MAX (seat->its_press_time,
-	      seat->its_depress_time);
+  return seat->last_user_time;
 }
 
 static Bool
@@ -5361,7 +5369,7 @@ XLSeatBeginDrag (Seat *seat, DataSource *data_source, Surface *start_surface,
   seat->flags &= ~IsDropped;
 }
 
-Time
+Timestamp
 XLSeatGetLastUserTime (Seat *seat)
 {
   return GetLastUserTime (seat);

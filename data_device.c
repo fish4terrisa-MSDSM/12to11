@@ -163,7 +163,7 @@ static DataSource foreign_selection_key;
 static CreateOfferFuncs foreign_selection_functions;
 
 /* Time the foreign selection was changed.  */
-static Time foreign_selection_time;
+static Timestamp foreign_selection_time;
 
 /* When it changed.  */
 static uint32_t last_selection_change_serial;
@@ -759,7 +759,7 @@ UpdateSingleReferenceWithForeignOffer (struct wl_client *client,
 				       DataDeviceReference *reference)
 {
   struct wl_resource *resource;
-  Time time;
+  Timestamp time;
 
   time = foreign_selection_time;
   resource = foreign_selection_functions.create_offer (client, time);
@@ -1173,11 +1173,11 @@ XLDataDeviceHandleFocusChange (DataDevice *device)
 }
 
 void
-XLSetForeignSelection (Time time, CreateOfferFuncs functions)
+XLSetForeignSelection (Timestamp time, CreateOfferFuncs functions)
 {
   uint32_t serial;
 
-  if (time < foreign_selection_time)
+  if (TimestampIs (time, Earlier, foreign_selection_time))
     return;
 
   serial = wl_display_next_serial (compositor.wl_display);
@@ -1202,9 +1202,9 @@ XLSetForeignSelection (Time time, CreateOfferFuncs functions)
 }
 
 void
-XLClearForeignSelection (Time time)
+XLClearForeignSelection (Timestamp time)
 {
-  if (time < foreign_selection_time)
+  if (TimestampIs (time, Earlier, foreign_selection_time))
     return;
 
   if (current_selection_data == &foreign_selection_key)

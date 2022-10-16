@@ -34,7 +34,8 @@ static void
 DetermineServerTime (void)
 {
   Time server_time;
-  struct timespec clock_spec, server_spec, diff;
+  struct timespec clock_spec;
+  uint64_t clock_ms, truncated;
 
   /* Try to determine if the X server time is the same as the
      monotonic time.  If it is not, certain features such as "active"
@@ -42,20 +43,28 @@ DetermineServerTime (void)
 
   clock_gettime (CLOCK_MONOTONIC, &clock_spec);
   server_time = XLGetServerTimeRoundtrip ();
-  server_spec.tv_sec = server_time / 1000;
-  server_spec.tv_nsec = ((server_time - server_time / 1000 * 1000)
-			 * 1000000);
 
-  diff = TimespecSub (server_spec, clock_spec);
+  /* Convert the monotonic time to milliseconds.  */
 
-  if (TimespecCmp (diff, MakeTimespec (0, 50000000)) <= 0
-      || TimespecCmp (diff, MakeTimespec (0, -50000000)) <= 0)
+  if (IntMultiplyWrapv (clock_spec.tv_sec, 1000, &clock_ms))
+    goto overflow;
+
+  if (IntAddWrapv (clock_ms, clock_spec.tv_nsec / 1000000,
+		   &clock_ms))
+    goto overflow;
+
+  /* Truncate the time to 32 bits.  */
+  truncated = clock_ms;
+
+  /* Compare the clock time with the server time.  */
+  if (llabs ((long long) server_time - (long long) truncated) <= 5)
     /* Since the difference between the server time and the monotonic
-       time is less than 50 ms, the server time is the monotonic
-       time.  */
+       time is less than 5 ms, the server time is most likely the
+       monotonic time.  */
     compositor.server_time_monotonic = True;
   else
     {
+    overflow:
       compositor.server_time_monotonic = False;
       fprintf (stderr, "Warning: the X server time does not seem to"
 	       " be synchronized with the monotonic time.  Multiple"

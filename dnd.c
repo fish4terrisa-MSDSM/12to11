@@ -2920,6 +2920,7 @@ XLDoDragMotion (Seat *seat, double root_x, double root_y)
 {
   Window toplevel, proxy, self;
   int version, proxy_version;
+  Timestamp timestamp;
 
   if (finish_source || drag_state.flags & PendingDrop)
     /* A finish is pending.  */
@@ -2960,7 +2961,8 @@ XLDoDragMotion (Seat *seat, double root_x, double root_y)
   /* Try to own XdndSelection with the last user time.  */
   if (!(drag_state.flags & SelectionSet))
     {
-      drag_state.timestamp = XLSeatGetLastUserTime (seat);
+      timestamp = XLSeatGetLastUserTime (seat);
+      drag_state.timestamp = timestamp.milliseconds;
 
       if (!XLOwnDragSelection (drag_state.timestamp,
 			       XLSeatGetDragDataSource (seat)))
