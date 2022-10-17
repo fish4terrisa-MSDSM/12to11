@@ -1323,8 +1323,6 @@ ApplyLines (Window window, PointerConfinement *confinement,
 	       FreeSingleBarrier);
   confinement->applied_barriers = NULL;
 
-  i = 0;
-
   /* Set the pointer device.  */
   device_id = XLSeatGetPointerDevice (confinement->seat);
 

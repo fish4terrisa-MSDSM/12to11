@@ -2781,7 +2781,11 @@ HandleNewIM (XIM xim)
       while (input != &info->inputs)
 	{
 	  /* Try to create the IC for this one input.  */
-	  if (input->current_state.enabled)
+	  if (input->current_state.enabled
+	      /* If this is NULL, then the IC will only be created
+		 upon the next commit after the focus is actually
+		 transferred to the text input.  */
+	      && input->client_info->focus_surface)
 	    {
 	      CreateIC (input);
 

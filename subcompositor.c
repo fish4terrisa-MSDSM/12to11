@@ -1604,6 +1604,78 @@ ViewDamage (View *view, pixman_region32_t *damage)
 			 damage);
 }
 
+static double
+GetContentScale (int scale)
+{
+  if (scale > 0)
+    return 1.0 / (scale + 1);
+
+  return -scale + 1;
+}
+
+void
+ViewDamageBuffer (View *view, pixman_region32_t *damage)
+{
+  pixman_region32_t temp;
+  double x_factor, y_factor;
+  double crop_width, stretch_width;
+  double crop_height, stretch_height;
+
+  if (!view->buffer)
+    return;
+
+  if (!view->scale && !IsViewported (view))
+    /* There is no scale nor viewport.  Just damage the view
+       directly.  */
+    ViewDamage (view, damage);
+  else
+    {
+      /* Otherwise, apply the transform to the view.  */
+      pixman_region32_init (&temp);
+
+      /* First, apply the content scale.  */
+      x_factor = GetContentScale (view->scale);
+      y_factor = GetContentScale (view->scale);
+
+      /* Scale the region.  */
+      XLScaleRegion (&temp, damage, x_factor, y_factor);
+
+      /* Next, apply the viewport.  */
+      if (IsViewported (view))
+	{
+	  crop_width = view->crop_width;
+	  crop_height = view->crop_height;
+	  stretch_width = view->dest_width;
+	  stretch_height = view->dest_height;
+
+	  /* Offset the region.  */
+	  if (view->src_x != 1.0 || view->src_y != 1.0)
+	    pixman_region32_translate (&temp, -view->src_x,
+				       -view->src_y);
+
+	  /* If the crop width or height were not specified, use the
+	     current buffer width/height.  */
+	  if (crop_width == -1)
+	    {
+	      crop_width = (XLBufferWidth (view->buffer)
+			    * GetContentScale (view->scale));
+	      crop_height = (XLBufferHeight (view->buffer)
+			     * GetContentScale (view->scale));
+	    }
+
+	  x_factor = stretch_width / crop_width;
+	  y_factor = stretch_height / crop_height;
+
+	  /* Scale the region again.  */
+	  XLScaleRegion (&temp, &temp, x_factor, y_factor);
+	}
+
+      /* Damage the view.  */
+      pixman_region32_union (&view->damage, &view->damage, &temp);
+      pixman_region32_fini (&temp);
+    }
+}
+
 void
 ViewSetOpaque (View *view, pixman_region32_t *opaque)
 {
@@ -1631,13 +1703,10 @@ ViewGetSubcompositor (View *view)
   return view->subcompositor;
 }
 
-static double
-GetContentScale (int scale)
+double
+ViewGetContentScale (View *view)
 {
-  if (scale > 0)
-    return 1.0 / (scale + 1);
-
-  return -scale + 1;
+  return GetContentScale (view->scale);
 }
 
 int
@@ -1697,7 +1766,6 @@ ViewSetScale (View *view, int scale)
   /* Recompute subcompositor bounds; they could've changed.  */
   ViewAfterSizeUpdate (view);
 }
-
 
 void
 ViewSetViewport (View *view, double src_x, double src_y,
@@ -2053,7 +2121,6 @@ SubcompositorUpdate (Subcompositor *subcompositor)
   presented = False;
 
   start = subcompositor->inferiors->next->view;
-  original_start = subcompositor->inferiors->next->view;
   age = RenderTargetAge (subcompositor->target);
 
   /* If there is not enough prior damage available to satisfy age, set
@@ -2269,7 +2336,7 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 	      /* If the damage extends outside the area known to be
 		 obscured by the current start, reset start back to
 		 the original starting point.  */
-	      if (start != original_start)
+	      if (start != original_start && original_start)
 		{
 		  pixman_region32_subtract (&temp, &list->view->damage,
 					    &start_opaque);

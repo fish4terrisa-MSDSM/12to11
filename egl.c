@@ -466,8 +466,6 @@ HaveEglExtension1 (const char *extensions, const char *extension)
 
   while (extensions < end)
     {
-      n = 0;
-
       /* Skip spaces, if any.  */
       if (*extensions == ' ')
 	{

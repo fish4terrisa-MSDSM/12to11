@@ -17,6 +17,8 @@ for more details.
 You should have received a copy of the GNU General Public License
 along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
+#include <stdlib.h>
+
 #include <sys/param.h>
 #include <sys/stat.h>
 
@@ -627,7 +629,6 @@ extern void *XLLookUpAssoc (XLAssocTable *, XID);
 extern void XLDeleteAssoc (XLAssocTable *, XID);
 extern void XLDestroyAssocTable (XLAssocTable *);
 
-extern void XLAssert (Bool);
 extern int XLOpenShm (void);
 
 extern void XLScaleRegion (pixman_region32_t *, pixman_region32_t *,
@@ -787,8 +788,10 @@ extern void ViewTranslate (View *, int, int, int *, int *);
 extern void ViewFree (View *);
 
 extern void ViewDamage (View *, pixman_region32_t *);
+extern void ViewDamageBuffer (View *, pixman_region32_t *);
 extern void ViewSetOpaque (View *, pixman_region32_t *);
 extern void ViewSetInput (View *, pixman_region32_t *);
+extern double ViewGetContentScale (View *);
 extern int ViewWidth (View *);
 extern int ViewHeight (View *);
 extern void ViewSetScale (View *, int);
@@ -1661,3 +1664,5 @@ extern void XLRelativePointerSendRelativeMotion (struct wl_resource *,
 #define IntSubtractWrapv(a, b, r)	__builtin_sub_overflow (a, b, r)
 #define IntMultiplyWrapv(a, b, r)	__builtin_mul_overflow (a, b, r)
 
+/* This is a macro in order to be more static analyzer friendly.  */
+#define XLAssert(cond) (!(cond) ? abort () : ((void) 0))

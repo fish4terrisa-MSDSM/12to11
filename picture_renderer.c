@@ -1609,8 +1609,6 @@ GetRenderDevice (Bool *error)
   int *fds, fd;
   struct stat dev_stat;
 
-  /* TODO: if this ever calls exec, set FD_CLOEXEC, and implement
-     multiple providers.  */
   cookie = xcb_dri3_open (compositor.conn,
 			  DefaultRootWindow (compositor.display),
 			  None);
@@ -2022,9 +2020,16 @@ BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
   Picture picture;
   int fd, depth, format, bpp;
   PictureBuffer *buffer;
+  XRenderPictFormat *pict_format;
 
   depth = DepthForFormat (attributes->format, &bpp);
   format = attributes->format;
+
+  if (!depth)
+    {
+      *error = True;
+      return (RenderBuffer) NULL;
+    }
 
   /* Duplicate the fd, since XCB closes file descriptors after sending
      them.  */
@@ -2035,6 +2040,10 @@ BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
       *error = True;
       return (RenderBuffer) NULL;
     }
+
+  /* Obtain the picture format.  */
+  pict_format = PictFormatForFormat (format);
+  XLAssert (pict_format != NULL);
 
   /* Now, allocate the XIDs for the shm segment and pixmap.  */
   seg = xcb_generate_id (compositor.conn);
@@ -2050,8 +2059,7 @@ BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
 
   /* Create the picture for the pixmap.  */
   picture = XRenderCreatePicture (compositor.display, pixmap,
-				  PictFormatForFormat (format),
-				  0, &picture_attrs);
+				  pict_format, 0, &picture_attrs);
 
   /* Create the wrapper object.  */
   buffer = XLCalloc (1, sizeof *buffer);
@@ -2072,7 +2080,7 @@ BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
   buffer->activity.buffer_last = &buffer->activity;
 
   /* If the format is presentable, mark the buffer as presentable.  */
-  if (PictFormatIsPresentable (PictFormatForFormat (format)))
+  if (PictFormatIsPresentable (pict_format))
     buffer->flags |= CanPresent;
 
   /* Return the picture.  */
@@ -2109,7 +2117,7 @@ ValidateShmParams (uint32_t format, uint32_t width, uint32_t height,
 
   /* Obtain the depth and bpp.  */
   depth = DepthForFormat (format, &bpp);
-  XLAssert (depth != -1);
+  XLAssert (depth != 0);
 
   /* If any signed values are negative, return.  */
   if (offset < 0 || stride < 0)

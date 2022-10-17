@@ -1632,9 +1632,8 @@ HandleCirculateNotify (WindowCache *cache, XEvent *event)
 
   window = XLLookUpAssoc (cache->entries, event->xcirculate.window);
 
-  if (window)
+  if (!window)
     return;
-
 
   XLAssert (window->parent == event->xcirculate.event);
 
@@ -1870,7 +1869,7 @@ HandleReparentNotify (WindowCache *cache, XEvent *event)
 
   window = XLLookUpAssoc (cache->entries, event->xreparent.window);
 
-  if (window)
+  if (!window)
     return;
 
   /* First, unlink window.  */
@@ -2230,8 +2229,15 @@ ReadProtocolProperties (Window window, int *version_return,
   entry = XLLookUpAssoc (drag_state.window_cache->entries, window);
 
   if (!entry)
-    /* The entry is not in the window cache... */
-    return;
+    {
+      /* Return some suitable values for a window that isn't in the
+	 window cache.  */
+      *version_return = 0;
+      *proxy_return = None;
+
+      /* The entry is not in the window cache... */
+      return;
+    }
 
   if (entry->flags & IsPropertyRead)
     {

@@ -644,7 +644,7 @@ static void
 ApplyViewport (Surface *surface)
 {
   State *state;
-  int dest_width, dest_height;
+  double dest_width, dest_height;
   double crop_width, crop_height, src_x, src_y;
   double max_width, max_height;
 
@@ -840,79 +840,9 @@ HandleScaleChanged (void *data, int new_scale)
 static void
 ApplyDamage (Surface *surface)
 {
-  pixman_region32_t temp;
-  int scale;
-  float x_factor, y_factor;
-  double src_width, src_height;
-  double dest_width, dest_height;
-
-  scale = GetEffectiveScale (surface->current_state.buffer_scale);
-
-  /* If no surface was attached, just return.  */
-  if (!surface->current_state.buffer)
-    return;
-
-  /* N.B. that this must come after the scale is applied.  */
-
-  if (scale || (surface->current_state.src_x != -1
-		&& surface->current_state.src_x != 0.0
-		&& surface->current_state.src_y != 0.0)
-      || surface->current_state.dest_width != -1)
-    {
-      pixman_region32_init (&temp);
-
-      if (!scale)
-	x_factor = y_factor = 1.0;
-      if (scale > 0)
-	x_factor = y_factor = 1.0 / (scale + 1);
-      else
-	x_factor = y_factor = abs (scale) + 1;
-
-      /* If a viewport dest size is set, add that to the scale as
-	 well.  */
-      if (surface->current_state.dest_width != -1)
-	{
-	  if (surface->current_state.src_width != -1)
-	    {
-	      src_width = surface->current_state.src_width;
-	      src_height = surface->current_state.src_height;
-	    }
-	  else
-	    {
-	      src_width = XLBufferWidth (surface->current_state.buffer);
-	      src_height = XLBufferHeight (surface->current_state.buffer);
-
-	      /* Now scale these buffer dimensions down by the buffer
-		 scale, so they can be turned into surface
-		 coordinates.  */
-	      src_width /= surface->current_state.buffer_scale;
-	      src_height /= surface->current_state.buffer_scale;
-	    }
-
-	  dest_width = surface->current_state.dest_width;
-	  dest_height = surface->current_state.dest_height;
-
-	  x_factor *= (float) (src_width / dest_width);
-	  y_factor *= (float) (src_height / dest_height);
-	}
-
-      if (x_factor != 1.0f || y_factor != 1.0f)
-	XLScaleRegion (&temp, &surface->current_state.damage,
-		       x_factor, y_factor);
-
-      /* If a viewport is set, translate the damage region by the
-	 src_x and src_y.  This is lossy.  */
-      if (surface->current_state.src_x != -1.0)
-	pixman_region32_translate (&temp,
-				   floor (surface->current_state.src_x),
-				   floor (surface->current_state.src_y));
-
-      ViewDamage (surface->view, &temp);
-
-      pixman_region32_fini (&temp);
-    }
-  else
-    ViewDamage (surface->view, &surface->current_state.damage);
+  /* N.B. that this must come after the scale and viewport is
+     applied.  */
+  ViewDamageBuffer (surface->view, &surface->current_state.damage);
 }
 
 static void
@@ -1809,7 +1739,7 @@ SurfaceToWindow (Surface *surface, double x, double y,
 
 void
 ScaleToWindow (Surface *surface, double width, double height,
-		 double *width_out, double *height_out)
+	       double *width_out, double *height_out)
 {
   *width_out = width * surface->factor;
   *height_out = height * surface->factor;

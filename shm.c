@@ -430,7 +430,11 @@ CreatePool (struct wl_client *client, struct wl_resource *resource,
   pool = XLSafeMalloc (sizeof *pool);
 
   if (!pool)
-    wl_resource_post_no_memory (resource);
+    {
+      wl_resource_post_no_memory (resource);
+      close (fd);
+      return;
+    }
 
   memset (pool, 0, sizeof *pool);
 

@@ -375,6 +375,8 @@ AddState (XdgToplevel *toplevel, uint32_t state)
 static void
 SendDecorationConfigure1 (XdgToplevel *toplevel)
 {
+  XLAssert (toplevel->decoration != NULL);
+
 #define ServerSide ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
 #define ClientSide ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
 
@@ -676,12 +678,10 @@ HandleWmStateChange (XdgToplevel *toplevel)
 			   &actual_format, &actual_size,
 			   &bytes_remaining, &tmp_data);
 
-  if (rc != Success
+  if (rc != Success || !tmp_data
       || actual_type != XA_ATOM || actual_format != 32
       || bytes_remaining)
     goto empty_states;
-
-  XLAssert (tmp_data != NULL);
 
   states = (Atom *) tmp_data;
 
@@ -790,12 +790,10 @@ HandleAllowedActionsChange (XdgToplevel *toplevel)
 			   &actual_format, &actual_size,
 			   &bytes_remaining, &tmp_data);
 
-  if (rc != Success
+  if (rc != Success || !tmp_data
       || actual_type != XA_ATOM || actual_format != 32
       || bytes_remaining)
     goto empty_states;
-
-  XLAssert (tmp_data != NULL);
 
   states = (Atom *) tmp_data;
 
@@ -2322,7 +2320,14 @@ HandleDecorationResourceDestroy (struct wl_resource *resource)
   /* Detach the decoration from the toplevel if the latter still
      exists.  */
   if (decoration->toplevel)
-    decoration->toplevel->decoration = NULL;
+    {
+      decoration->toplevel->decoration = NULL;
+
+      /* Clear StateNeedDecorationConfigure, as not doing so may
+	 result in decoration->toplevel (NULL) being dereferenced by
+	 SendDecorationConfigure1.  */
+      decoration->toplevel->state &= ~StateNeedDecorationConfigure;
+    }
 
   /* Free the decoration.  */
   XLFree (decoration);

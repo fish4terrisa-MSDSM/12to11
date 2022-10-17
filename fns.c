@@ -338,13 +338,6 @@ XLDestroyAssocTable (XLAssocTable *table)
 }
 
 void
-XLAssert (Bool condition)
-{
-  if (!condition)
-    abort ();
-}
-
-void
 XLScaleRegion (pixman_region32_t *dst, pixman_region32_t *src,
 	       float scale_x, float scale_y)
 {

@@ -1038,7 +1038,12 @@ ComputeHotspot (SeatCursor *cursor, int min_x, int min_y,
   int hotspot_x, hotspot_y;
 
   if (!cursor->role.surface)
-    return;
+    {
+      /* Can this really happen? */
+      *x = min_x + cursor->hotspot_x;
+      *y = min_y + cursor->hotspot_y;
+      return;
+    }
 
   /* Scale the hotspot coordinates up by the scale.  */
   hotspot_x = cursor->hotspot_x * cursor->role.surface->factor;
@@ -5028,12 +5033,12 @@ XLSeatExplicitlyGrabSurface (Seat *seat, Surface *surface, uint32_t serial)
     CancelGrabEarly (seat);
 
   /* Now, grab the keyboard.  Note that we just grab the keyboard so
-     that keyboard focus cannot be changed; key events are still
-     reported based on raw events.  */
+     that keyboard focus cannot be changed, which is not very crucial,
+     so it is allowed to fail.  */
 
-  state = XIGrabDevice (compositor.display, seat->master_keyboard,
-			window, time, None, XIGrabModeAsync,
-			XIGrabModeAsync, True, &mask);
+  XIGrabDevice (compositor.display, seat->master_keyboard,
+		window, time, None, XIGrabModeAsync,
+		XIGrabModeAsync, True, &mask);
 
   /* And record the grab surface, so that owner_events can be
      implemented correctly.  */

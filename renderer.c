@@ -466,8 +466,9 @@ PickRenderer (void)
       /* Fall back to the default renderer.  */
       fprintf (stderr, "Defaulting to renderer %s, as %s was not found\n",
 	       renderers->name, selected);
-    fall_back:
     }
+
+ fall_back:
 
   if (!InstallRenderer (renderers))
     abort ();
