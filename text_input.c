@@ -3217,26 +3217,29 @@ FilterInputCallback (Seat *seat, Surface *surface, void *event,
 
   /* Find the enabled text input.  */
   if (info)
-    input = FindEnabledTextInput (info);
-
-  /* If there is an enabled text input, start filtering the event.  */
-  if (info && input && input->xic)
     {
-      DebugPrint ("found enabled text input %p on client-seat info %p",
-		  input, info);
+      input = FindEnabledTextInput (info);
 
-      /* Convert the extension event into a fake core event that the
-	 input method can understand.  */
-      ConvertKeyEvent (xev, &xkey);
+      /* If there is an enabled text input, start filtering the
+	 event.  */
+      if (input && input->xic)
+	{
+	  DebugPrint ("found enabled text input %p on client-seat info %p",
+		      input, info);
 
-      /* And return the result of filtering the event.  */
-      if (XFilterEvent (&xkey, XLWindowFromSurface (surface)))
-	return True;
+	  /* Convert the extension event into a fake core event that
+	     the input method can understand.  */
+	  ConvertKeyEvent (xev, &xkey);
 
-      /* Otherwise, call XmbLookupString.  If a keysym is returned,
-	 return False.  Otherwise, commit the string looked up and
-	 return True.  */
-      return LookupString (input, &xkey, keysym);
+	  /* And return the result of filtering the event.  */
+	  if (XFilterEvent (&xkey, XLWindowFromSurface (surface)))
+	    return True;
+
+	  /* Otherwise, call XmbLookupString.  If a keysym is
+	     returned, return False.  Otherwise, commit the string
+	     looked up and return True.  */
+	  return LookupString (input, &xkey, keysym);
+	}
     }
 
   /* Otherwise, do nothing.  */

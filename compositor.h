@@ -892,11 +892,13 @@ typedef struct _RoleFuncs RoleFuncs;
 typedef struct _CommitCallback CommitCallback;
 typedef struct _UnmapCallback UnmapCallback;
 typedef struct _DestroyCallback DestroyCallback;
+typedef struct _ClientData ClientData;
 
 enum _ClientDataType
   {
     SubsurfaceData,
     PointerConfinementData,
+    ShortcutInhibitData,
     MaxClientData,
   };
 
@@ -937,6 +939,21 @@ struct _CommitCallback
   CommitCallback *next, *last;
 };
 
+struct _ClientData
+{
+  /* The next piece of client data attached to this surface.  */
+  ClientData *next;
+
+  /* The client data itself.  */
+  void *data;
+
+  /* The free function.  */
+  void (*free_function) (void *);
+
+  /* The type of the client data.  */
+  ClientDataType type;
+};
+
 struct _Surface
 {
   /* The view associated with this surface.  */
@@ -968,11 +985,8 @@ struct _Surface
   /* List of subsurfaces.  */
   XLList *subsurfaces;
 
-  /* Array of "client data".  */
-  void *client_data[MaxClientData];
-
-  /* List of functions for freeing "client data".  */
-  void (*free_client_data[MaxClientData]) (void *);
+  /* List of client data.  */
+  ClientData *client_data;
 
   /* List of commit callbacks.  */
   CommitCallback commit_callbacks;
@@ -1087,6 +1101,7 @@ extern DestroyCallback *XLSurfaceRunOnFree (Surface *, void (*) (void *),
 extern void XLSurfaceCancelRunOnFree (DestroyCallback *);
 extern void *XLSurfaceGetClientData (Surface *, ClientDataType,
 				     size_t, void (*) (void *));
+extern void *XLSurfaceFindClientData (Surface *, ClientDataType);
 extern Bool XLSurfaceGetResizeDimensions (Surface *, int *, int *);
 extern void XLSurfacePostResize (Surface *, int, int, int, int);
 extern void XLSurfaceMoveBy (Surface *, int, int);
@@ -1450,6 +1465,8 @@ extern void XLSeatLockPointer (Seat *);
 extern void XLSeatUnlockPointer (Seat *);
 extern RelativePointer *XLSeatGetRelativePointer (Seat *, struct wl_resource *);
 extern void XLSeatDestroyRelativePointer (RelativePointer *);
+extern Bool XLSeatApplyExternalGrab (Seat *, Surface *);
+extern void XLSeatCancelExternalGrab (Seat *);
 
 extern Cursor InitDefaultCursor (void);
 
@@ -1622,6 +1639,12 @@ extern void XLPointerConstraintsReconfineSurface (Surface *);
 extern void XLInitRelativePointer (void);
 extern void XLRelativePointerSendRelativeMotion (struct wl_resource *,
 						 uint64_t, double, double);
+
+/* Defined in keyboard_shortcuts_inhibit.c.  */
+
+extern void XLInitKeyboardShortcutsInhibit (void);
+extern void XLCheckShortcutInhibition (Seat *, Surface *);
+extern void XLReleaseShortcutInhibition (Seat *, Surface *);
 
 /* Utility functions that don't belong in a specific file.  */
 

@@ -1305,7 +1305,7 @@ static void
 HandleSurfaceDestroy (struct wl_resource *resource)
 {
   Surface *surface;
-  int i;
+  ClientData *data, *last;
 
   surface = wl_resource_get_user_data (resource);
 
@@ -1322,13 +1322,18 @@ HandleSurfaceDestroy (struct wl_resource *resource)
 	      NotifySubsurfaceDestroyed);
 
   /* Then release all client data.  */
-  for (i = 0; i < MaxClientData; ++i)
-    {
-      if (surface->client_data[i])
-	surface->free_client_data[i] (surface->client_data[i]);
-      XLFree (surface->client_data[i]);
+  data = surface->client_data;
 
-      surface->client_data[i] = NULL;
+  while (data)
+    {
+      /* Free the client data.  */
+      data->free_function (data->data);
+      XLFree (data->data);
+
+      /* And its record.  */
+      last = data;
+      data = data->next;
+      XLFree (last);
     }
 
   /* Release the output region.  */
@@ -1641,13 +1646,38 @@ void *
 XLSurfaceGetClientData (Surface *surface, ClientDataType type,
 			size_t size, void (*free_func) (void *))
 {
-  if (surface->client_data[type])
-    return surface->client_data[type];
+  ClientData *data;
 
-  surface->client_data[type] = XLCalloc (1, size);
-  surface->free_client_data[type] = free_func;
+  /* First, look for existing client data.  */
+  for (data = surface->client_data; data; data = data->next)
+    {
+      if (data->type == type)
+	return data->data;
+    }
 
-  return surface->client_data[type];
+  /* Next, allocate some new client data.  */
+  data = XLMalloc (sizeof *data);
+  data->next = surface->client_data;
+  surface->client_data = data;
+  data->data = XLCalloc (1, size);
+  data->free_function = free_func;
+  data->type = type;
+
+  return data->data;
+}
+
+void *
+XLSurfaceFindClientData (Surface *surface, ClientDataType type)
+{
+  ClientData *data;
+
+  for (data = surface->client_data; data; data = data->next)
+    {
+      if (data->type == type)
+	return data->data;
+    }
+
+  return NULL;
 }
 
 Window

@@ -236,6 +236,7 @@ XLMain (int argc, char **argv)
   XLInitDrmLease ();
   XLInitPointerConstraints ();
   XLInitRelativePointer ();
+  XLInitKeyboardShortcutsInhibit ();
 
   /* This has to come after the rest of the initialization.  */
   DetermineServerTime ();

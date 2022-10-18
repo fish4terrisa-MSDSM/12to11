@@ -82,13 +82,14 @@ XLList *live_seats;
 
 enum
   {
-    IsInert	      = 1,
-    IsWindowMenuShown = (1 << 2),
-    IsDragging	      = (1 << 3),
-    IsDropped	      = (1 << 4),
-    IsTextInputSeat   = (1 << 5),
-    IsPointerLocked   = (1 << 6),
-    IsSurfaceCoordSet = (1 << 7),
+    IsInert		  = 1,
+    IsWindowMenuShown	  = (1 << 2),
+    IsDragging		  = (1 << 3),
+    IsDropped		  = (1 << 4),
+    IsTextInputSeat	  = (1 << 5),
+    IsPointerLocked	  = (1 << 6),
+    IsSurfaceCoordSet	  = (1 << 7),
+    IsExternalGrabApplied = (1 << 8),
   };
 
 enum
@@ -361,6 +362,12 @@ struct _Seat
 {
   /* The last user time.  */
   Timestamp last_user_time;
+
+  /* The last time the focus changed into a surface.  */
+  Timestamp last_focus_time;
+
+  /* When the last external grab was applied.  */
+  Time external_grab_time;
 
   /* wl_global associated with this seat.  */
   struct wl_global *global;
@@ -1749,7 +1756,7 @@ HandleBind (struct wl_client *client, void *data,
 {
   struct wl_resource *resource;
   char *name;
-  ptrdiff_t length;
+  size_t length;
   Seat *seat;
 
   seat = data;
@@ -2665,7 +2672,7 @@ static void
 SelectDeviceEvents (void)
 {
   XIEventMask mask;
-  ptrdiff_t length;
+  size_t length;
 
   length = XIMaskLen (XI_LASTEVENT);
   mask.mask = alloca (length);
@@ -2864,6 +2871,10 @@ SetFocusSurface (Seat *seat, Surface *focus)
     {
       SendKeyboardLeave (seat, seat->focus_surface);
 
+      /* Cancel any grab that may be associated with shortcut
+	 inhibition.  */
+      XLReleaseShortcutInhibition (seat, seat->focus_surface);
+
       XLSurfaceCancelRunOnFree (seat->focus_destroy_callback);
       seat->focus_destroy_callback = NULL;
       seat->focus_surface = NULL;
@@ -2880,6 +2891,9 @@ SetFocusSurface (Seat *seat, Surface *focus)
       XLPrimarySelectionHandleFocusChange (seat);
       return;
     }
+
+  /* Apply any shortcut inhibition.  */
+  XLCheckShortcutInhibition (seat, focus);
 
   if (input_funcs)
     /* Tell any input method about the change.  */
@@ -2906,6 +2920,9 @@ DispatchFocusIn (Surface *surface, XIFocusInEvent *event)
 
   if (!seat)
     return;
+
+  /* Record the time the focus changed for the external grab.  */
+  seat->last_focus_time = TimestampFromServerTime (event->time);
 
   SetFocusSurface (seat, surface);
 }
@@ -4553,7 +4570,7 @@ FakePointerEdge (Seat *seat, Surface *target, uint32_t serial,
   Status state;
   Window window;
   XIEventMask mask;
-  ptrdiff_t length;
+  size_t length;
 
   if (edge == NoneEdge)
     return False;
@@ -4751,7 +4768,7 @@ void
 XLSelectStandardEvents (Window window)
 {
   XIEventMask mask;
-  ptrdiff_t length;
+  size_t length;
 
   length = XIMaskLen (XI_LASTEVENT);
   mask.mask = alloca (length);
@@ -4965,7 +4982,7 @@ XLSeatExplicitlyGrabSurface (Seat *seat, Surface *surface, uint32_t serial)
   WhatEdge edge;
   Time time;
   XIEventMask mask;
-  ptrdiff_t length;
+  size_t length;
   Cursor cursor;
 
   if (seat->flags & IsInert
@@ -5017,6 +5034,8 @@ XLSeatExplicitlyGrabSurface (Seat *seat, Surface *surface, uint32_t serial)
   XISetMask (mask.mask, XI_Motion);
   XISetMask (mask.mask, XI_ButtonPress);
   XISetMask (mask.mask, XI_ButtonRelease);
+  XISetMask (mask.mask, XI_KeyPress);
+  XISetMask (mask.mask, XI_KeyRelease);
 
   cursor = (seat->cursor ? seat->cursor->cursor : None);
 
@@ -5036,9 +5055,14 @@ XLSeatExplicitlyGrabSurface (Seat *seat, Surface *surface, uint32_t serial)
      that keyboard focus cannot be changed, which is not very crucial,
      so it is allowed to fail.  */
 
-  XIGrabDevice (compositor.display, seat->master_keyboard,
-		window, time, None, XIGrabModeAsync,
-		XIGrabModeAsync, True, &mask);
+  state = XIGrabDevice (compositor.display, seat->master_keyboard,
+			window, time, None, XIGrabModeAsync,
+			XIGrabModeAsync, True, &mask);
+
+  /* Cancel any external grab that might be applied if the keyboard
+     grab succeeded.  */
+  if (state == Success)
+    seat->flags &= ~IsExternalGrabApplied;
 
   /* And record the grab surface, so that owner_events can be
      implemented correctly.  */
@@ -5332,7 +5356,7 @@ XLSeatBeginDrag (Seat *seat, DataSource *data_source, Surface *start_surface,
   Window window;
   Time time;
   XIEventMask mask;
-  ptrdiff_t length;
+  size_t length;
   WhatEdge edge;
   Status state;
 
@@ -5736,4 +5760,60 @@ XLSeatDestroyRelativePointer (RelativePointer *relative_pointer)
   ReleaseSeat (relative_pointer->seat);
 
   XLFree (relative_pointer);
+}
+
+Bool
+XLSeatApplyExternalGrab (Seat *seat, Surface *surface)
+{
+  Window window;
+  Status state;
+  XIEventMask mask;
+  size_t length;
+
+  /* Grab the toplevel SURFACE on SEAT.  */
+
+  window = XLWindowFromSurface (surface);
+
+  if (!window)
+    return None;
+
+  length = XIMaskLen (XI_LASTEVENT);
+  mask.mask = alloca (length);
+  mask.mask_len = length;
+  mask.deviceid = XIAllMasterDevices;
+
+  memset (mask.mask, 0, length);
+
+  /* Grab focus and key events.  */
+  XISetMask (mask.mask, XI_FocusIn);
+  XISetMask (mask.mask, XI_FocusOut);
+  XISetMask (mask.mask, XI_KeyPress);
+  XISetMask (mask.mask, XI_KeyRelease);
+
+  state = XIGrabDevice (compositor.display, seat->master_keyboard,
+			window, seat->last_focus_time.milliseconds, None,
+			XIGrabModeAsync, XIGrabModeAsync, True, &mask);
+  if (state == Success)
+    {
+      /* Mark an external grab as having been applied.  */
+      seat->flags |= IsExternalGrabApplied;
+
+      /* Record the time when it was applied.  */
+      seat->external_grab_time = seat->last_focus_time.milliseconds;
+
+      return True;
+    }
+
+  return False;
+}
+
+void
+XLSeatCancelExternalGrab (Seat *seat)
+{
+  if (!(seat->flags & IsExternalGrabApplied))
+    return;
+
+  /* Cancel the external grab.  */
+  XIUngrabDevice (compositor.display, seat->master_keyboard,
+		  seat->external_grab_time);
 }

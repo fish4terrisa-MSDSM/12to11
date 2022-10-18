@@ -792,7 +792,8 @@ Teardown (Surface *surface, Role *role)
       ViewUnparent (surface->under);
       ViewSetSubcompositor (surface->under, NULL);
 
-      client = subsurface->parent->client_data[SubsurfaceData];
+      client = XLSurfaceFindClientData (subsurface->parent,
+					SubsurfaceData);
 
       if (client)
 	{
@@ -986,7 +987,7 @@ XLSubsurfaceHandleParentCommit (Surface *parent)
 {
   SurfaceActionClientData *client;
 
-  client = parent->client_data[SubsurfaceData];
+  client = XLSurfaceFindClientData (parent, SubsurfaceData);
 
   if (client)
     RunSurfaceActions (&client->actions);

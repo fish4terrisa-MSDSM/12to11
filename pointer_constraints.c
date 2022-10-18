@@ -1776,7 +1776,7 @@ Reconfine (Surface *surface, int *root_x, int *root_y,
   if (!XLWindowFromSurface (surface))
     return;
 
-  record = surface->client_data[PointerConfinementData];
+  record = XLSurfaceFindClientData (surface, PointerConfinementData);
 
   if (!record)
     return;
@@ -1813,7 +1813,7 @@ XLPointerBarrierLeft (Seat *seat, Surface *surface)
   /* The pointer has now left the given surface.  If there is an
      active confinement for that surface and seat, disable it.  */
 
-  record = surface->client_data[PointerConfinementData];
+  record = XLSurfaceFindClientData (surface, PointerConfinementData);
 
   if (!record)
     return;
@@ -1834,7 +1834,7 @@ XLPointerBarrierCheck (Seat *seat, Surface *dispatch, double x, double y,
   pixman_box32_t box;
   int offset_x, offset_y;
 
-  record = dispatch->client_data[PointerConfinementData];
+  record = XLSurfaceFindClientData (dispatch, PointerConfinementData);
 
   if (!record)
     return;
@@ -1959,7 +1959,7 @@ XLPointerConstraintsSurfaceMovedTo (Surface *surface, int root_x,
      query for the position manually.  Simply move the lines for the
      surface's window and each of its subsurfaces.  */
 
-  record = surface->client_data[PointerConfinementData];
+  record = XLSurfaceFindClientData (surface, PointerConfinementData);
 
   if (!record)
     return;
