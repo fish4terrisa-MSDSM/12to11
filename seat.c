@@ -1832,7 +1832,7 @@ MakeSeatForDevicePair (int master_keyboard, int master_pointer,
   seat->master_keyboard = master_keyboard;
   seat->master_pointer = master_pointer;
   seat->global = wl_global_create (compositor.wl_display,
-				   &wl_seat_interface, 7,
+				   &wl_seat_interface, 8,
 				   seat, HandleBind);
   seat->client_info.next = &seat->client_info;
   seat->client_info.last = &seat->client_info;
@@ -2542,9 +2542,10 @@ HandleRawButton (XIRawEvent *event)
 	  if (QueryPointer (seat, window, &win_x, &win_y))
 	    {
 	      /* Otherwise, the pointer is on a different screen!  */
-
 	      TransformToSurface (seat->last_seen_surface,
 				  win_x, win_y, &dispatch_x, &dispatch_y);
+
+	      /* And finally the button release.  */
 	      SendButton (seat, seat->last_seen_surface, event->time,
 			  button, WL_POINTER_BUTTON_STATE_RELEASED,
 			  dispatch_x, dispatch_y);
@@ -3639,6 +3640,12 @@ DispatchEntryExit (Subcompositor *subcompositor, XIEnterEvent *event)
 
       TransformToSurface (dispatch, event_x, event_y, &x, &y);
       EnteredSurface (seat, dispatch, event->time, x, y, False);
+
+      /* If this entry event was the result of a grab, also send
+	 motion now, as a corresponding XI_Motion will not arrive
+	 later.  */
+      if (event->mode == XINotifyUngrab)
+	SendMotion (seat, dispatch, x, y, event->time);
     }
 
   seat->last_motion_x = event->root_x;
@@ -3726,15 +3733,33 @@ SendScrollAxis (Seat *seat, Surface *surface, Time time,
 	  pointer->info->last_enter_serial = serial;
 	}
 
-      if (axis_x != 0.0)
-	wl_pointer_send_axis (pointer->resource, time,
-			      WL_POINTER_AXIS_HORIZONTAL_SCROLL,
-			      wl_fixed_from_double (axis_x));
+      if (wl_resource_get_version (pointer->resource) < 8)
+	{
+	  if (axis_x != 0.0)
+	    wl_pointer_send_axis (pointer->resource, time,
+				  WL_POINTER_AXIS_HORIZONTAL_SCROLL,
+				  wl_fixed_from_double (axis_x));
 
-      if (axis_y != 0.0)
-	wl_pointer_send_axis (pointer->resource, time,
-			      WL_POINTER_AXIS_VERTICAL_SCROLL,
-			      wl_fixed_from_double (axis_y));
+	  if (axis_y != 0.0)
+	    wl_pointer_send_axis (pointer->resource, time,
+				  WL_POINTER_AXIS_VERTICAL_SCROLL,
+				  wl_fixed_from_double (axis_y));
+	}
+      else
+        {
+	  /* Send value120 events if they are available; those events
+	     make more sense.  */
+
+	  if (axis_x != 0.0)
+	    wl_pointer_send_axis_value120 (pointer->resource,
+					   WL_POINTER_AXIS_HORIZONTAL_SCROLL,
+					   axis_x * 12);
+
+	  if (axis_y != 0.0)
+	    wl_pointer_send_axis_value120 (pointer->resource,
+					   WL_POINTER_AXIS_VERTICAL_SCROLL,
+					   axis_y * 12);
+	}
 
       if (axis_y == 0.0 && axis_x == 0.0)
 	{

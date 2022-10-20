@@ -57,7 +57,7 @@ complete degree:
   'wl_shm',                                     version:  1
   'xdg_wm_base',                                version:  5
   'wl_subcompositor',                           version:  1
-  'wl_seat',                                    version:  7
+  'wl_seat',                                    version:  8
   'wl_data_device_manager',                     version:  3
   'zwp_linux_dmabuf_v1',                        version:  4
   'zwp_primary_selection_device_manager_v1',    version:  1

@@ -199,7 +199,7 @@ wl_compositor	5
 wl_shm	1
 xdg_wm_base	5
 wl_subcompositor	1
-wl_seat	7
+wl_seat	8
 wl_data_device_manager	3
 zwp_linux_dmabuf_v1	4
 zwp_primary_selection_device_manager_v1	1

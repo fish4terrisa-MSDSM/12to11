@@ -853,6 +853,22 @@ HandleSubsurfaceResourceDestroy (struct wl_resource *resource)
   DestroyBacking (subsurface);
 }
 
+static Surface *
+GetRootSurface (Surface *surface)
+{
+  Subsurface *subsurface;
+
+  if (surface->role_type != SubsurfaceType || !surface->role)
+    return surface;
+
+  subsurface = SubsurfaceFromRole (surface->role);
+
+  if (!subsurface->parent)
+    return surface;
+
+  return GetRootSurface (subsurface->parent);
+}
+
 static void
 GetSubsurface (struct wl_client *client, struct wl_resource *resource,
 	       uint32_t id, struct wl_resource *surface_resource,
@@ -870,8 +886,24 @@ GetSubsurface (struct wl_client *client, struct wl_resource *resource,
   if (surface->role || (surface->role_type != AnythingType
 			&& surface->role_type != SubsurfaceType))
     {
-      wl_resource_post_error (resource, WL_DISPLAY_ERROR_IMPLEMENTATION,
+      wl_resource_post_error (resource, WL_SUBCOMPOSITOR_ERROR_BAD_SURFACE,
 			      "trying to attach subsurface to surface with role");
+      return;
+    }
+
+  /* Check that a parent loop won't happen.  */
+
+  if (parent == surface)
+    {
+      wl_resource_post_error (resource, WL_SUBCOMPOSITOR_ERROR_BAD_PARENT,
+			      "trying to attach subsurface to itself");
+      return;
+    }
+
+  if (GetRootSurface (parent) == surface)
+    {
+      wl_resource_post_error (resource, WL_SUBCOMPOSITOR_ERROR_BAD_PARENT,
+			      "specified parent is ancestor of subsurface");
       return;
     }
 
