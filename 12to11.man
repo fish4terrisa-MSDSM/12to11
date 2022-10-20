@@ -115,6 +115,12 @@ either be \fBpicture\fP (the XRender based compositor) or \fBegl\fP
 If ``True'' or ``true'', this resource enables the use of direct
 presentation on unredirected windows.  This is not yet complete
 pending the installation of required functionality in the X server.
+.TP
+.B wmProtocols \fP (class \fBWmProtocols\fP)
+Comma-separated list of window manager protocols, similar to
+\fBinputStyles\fP, that the protocol translator should enable or
+disable.  The current (and default) list of supported protocols are:
+\fBnetWmPing\fB.
 .IP
 .SH ENVIRONMENT
 Several environment variables exist that modify the behavior of the

@@ -253,6 +253,11 @@ struct _XdgDecoration
   XdgToplevel *toplevel;
 };
 
+enum
+  {
+    NetWmPingMask = 1,
+  };
+
 /* iconv context used to convert between UTF-8 and Latin-1.  */
 static iconv_t latin_1_cd;
 
@@ -263,6 +268,9 @@ static Bool apply_state_workaround;
 /* Whether or not to batch together state and size changes that arrive
    at almost the same time.  */
 static Bool batch_state_changes;
+
+/* Mask consisting of currently enabled window manager protocols.  */
+static int window_manager_protocols;
 
 static XdgUnmapCallback *
 RunOnUnmap (XdgToplevel *toplevel, void (*unmap) (void *),
@@ -1035,7 +1043,8 @@ Attach (Role *role, XdgRoleImplementation *impl)
 
   /* _NET_WM_PING should be disabled when the window manager kills
      clients using XKillClient.  */
-  protocols[nproto++] = _NET_WM_PING;
+  if (window_manager_protocols & NetWmPingMask)
+    protocols[nproto++] = _NET_WM_PING;
 
   if (XLFrameClockSyncSupported ())
     protocols[nproto++] = _NET_WM_SYNC_REQUEST;
@@ -2378,12 +2387,82 @@ XLHandleXEventForXdgToplevels (XEvent *event)
   return False;
 }
 
+static void
+ReadWmProtocolsString (const char **string_return)
+{
+  XrmDatabase rdb;
+  XrmName namelist[3];
+  XrmClass classlist[3];
+  XrmValue value;
+  XrmRepresentation type;
+
+  rdb = XrmGetDatabase (compositor.display);
+
+  if (!rdb)
+    return;
+
+  namelist[1] = XrmStringToQuark ("wmProtocols");
+  namelist[0] = app_quark;
+  namelist[2] = NULLQUARK;
+
+  classlist[1] = XrmStringToQuark ("WmProtocols");
+  classlist[0] = resource_quark;
+  classlist[2] = NULLQUARK;
+
+  if (XrmQGetResource (rdb, namelist, classlist,
+		       &type, &value)
+      && type == QString)
+    *string_return = (const char *) value.addr;
+}
+
+static int
+ParseWmProtocols (const char *string)
+{
+  const char *end, *sep;
+  char *buffer;
+  int wm_protocols;
+
+  wm_protocols = 0;
+  end = string + strlen (string);
+
+  while (string < end)
+    {
+      /* Find the next comma.  */
+      sep = strchr (string, ',');
+
+      if (!sep)
+	sep = end;
+
+      /* Copy the text between string and sep into buffer.  */
+      buffer = alloca (sep - string + 1);
+      memcpy (buffer, string, sep - string);
+      buffer[sep - string] = '\0';
+
+      if (!strcmp (buffer, "netWmPing"))
+	wm_protocols |= NetWmPingMask;
+      else
+	fprintf (stderr, "Warning: encountered invalid window manager "
+		 "protocol: %s\n", buffer);
+
+      string = sep + 1;
+    }
+
+  return wm_protocols;
+}
+
 void
 XLInitXdgToplevels (void)
 {
+  const char *wm_protocols;
+
   latin_1_cd = iconv_open ("ISO-8859-1", "UTF-8");
   apply_state_workaround = (getenv ("APPLY_STATE_WORKAROUND") != NULL);
   batch_state_changes = !getenv ("DIRECT_STATE_CHANGES");
+
+  /* Determine which window manager protocols are to be enabled.  */
+  wm_protocols = "netWmPing,";
+  ReadWmProtocolsString (&wm_protocols);
+  window_manager_protocols = ParseWmProtocols (wm_protocols);
 }
 
 Bool
