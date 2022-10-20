@@ -146,8 +146,39 @@ enum
     NoPresentation	     = 2,
   };
 
+/* Structure describing presentation callback.  The callback is run
+   upon a given presentation being completed.  */
+
+struct _PresentCompletionCallback
+{
+  /* The next and last presentation callbacks.  */
+  PresentCompletionCallback *next, *last;
+
+  /* The next and last presentation completion callbacks on the
+     target.  */
+  PresentCompletionCallback *target_next, *target_last;
+
+  /* The picture target.  */
+  PictureTarget *target;
+
+  /* The callback itself.  */
+  PresentCompletionFunc callback;
+
+  /* Data the callback will be called with.  */
+  void *data;
+
+  /* The function.  */
+  PresentCompletionFunc function;
+
+  /* The presentation ID.  */
+  uint32_t id;
+};
+
 struct _PictureTarget
 {
+  /* The last media stamp counter for the presentation window.  */
+  uint64_t last_msc;
+
   /* The XID of the picture.  */
   Picture picture;
 
@@ -178,6 +209,9 @@ struct _PictureTarget
 
   /* Ongoing buffer activity.  */
   BufferActivityRecord activity;
+
+  /* List of present completion callbacks.  */
+  PresentCompletionCallback completion_callbacks;
 };
 
 struct _DrmFormatInfo
@@ -227,27 +261,6 @@ struct _DmaBufRecord
 
   /* The depth of the pixmap.  */
   int depth;
-};
-
-/* Structure describing presentation callback.  The callback is run
-   upon a given presentation being completed.  */
-
-struct _PresentCompletionCallback
-{
-  /* The next and last presentation callbacks.  */
-  PresentCompletionCallback *next, *last;
-
-  /* The callback itself.  */
-  PresentCompletionFunc callback;
-
-  /* Data the callback will be called with.  */
-  void *data;
-
-  /* The function.  */
-  PresentCompletionFunc function;
-
-  /* The presentation ID.  */
-  uint32_t id;
 };
 
 /* Hash table mapping between presentation windows and targets.  */
@@ -368,6 +381,9 @@ static BufferActivityRecord all_activity;
 
 /* List of all presentations that have not yet been completed.  */
 static PresentCompletionCallback all_completion_callbacks;
+
+/* Whether or not direct presentation should be used.  */
+static Bool use_direct_presentation;
 
 /* XRender, DRI3 and XPresent-based renderer.  A RenderTarget is just
    a Picture.  Here is a rough explanation of how the buffer release
@@ -657,6 +673,45 @@ PickVisual (int *depth)
   return NULL;
 }
 
+static void
+InitSynchronizedPresentation (void)
+{
+  XrmDatabase rdb;
+  XrmName namelist[3];
+  XrmClass classlist[3];
+  XrmValue value;
+  XrmRepresentation type;
+
+  rdb = XrmGetDatabase (compositor.display);
+
+  if (!rdb)
+    return;
+
+  namelist[1] = XrmStringToQuark ("useDirectPresentation");
+  namelist[0] = app_quark;
+  namelist[2] = NULLQUARK;
+
+  classlist[1] = XrmStringToQuark ("UseDirectPresentation");
+  classlist[0] = resource_quark;
+  classlist[2] = NULLQUARK;
+
+  /* Enable the use of direct presentation if
+     *.UseDirectPresentation.*.useDirectPresentation is true.  This is
+     still incomplete, as the features necessary for it to play nice
+     with frame synchronization have not yet been implemented in the X
+     server.  */
+
+  if (XrmQGetResource (rdb, namelist, classlist,
+		       &type, &value)
+      && type == QString
+      && (!strcmp (value.addr, "True")
+	  || !strcmp (value.addr, "true")))
+    use_direct_presentation = True;
+}
+
+/* Forward declaration.  */
+static void AddRenderFlag (int);
+
 static Bool
 InitRenderFuncs (void)
 {
@@ -677,6 +732,13 @@ InitRenderFuncs (void)
 	       " by this X server\n");
       return False;
     }
+
+  /* Figure out whether or not the user wants synchronized
+     presentation.  */
+  InitSynchronizedPresentation ();
+
+  if (use_direct_presentation)
+    AddRenderFlag (SupportsDirectPresent);
 
   /* Create an unmapped, InputOnly window, that is used to receive
      roundtrip events.  */
@@ -726,6 +788,10 @@ TargetFromDrawable (Drawable drawable, Window window,
 
   /* And the event mask.  */
   target->standard_event_mask = standard_event_mask;
+
+  /* Initialize the list of present completion callbacks.  */
+  target->completion_callbacks.target_next = &target->completion_callbacks;
+  target->completion_callbacks.target_last = &target->completion_callbacks;
 
   return (RenderTarget) (void *) target;
 }
@@ -846,6 +912,7 @@ DestroyRenderTarget (RenderTarget target)
   PresentRecord *record, *last;
   BufferActivityRecord *activity_record, *activity_last;
   IdleCallback *idle, *idle_last;
+  PresentCompletionCallback *callback, *callback_last;
 
   pict_target = target.pointer;
 
@@ -890,6 +957,20 @@ DestroyRenderTarget (RenderTarget target)
 
       /* Free the callback without doing anything else with it.  */
       XLFree (idle_last);
+    }
+
+  /* Detach the target from each present completion callback.  */
+  callback = pict_target->completion_callbacks.target_next;
+  while (callback != &pict_target->completion_callbacks)
+    {
+      callback_last = callback;
+      callback = callback->target_next;
+
+      /* Clear callback->target and the target_next/target_last
+	 fields.  */
+      callback_last->target = NULL;
+      callback_last->target_next = NULL;
+      callback_last->target_last = NULL;
     }
 
   XRenderFreePicture (compositor.display,
@@ -1203,6 +1284,7 @@ PresentToWindow (RenderTarget target, RenderBuffer source,
   XserverRegion region;
   PresentRecord *record;
   PresentCompletionCallback *callback_rec;
+  uint64_t target_msc;
 
   /* Present SOURCE onto TARGET.  Return False if the presentation is
      not supported.  */
@@ -1236,12 +1318,27 @@ PresentToWindow (RenderTarget target, RenderBuffer source,
   else
     region = None;
 
-  /* Present the pixmap now from the damage, immediately.  */
-  XPresentPixmap (compositor.display,
-		  pict_target->presentation_window, buffer->pixmap,
-		  ++present_serial, None, region, 0, 0, None,
-		  None, None, PresentOptionAsync, 0, 0, 0,
-		  NULL, 0);
+  if (use_direct_presentation)
+    {
+      /* Determine the target msc.  Force the next frame after this
+	 one by increasing last_msc.  */
+      target_msc = (pict_target->last_msc ? ++pict_target->last_msc : 0);
+
+      /* Present the pixmap now from the damage; it will complete upon
+	 the next vblank if direct presentation is enabled, or
+	 immediately if it is not.  */
+      XPresentPixmap (compositor.display, pict_target->presentation_window,
+		      buffer->pixmap, ++present_serial, None, region, 0, 0,
+		      None, None, None, PresentOptionNone, target_msc, 1, 0,
+		      NULL, 0);
+    }
+  else
+    /* Direct presentation is off; present the pixmap asynchronously
+       at an msc of 0.  */
+    XPresentPixmap (compositor.display, pict_target->presentation_window,
+		    buffer->pixmap, ++present_serial, None, region, 0, 0,
+		    None, None, None, PresentOptionAsync, 0, 0, 0, NULL,
+		    0);
 
   if (region)
     XFixesDestroyRegion (compositor.display, region);
@@ -1270,6 +1367,11 @@ PresentToWindow (RenderTarget target, RenderBuffer source,
   callback_rec->function = callback;
   callback_rec->data = data;
   callback_rec->id = present_serial;
+  callback_rec->target_next = pict_target->completion_callbacks.target_next;
+  callback_rec->target_last = &pict_target->completion_callbacks;
+  pict_target->completion_callbacks.target_next->target_last = callback_rec;
+  pict_target->completion_callbacks.target_next = callback_rec;
+  callback_rec->target = pict_target;
 
   return callback_rec;
 }
@@ -1284,6 +1386,12 @@ CancelPresentationCallback (PresentCompletionKey key)
   callback = key;
   callback->next->last = callback->last;
   callback->last->next = callback->next;
+
+  if (callback->target_last)
+    {
+      callback->target_last->target_next = callback->target_next;
+      callback->target_next->target_last = callback->target_last;
+    }
 
   XLFree (callback);
 }
@@ -1351,6 +1459,12 @@ static RenderFuncs picture_render_funcs =
     .cancel_presentation = CancelPresentation,
     .flags = NeverAges,
   };
+
+static void
+AddRenderFlag (int flag)
+{
+  picture_render_funcs.flags |= flag;
+}
 
 static DrmFormatInfo *
 FindFormatMatching (XRenderPictFormat *format)
@@ -2574,6 +2688,9 @@ static Bool
 HandlePresentCompleteNotify (XPresentCompleteNotifyEvent *complete)
 {
   PresentCompletionCallback *callback, *last;
+#ifdef DEBUG_PRESENT_TIME
+  static uint64_t last_ust;
+#endif
 
   callback = all_completion_callbacks.next;
   while (callback != &all_completion_callbacks)
@@ -2588,6 +2705,26 @@ HandlePresentCompleteNotify (XPresentCompleteNotifyEvent *complete)
 	  last->function (last->data);
 	  last->next->last = last->last;
 	  last->last->next = last->next;
+
+	  if (last->target && last->target->last_msc < complete->msc)
+	    /* Set the last known msc of the target.  */
+	    last->target->last_msc = complete->msc;
+
+	  if (last->target_next)
+	    {
+	      /* Unlink the callback from the target as well.  */
+	      last->target_next->target_last = last->target_last;
+	      last->target_last->target_next = last->target_next;
+	    }
+
+#ifdef DEBUG_PRESENT_TIME
+	  fprintf (stderr, "Time taken: %lu us (%g ms) (= 1/%g s)\n",
+		   complete->ust - last_ust,
+		   (complete->ust - last_ust) / 1000.0,
+		   1000.0 / ((complete->ust - last_ust) / 1000.0));
+	  last_ust = complete->ust;
+#endif
+
 	  XLFree (last);
 
 	  return True;

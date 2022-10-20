@@ -17,14 +17,13 @@ for more details.
 You should have received a copy of the GNU General Public License
 along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
+#include <string.h>
+
 #include "compositor.h"
 #include "xdg-shell.h"
 
 /* The xdg_wm_base global.  */
 static struct wl_global *global_xdg_wm_base;
-
-/* All xdg_wm_base resources.  */
-static XLList *all_xdg_wm_bases;
 
 static void
 CreatePositioner (struct wl_client *client, struct wl_resource *resource,
@@ -44,7 +43,28 @@ static void
 Pong (struct wl_client *client, struct wl_resource *resource,
       uint32_t serial)
 {
-  /* TODO... */
+  XdgWmBase *wm_base;
+  XdgRoleList *role;
+
+  /* Ping-pong implementation.  Every time a ping request is received
+     from the window manager, it is linked onto the list of all such
+     requests on the toplevel.  Then, ping is sent with a serial.
+     Once the pong with the latest serial arrives from the client,
+     pending requests are sent back to the window manager on all
+     windows.  */
+  wm_base = wl_resource_get_user_data (resource);
+
+  if (serial == wm_base->last_ping)
+    {
+      /* Reply to the ping events sent to each surface created with
+	 this wm_base.  */
+      role = wm_base->list.next;
+      while (role != &wm_base->list)
+	{
+	  XLXdgRoleReplyPing (role->role);
+	  role = role->next;
+	}
+    }
 }
 
 static void
@@ -64,27 +84,60 @@ static const struct xdg_wm_base_interface xdg_wm_base_impl =
 static void
 HandleResourceDestroy (struct wl_resource *resource)
 {
-  all_xdg_wm_bases = XLListRemove (all_xdg_wm_bases, resource);
+  XdgWmBase *wm_base;
+  XdgRoleList *role, *last;
+
+  wm_base = wl_resource_get_user_data (resource);
+
+  /* Detach each surface.  */
+  role = wm_base->list.next;
+  while (role != &wm_base->list)
+    {
+      last = role;
+      role = role->next;
+
+      /* Complete all ping events.  */
+      XLXdgRoleReplyPing (last->role);
+
+      /* Tell the surface to not bother unlinking itself.  */
+      last->next = NULL;
+      last->last = NULL;
+      last->role = NULL;
+    }
+
+  XLFree (wm_base);
 }
 
 static void
 HandleBind (struct wl_client *client, void *data,
 	    uint32_t version, uint32_t id)
 {
-  struct wl_resource *resource;
+  XdgWmBase *wm_base;
 
-  resource = wl_resource_create (client, &xdg_wm_base_interface,
-				 version, id);
+  wm_base = XLSafeMalloc (sizeof *wm_base);
 
-  if (!resource)
+  if (!wm_base)
     {
       wl_client_post_no_memory (client);
       return;
     }
 
-  wl_resource_set_implementation (resource, &xdg_wm_base_impl,
-				  NULL, HandleResourceDestroy);
-  all_xdg_wm_bases = XLListPrepend (all_xdg_wm_bases, resource);
+  memset (wm_base, 0, sizeof *wm_base);
+  wm_base->resource
+    = wl_resource_create (client, &xdg_wm_base_interface,
+			  version, id);
+
+  if (!wm_base->resource)
+    {
+      XLFree (wm_base);
+      wl_client_post_no_memory (client);
+      return;
+    }
+
+  wl_resource_set_implementation (wm_base->resource, &xdg_wm_base_impl,
+				  wm_base, HandleResourceDestroy);
+  wm_base->list.next = &wm_base->list;
+  wm_base->list.last = &wm_base->list;
 }
 
 void
@@ -94,4 +147,11 @@ XLInitXdgWM (void)
     = wl_global_create (compositor.wl_display,
 			&xdg_wm_base_interface,
 			5, NULL, HandleBind);
+}
+
+void
+XLXdgWmBaseSendPing (XdgWmBase *wm_base)
+{
+  xdg_wm_base_send_ping (wm_base->resource,
+			 ++wm_base->last_ping);
 }

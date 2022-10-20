@@ -2577,7 +2577,16 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 		}
 	    }
 	  else
-	    RenderCancelPresentation (subcompositor->target);
+	    {
+	      RenderCancelPresentation (subcompositor->target);
+
+	      /* Tell the surface to make the compositor redirect the
+		 window again.  */
+	      if (subcompositor->note_frame)
+		subcompositor->note_frame (ModeNotifyDisablePresent,
+					   subcompositor->frame_counter,
+					   subcompositor->note_frame_data);
+	    }
 
 	  /* The first view with an attached buffer should be drawn
 	     with PictOpSrc so that transparency is applied correctly,

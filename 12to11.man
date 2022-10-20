@@ -110,6 +110,12 @@ Specifies the rendering backend the protocol translator uses to
 composite the contents of Wayland surfaces onto X windows.  This can
 either be \fBpicture\fP (the XRender based compositor) or \fBegl\fP
 (the OpenGL ES 2.0 based compositor).
+.TP
+.B useDirectPresentation \fP (class \fBUseDirectPresentation\fP)
+If ``True'' or ``true'', this resource enables the use of direct
+presentation on unredirected windows.  This is not yet complete
+pending the installation of required functionality in the X server.
+.IP
 .SH ENVIRONMENT
 Several environment variables exist that modify the behavior of the
 protocol translator in one way or another.  Most of these are used for

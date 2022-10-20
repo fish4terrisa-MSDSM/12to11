@@ -135,6 +135,9 @@ extern TimestampDifference CompareTimeWith (Time, Timestamp);
 #define TimestampIs(a, op, b)	(CompareTimestamps ((a), (b)) == (op))
 #define TimeIs(a, op, b)	(CompareTimeWith ((a), (b)) == (op))
 
+extern Bool HandleOneXEventForTime (XEvent *);
+extern void InitTime (void);
+
 /* Defined in renderer.c.  */
 
 typedef struct _RenderFuncs RenderFuncs;
@@ -276,11 +279,14 @@ enum
   {
     /* The render target always preserves previously drawn contents;
        IOW, target_age always returns 0.  */
-    NeverAges		 = 1,
+    NeverAges		  = 1,
     /* Buffers attached can always be immediately released.  */
-    ImmediateRelease	 = 1 << 2,
+    ImmediateRelease	  = 1 << 2,
     /* The render target supports explicit synchronization.  */
-    SupportsExplicitSync = 1 << 3,
+    SupportsExplicitSync  = 1 << 3,
+    /* The render target supports direct presentation, so it is okay
+       for surfaces to be unredirected by the compositing manager.  */
+    SupportsDirectPresent = 1 << 4,
   };
 
 struct _RenderFuncs
@@ -382,7 +388,8 @@ struct _RenderFuncs
   void (*cancel_presentation_callback) (PresentCompletionKey);
   
   /* Cancel any presentation that might have happened to the window
-     backing the given target.  */
+     backing the given target.  This must be called before any normal
+     drawing operations.  */
   void (*cancel_presentation) (RenderTarget);
 
   /* Some flags.  NeverAges means targets always preserve contents
@@ -707,6 +714,7 @@ typedef enum _FrameMode FrameMode;
 enum _FrameMode
   {
     ModeStarted,
+    ModeNotifyDisablePresent,
     ModeComplete,
     ModePresented,
   };
@@ -1150,7 +1158,7 @@ extern Atom _NET_WM_OPAQUE_REGION, _XL_BUFFER_RELEASE,
   XdndProxy, XdndEnter, XdndPosition, XdndStatus, XdndLeave, XdndDrop,
   XdndFinished, _NET_WM_FRAME_TIMINGS, _NET_WM_BYPASS_COMPOSITOR, WM_STATE,
   _NET_WM_WINDOW_TYPE, _NET_WM_WINDOW_TYPE_MENU, _NET_WM_WINDOW_TYPE_DND,
-  CONNECTOR_ID;
+  CONNECTOR_ID, _NET_WM_PID, _NET_WM_PING;
 
 extern XrmQuark resource_quark, app_quark, QString;
 
@@ -1164,7 +1172,32 @@ extern void XLInitAtoms (void);
 
 /* Defined in xdg_wm.c.  */
 
+typedef struct _XdgWmBase XdgWmBase;
+typedef struct _XdgRoleList XdgRoleList;
+
+struct _XdgRoleList
+{
+  /* The next and last elements in this list.  */
+  XdgRoleList *next, *last;
+
+  /* The role.  */
+  Role *role;
+};
+
+struct _XdgWmBase
+{
+  /* The associated struct wl_resource.  */
+  struct wl_resource *resource;
+
+  /* The latest ping sent.  */
+  uint32_t last_ping;
+
+  /* List of all surfaces attached.  */
+  XdgRoleList list;
+};
+
 extern void XLInitXdgWM (void);
+extern void XLXdgWmBaseSendPing (XdgWmBase *);
 
 /* Defined in frame_clock.c.  */
 
@@ -1176,7 +1209,7 @@ extern void XLFrameClockAfterFrame (FrameClock *, void (*) (FrameClock *,
 							    void *),
 				    void *);
 extern void XLFrameClockHandleFrameEvent (FrameClock *, XEvent *);
-extern void XLFrameClockStartFrame (FrameClock *, Bool);
+extern Bool XLFrameClockStartFrame (FrameClock *, Bool);
 extern void XLFrameClockEndFrame (FrameClock *);
 extern Bool XLFrameClockIsFrozen (FrameClock *);
 extern Bool XLFrameClockCanBatch (FrameClock *);
@@ -1268,6 +1301,9 @@ extern XdgRoleImplementation *XLImplementationOfXdgRole (Role *);
 extern FrameClock *XLXdgRoleGetFrameClock (Role *);
 extern XdgRoleImplementation *XLLookUpXdgToplevel (Window);
 extern XdgRoleImplementation *XLLookUpXdgPopup (Window);
+
+extern void XLXdgRoleHandlePing (Role *, XEvent *, void (*) (XEvent *));
+extern void XLXdgRoleReplyPing (Role *);
 
 /* Defined in positioner.c.  */
 

@@ -45,12 +45,14 @@ enum
     StateDirtyFrameExtents	= (1 << 7),
     StateTemporaryBounds	= (1 << 8),
     StateFrameStarted		= (1 << 9),
+    StateAllowUnredirection	= (1 << 10),
   };
 
 typedef struct _XdgRole XdgRole;
 typedef struct _XdgState XdgState;
 typedef struct _ReleaseLaterRecord ReleaseLaterRecord;
 typedef struct _ReconstrainCallback ReconstrainCallback;
+typedef struct _PingEvent PingEvent;
 
 /* Association between XIDs and surfaces.  */
 
@@ -90,6 +92,12 @@ struct _XdgRole
   /* The role object.  */
   Role role;
 
+  /* The link to the wm_base's list of surfaces.  */
+  XdgRoleList link;
+
+  /* The attached XdgWmBase.  Not valid if link->next is NULL.  */
+  XdgWmBase *wm_base;
+
   /* The window backing this role.  */
   Window window;
 
@@ -104,6 +112,9 @@ struct _XdgRole
 
   /* The pending frame ID.  */
   uint64_t pending_frame;
+
+  /* List of pending ping events.  */
+  XLList *ping_events;
 
   /* Number of references to this role.  Used when the client
      terminates and the Wayland library destroys objects out of
@@ -172,6 +183,15 @@ struct _ReleaseLaterRecord
 
   /* The next and last records.  */
   ReleaseLaterRecord *next, *last;
+};
+
+struct _PingEvent
+{
+  /* Function called to reply to this event.  */
+  void (*reply_func) (XEvent *);
+
+  /* The event.  */
+  XEvent event;
 };
 
 /* Event base of the XShape extension.  */
@@ -741,9 +761,18 @@ ReleaseBacking (XdgRole *role)
   if (--role->refcount)
     return;
 
-  /* Sync, and then release all buffers pending release.  The sync is
-     necessary because the X server does not perform operations
-     immediately after the Xlib function is called.  */
+  /* Unlink the role if it is still linked.  */
+
+  if (role->link.next)
+    {
+      role->link.next->last = role->link.last;
+      role->link.last->next = role->link.next;
+    }
+
+  /* Release all buffers pending release.  The sync is necessary
+     because the X server does not perform operations immediately
+     after the Xlib function is called.  */
+
   XSync (compositor.display, False);
   FreeRecords (role->release_records);
 
@@ -755,6 +784,9 @@ ReleaseBacking (XdgRole *role)
   /* Release all allocated resources.  */
   RenderDestroyRenderTarget (role->target);
   XDestroyWindow (compositor.display, role->window);
+
+  /* Free associated ping events.  */
+  XLListFree (role->ping_events, XLFree);
 
   /* And the association.  */
   XLDeleteAssoc (surfaces, role->window);
@@ -1147,6 +1179,24 @@ NoteBounds (void *data, int min_x, int min_y,
 }
 
 static void
+WriteRedirectProperty (XdgRole *role)
+{
+  unsigned long bypass_compositor;
+
+  if (role->state & StateAllowUnredirection)
+    /* The subcompositor determined that the window should be
+       uncomposited to allow for direct buffer flipping.  */
+    bypass_compositor = 0;
+  else
+    bypass_compositor = 2;
+
+  XChangeProperty (compositor.display, role->window,
+		   _NET_WM_BYPASS_COMPOSITOR, XA_CARDINAL,
+		   32, PropModeReplace,
+		   (unsigned char *) &bypass_compositor, 1);
+}
+
+static void
 NoteFrame (FrameMode mode, uint64_t id, void *data)
 {
   XdgRole *role;
@@ -1159,16 +1209,25 @@ NoteFrame (FrameMode mode, uint64_t id, void *data)
       /* Record this frame counter as the pending frame.  */
       role->pending_frame = id;
 
-      if (!(role->state & StateFrameStarted))
-	{
-	  role->state |= StateFrameStarted;
-	  XLFrameClockStartFrame (role->clock, False);
-	}
+      if (!(role->state & StateFrameStarted)
+	  && XLFrameClockStartFrame (role->clock, False))
+	role->state |= StateFrameStarted;
 
       /* Also run role "commit inside frame" hook.  */
       if (role->impl && role->impl->funcs.commit_inside_frame)
 	role->impl->funcs.commit_inside_frame (&role->role,
 					       role->impl);
+      break;
+
+    case ModeNotifyDisablePresent:
+      /* The subcompositor will draw to the frame directly, so make
+	 the compositing manager redirect the frame again.  */
+
+      if (role->state & StateAllowUnredirection)
+	{
+	  role->state &= ~StateAllowUnredirection;
+	  WriteRedirectProperty (role);
+	}
 
       break;
 
@@ -1199,6 +1258,21 @@ NoteFrame (FrameMode mode, uint64_t id, void *data)
 		 being performed.  */
 	      || !IsRoleMapped (role))
 	    RunFrameCallbacksConditionally (role);
+
+	  if (mode == ModePresented
+	      && renderer_flags & SupportsDirectPresent)
+	    {
+	      /* Since a presentation was successful, assume future
+		 frames will be presented as well.  In that case, let
+		 the compositing manager unredirect the window, so
+		 buffers can be directly flipped to the screen.  */
+
+	      if (!(role->state & StateAllowUnredirection))
+		{
+		  role->state |= StateAllowUnredirection;
+		  WriteRedirectProperty (role);
+		}
+	    }
 	}
     }
 }
@@ -1316,18 +1390,6 @@ NoteDesyncChild (Surface *surface, Role *role)
 }
 
 static void
-WriteRedirectProperty (XdgRole *role)
-{
-  unsigned long bypass_compositor;
-
-  bypass_compositor = 2;
-  XChangeProperty (compositor.display, role->window,
-		   _NET_WM_BYPASS_COMPOSITOR, XA_CARDINAL,
-		   32, PropModeReplace,
-		   (unsigned char *) &bypass_compositor, 1);
-}
-
-static void
 HandleFreeze (void *data)
 {
   XdgRole *role;
@@ -1370,8 +1432,10 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
   XSetWindowAttributes attrs;
   unsigned int flags;
   Surface *surface;
+  XdgWmBase *wm_base;
 
   surface = wl_resource_get_user_data (surface_resource);
+  wm_base = wl_resource_get_user_data (resource);
 
   if (surface->role || (surface->role_type != AnythingType
 			&& surface->role_type != XdgType))
@@ -1418,6 +1482,14 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
 
   wl_resource_set_implementation (role->role.resource, &xdg_surface_impl,
 				  role, HandleResourceDestroy);
+
+  /* Link the role onto the wm base.  */
+  role->link.next = wm_base->list.next;
+  role->link.last = &wm_base->list;
+  role->link.role = &role->role;
+  wm_base->list.next->last = &role->link;
+  wm_base->list.next = &role->link;
+  role->wm_base = wm_base;
 
   /* Add a reference to this role struct since a wl_resource now
      refers to it.  */
@@ -1964,4 +2036,53 @@ XLXdgRoleNoteRejectedConfigure (Role *role)
       /* Unfreeze the frame clock now.  */
       XLFrameClockUnfreeze (xdg_role->clock);
     }
+}
+
+void
+XLXdgRoleHandlePing (Role *role, XEvent *event,
+		     void (*reply_func) (XEvent *))
+{
+  XdgRole *xdg_role;
+  PingEvent *record;
+
+  xdg_role = XdgRoleFromRole (role);
+
+  /* If the role's xdg_wm_base is detached, just reply to the ping
+     message.  */
+  if (!xdg_role->link.next)
+    reply_func (event);
+  else
+    {
+      /* Otherwise, save the event and ping the client.  Then, send
+	 replies once the client replies.  */
+      record = XLMalloc (sizeof *record);
+      record->event = *event;
+      record->reply_func = reply_func;
+      xdg_role->ping_events = XLListPrepend (xdg_role->ping_events,
+					     record);
+      XLXdgWmBaseSendPing (xdg_role->wm_base);
+    }
+}
+
+static void
+ReplyPingEvent (void *data)
+{
+  PingEvent *event;
+
+  event = data;
+  event->reply_func (&event->event);
+  XLFree (event);
+}
+
+void
+XLXdgRoleReplyPing (Role *role)
+{
+  XdgRole *xdg_role;
+
+  xdg_role = XdgRoleFromRole (role);
+
+  /* Free the ping event list, calling the reply functions along the
+     way.  */
+  XLListFree (xdg_role->ping_events, ReplyPingEvent);
+  xdg_role->ping_events = NULL;
 }

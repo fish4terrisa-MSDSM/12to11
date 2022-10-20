@@ -167,6 +167,9 @@ HandleOneXEvent (XEvent *event)
 
   if (XLHandleOneXEventForXSettings (event))
     return;
+
+  if (HandleOneXEventForTime (event))
+    return;
 }
 
 static void

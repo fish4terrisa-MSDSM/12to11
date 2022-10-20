@@ -109,6 +109,8 @@ static const char *names[] =
     "_NET_WM_WINDOW_TYPE_MENU",
     "_NET_WM_WINDOW_TYPE_DND",
     "CONNECTOR_ID",
+    "_NET_WM_PID",
+    "_NET_WM_PING",
 
     /* These are automatically generated from mime.txt.  */
     DirectTransferAtomNames
@@ -131,7 +133,7 @@ Atom _NET_WM_OPAQUE_REGION, _XL_BUFFER_RELEASE, _NET_WM_SYNC_REQUEST_COUNTER,
   XdndEnter, XdndPosition, XdndStatus, XdndLeave, XdndDrop, XdndFinished,
   _NET_WM_FRAME_TIMINGS, _NET_WM_BYPASS_COMPOSITOR, WM_STATE,
   _NET_WM_WINDOW_TYPE, _NET_WM_WINDOW_TYPE_MENU, _NET_WM_WINDOW_TYPE_DND,
-  CONNECTOR_ID;
+  CONNECTOR_ID, _NET_WM_PID, _NET_WM_PING;
 
 XrmQuark resource_quark, app_quark, QString;
 
@@ -286,9 +288,11 @@ XLInitAtoms (void)
   _NET_WM_WINDOW_TYPE_MENU = atoms[59];
   _NET_WM_WINDOW_TYPE_DND = atoms[60];
   CONNECTOR_ID = atoms[61];
+  _NET_WM_PID = atoms[62];
+  _NET_WM_PING = atoms[63];
 
   /* This is automatically generated.  */
-  DirectTransferAtomInit (atoms, 62);
+  DirectTransferAtomInit (atoms, 64);
 
   /* Now, initialize quarks.  */
   resource_quark = XrmPermStringToQuark (compositor.resource_name);

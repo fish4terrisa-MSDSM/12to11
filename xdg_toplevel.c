@@ -17,6 +17,10 @@ for more details.
 You should have received a copy of the GNU General Public License
 along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -934,6 +938,99 @@ HandleWindowGeometryChange (XdgToplevel *toplevel)
 		     hints);
 }
 
+static Bool
+GetClientMachine (XTextProperty *client_machine)
+{
+  struct addrinfo template, *result;
+  int rc;
+  long host_name_max;
+  char *hostname;
+
+  host_name_max = sysconf (_SC_HOST_NAME_MAX);
+
+  if (host_name_max == -1)
+    /* The maximum host name is indeterminate.  Use a sane limit like
+       _POSIX_HOST_NAME_MAX.  */
+    host_name_max = _POSIX_HOST_NAME_MAX + 1;
+  else
+    host_name_max += 1;
+
+  /* Allocate the buffer holding the hostname.  */
+  hostname = alloca (host_name_max + 1);
+
+  /* Get the hostname.  */
+  if (gethostname (hostname, host_name_max + 1))
+    /* Obtaining the hostname failed.  */
+    return False;
+
+  /* NULL-terminate the hostname.  */
+  hostname[host_name_max] = '\0';
+
+  /* Now find the fully-qualified domain name.  */
+  memset (&template, 0, sizeof template);
+  template.ai_family = AF_UNSPEC;
+  template.ai_socktype = SOCK_STREAM;
+  template.ai_flags = AI_CANONNAME;
+
+  rc = getaddrinfo (hostname, NULL, &template, &result);
+
+  if (rc || !result)
+    return False;
+
+  /* Copy it to the client machine text property.  */
+  client_machine->value
+    = (unsigned char *) XLStrdup (result->ai_canonname);
+  client_machine->encoding = XA_STRING;
+  client_machine->nitems = strlen (result->ai_canonname);
+  client_machine->format = 8;
+
+  /* Free the result.  */
+  freeaddrinfo (result);
+  return True;
+}
+
+static void
+WriteCredentialProperties (XdgToplevel *toplevel)
+{
+  struct wl_client *client;
+  pid_t pid;
+  Window window;
+  unsigned long process_id;
+  XTextProperty client_machine;
+
+  /* Write credential properties such as _NET_WM_PID and
+     WM_CLIENT_MACHINE.  The PID is obtained from the Wayland
+     connection.  */
+
+  client = wl_resource_get_client (toplevel->resource);
+
+  /* Get the credentials of the client.  If the Wayland library cannot
+     obtain those credentials, the client is simply disallowed from
+     connecting to this server.  */
+  wl_client_get_credentials (client, &pid, NULL, NULL);
+
+  /* Write the _NET_WM_PID property.  */
+  window = XLWindowFromXdgRole (toplevel->role);
+  process_id = pid;
+  XChangeProperty (compositor.display, window, _NET_WM_PID,
+		   XA_CARDINAL, 32, PropModeReplace,
+		   (unsigned char *) &process_id, 1);
+
+  /* First, let Xlib write WM_CLIENT_MACHINE and WM_LOCALE_NAME.  */
+  XSetWMProperties (compositor.display, window, NULL, NULL,
+                    NULL, 0, NULL, NULL, NULL);
+
+  /* Next, write the fully-qualified client machine if it can be
+     obtained.  */
+  if (GetClientMachine (&client_machine))
+    {
+      XSetWMClientMachine (compositor.display, window,
+			   &client_machine);
+      XLFree (client_machine.value);
+      return;
+    }
+}
+
 static void
 Attach (Role *role, XdgRoleImplementation *impl)
 {
@@ -952,6 +1049,10 @@ Attach (Role *role, XdgRoleImplementation *impl)
 
   protocols[nproto++] = WM_DELETE_WINDOW;
 
+  /* _NET_WM_PING should be disabled when the window manager kills
+     clients using XKillClient.  */
+  protocols[nproto++] = _NET_WM_PING;
+
   if (XLFrameClockSyncSupported ())
     protocols[nproto++] = _NET_WM_SYNC_REQUEST;
 
@@ -959,6 +1060,10 @@ Attach (Role *role, XdgRoleImplementation *impl)
 		   window, protocols, nproto);
 
   WriteHints (toplevel);
+
+  /* Write credential properties: _NET_WM_PID, WM_CLIENT_MACHINE,
+     etc.  */
+  WriteCredentialProperties (toplevel);
 
   /* This tells the window manager not to override size choices made
      by the client.  */
@@ -2028,6 +2133,21 @@ SetMinimized (struct wl_client *client, struct wl_resource *resource)
 		  DefaultScreen (compositor.display));
 }
 
+static void
+ReplyToPing (XEvent *event)
+{
+  XEvent copy;
+
+  copy = *event;
+
+  /* Reply to the ping message by sending it back to the window
+     manager.  */
+  copy.xclient.window = DefaultRootWindow (compositor.display);
+  XSendEvent (compositor.display, copy.xclient.window,
+	      False, (SubstructureRedirectMask
+		      | SubstructureNotifyMask), &copy);
+}
+
 static const struct xdg_toplevel_interface xdg_toplevel_impl =
   {
     .destroy = Destroy,
@@ -2133,6 +2253,11 @@ XLHandleXEventForXdgToplevels (XEvent *event)
 
 	      return True;
 	    }
+	  else if (event->xclient.data.l[0] == _NET_WM_PING)
+	    /* _NET_WM_PING arrived.  Record the event and send ping
+	       to the client.  toplevel->role should be non-NULL
+	       here.  */
+	    XLXdgRoleHandlePing (toplevel->role, event, ReplyToPing);
 
 	  return False;
 	}

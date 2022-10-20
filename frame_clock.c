@@ -32,10 +32,6 @@ enum
     MaxPresentationAge = 150000,
   };
 
-/* Major and minor versions of the XSync extension.  */
-
-static int xsync_major, xsync_minor;
-
 /* Whether or not the compositor supports frame synchronization.  */
 
 static Bool frame_sync_supported;
@@ -361,17 +357,17 @@ PostEndFrame (FrameClock *clock)
 						 timespec);
 }
 
-static void
+static Bool
 StartFrame (FrameClock *clock, Bool urgent, Bool predict)
 {
   if (clock->frozen)
-    return;
+    return False;
 
   if (clock->frozen_until_end_frame)
-    return;
+    return False;
 
   if (clock->in_frame)
-    return;
+    return False;
 
   if (clock->need_configure)
     {
@@ -406,7 +402,7 @@ StartFrame (FrameClock *clock, Bool urgent, Bool predict)
      counter itself isn't necessary; the values are used as a flag to
      tell us whether or not a frame has been completely drawn.  */
   if (!frame_sync_supported)
-    return;
+    return True;
 
   SetSyncCounter (clock->secondary_counter,
 		  clock->next_frame_id);
@@ -415,6 +411,7 @@ StartFrame (FrameClock *clock, Bool urgent, Bool predict)
     PostEndFrame (clock);
 
   clock->need_configure = False;
+  return True;
 }
 
 static void
@@ -527,10 +524,10 @@ XLFrameClockAfterFrame (FrameClock *clock,
   callback->frame = frame_func;
 }
 
-void
+Bool
 XLFrameClockStartFrame (FrameClock *clock, Bool urgent)
 {
-  StartFrame (clock, urgent, True);
+  return StartFrame (clock, urgent, True);
 }
 
 void
@@ -871,24 +868,6 @@ XLStopCursorClock (void)
 void
 XLInitFrameClock (void)
 {
-  Bool supported;
-  int xsync_event_base, xsync_error_base;
-
-  supported = XSyncQueryExtension (compositor.display,
-				   &xsync_event_base,
-				   &xsync_error_base);
-
-  if (supported)
-    supported = XSyncInitialize (compositor.display,
-				 &xsync_major, &xsync_minor);
-
-  if (!supported)
-    {
-      fprintf (stderr, "A compatible version of the Xsync extension"
-	       " was not found\n");
-      exit (1);
-    }
-
   if (!getenv ("DISABLE_FRAME_SYNCHRONIZATION"))
     frame_sync_supported = XLWmSupportsHint (_NET_WM_FRAME_DRAWN);
 

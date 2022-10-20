@@ -200,6 +200,9 @@ XLMain (int argc, char **argv)
   compositor.wl_event_loop
     = wl_display_get_event_loop (wl_display);
 
+  /* Initialize server time tracking very early.  */
+  InitTime ();
+
   InitXErrors ();
   SubcompositorInit ();
   InitSelections ();
