@@ -1996,9 +1996,18 @@ RunResizeDoneCallbacks (Seat *seat)
   seat->resize_callbacks.last = &seat->resize_callbacks;
 }
 
+/* Forward declarations.  */
+static void TransformToSurface (Surface *, double, double, double *, double *);
+static Surface *FindSurfaceUnder (Subcompositor *, double, double);
+static void EnteredSurface (Seat *, Surface *, Time, double, double, Bool);
+
 static void
-CancelResizeOperation (Seat *seat, Time time)
+CancelResizeOperation (Seat *seat, Time time, Subcompositor *subcompositor,
+		       XIDeviceEvent *xev)
 {
+  Surface *dispatch;
+  double x, y;
+
   /* Stop the resize operation.  */
   XLSurfaceCancelUnmapCallback (seat->resize_surface_callback);
   seat->resize_surface = NULL;
@@ -2008,11 +2017,30 @@ CancelResizeOperation (Seat *seat, Time time)
 
   /* Ungrab the pointer.  */
   XIUngrabDevice (compositor.display, seat->master_pointer,
-		  time);
+		  xev->time);
+
+  if (!subcompositor)
+    return;
+
+  /* If there's no focus surface, look up the surface and enter
+     it.  The grab should not be held at this point.  */
+  dispatch = FindSurfaceUnder (subcompositor, xev->event_x, xev->event_y);
+
+  if (dispatch)
+    {
+      TransformToSurface (dispatch, xev->event_x, xev->event_y, &x, &y);
+
+      /* Enter the surface.  */
+      EnteredSurface (seat, dispatch, xev->time, x, y, False);
+    }
+
+  /* Otherwise, there should be no need to leave any entered surface,
+     since the entered surface should be NULL already.  */
 }
 
 static Bool
-InterceptButtonEventForResize (Seat *seat, XIDeviceEvent *xev)
+InterceptButtonEventForResize (Seat *seat, Subcompositor *subcompositor,
+			       XIDeviceEvent *xev)
 {
   if (xev->type == XI_ButtonPress)
     return True;
@@ -2020,7 +2048,7 @@ InterceptButtonEventForResize (Seat *seat, XIDeviceEvent *xev)
   /* If the button starting the resize has been released, cancel the
      resize operation.  */
   if (xev->detail == seat->resize_button)
-    CancelResizeOperation (seat, xev->time);
+    CancelResizeOperation (seat, xev->time, subcompositor, xev);
 
   return True;
 }
@@ -2114,7 +2142,8 @@ InterceptMotionEventForResize (Seat *seat, XIDeviceEvent *xev)
 }
 
 static Bool
-InterceptResizeEvent (Seat *seat, XIDeviceEvent *xev)
+InterceptResizeEvent (Seat *seat, Subcompositor *subcompositor,
+		      XIDeviceEvent *xev)
 {
   if (!seat->resize_surface)
     return False;
@@ -2122,7 +2151,7 @@ InterceptResizeEvent (Seat *seat, XIDeviceEvent *xev)
   switch (xev->evtype)
     {
     case XI_ButtonRelease:
-      return InterceptButtonEventForResize (seat, xev);
+      return InterceptButtonEventForResize (seat, subcompositor, xev);
 
     case XI_Motion:
       return InterceptMotionEventForResize (seat, xev);
@@ -2144,6 +2173,9 @@ RunDestroyListeners (Seat *seat)
       listeners = listeners->next;
     }
 }
+
+/* Forward declaration.  */
+static void SetFocusSurface (Seat *, Surface *);
 
 static void
 NoticeDeviceDisabled (int deviceid)
@@ -2173,6 +2205,11 @@ NoticeDeviceDisabled (int deviceid)
 	 global.  */
 
       seat->flags |= IsInert;
+
+      /* Set the focus surface to NULL, so surfaces don't mistakenly
+	 treat themselves as still focused.  */
+
+      SetFocusSurface (seat, NULL);
 
       /* Run destroy handlers.  */
 
@@ -2455,7 +2492,6 @@ HandleResizeComplete (Seat *seat)
 /* Forward declarations.  */
 
 static int GetXButton (int);
-static void TransformToSurface (Surface *, double, double, double *, double *);
 static void SendButton (Seat *, Surface *, Time, uint32_t, uint32_t,
 			double, double);
 
@@ -2871,6 +2907,9 @@ SetFocusSurface (Seat *seat, Surface *focus)
     {
       SendKeyboardLeave (seat, seat->focus_surface);
 
+      /* Tell the surface it's no longer focused.  */
+      XLSurfaceNoteFocus (seat->focus_surface, SurfaceFocusOut);
+
       /* Cancel any grab that may be associated with shortcut
 	 inhibition.  */
       XLReleaseShortcutInhibition (seat, seat->focus_surface);
@@ -2904,6 +2943,9 @@ SetFocusSurface (Seat *seat, Surface *focus)
     = XLSurfaceRunOnFree (focus, ClearFocusSurface, seat);
 
   SendKeyboardEnter (seat, focus);
+
+  /* Tell the surface it's now focused.  */
+  XLSurfaceNoteFocus (seat->focus_surface, SurfaceFocusIn);
 
   XLPrimarySelectionHandleFocusChange (seat);
 
@@ -3807,7 +3849,7 @@ DispatchMotion (Subcompositor *subcompositor, XIDeviceEvent *xev)
   if (!seat)
     return;
 
-  if (InterceptResizeEvent (seat, xev))
+  if (InterceptResizeEvent (seat, subcompositor, xev))
     return;
 
   /* Move the drag-and-drop icon window.  */
@@ -3834,8 +3876,7 @@ DispatchMotion (Subcompositor *subcompositor, XIDeviceEvent *xev)
       dispatch = seat->last_seen_surface;
     }
   else
-    dispatch = FindSurfaceUnder (subcompositor, xev->event_x,
-				 xev->event_y);
+    dispatch = actual_dispatch;
 
   event_x = xev->event_x;
   event_y = xev->event_y;
@@ -4080,7 +4121,7 @@ DispatchButton (Subcompositor *subcompositor, XIDeviceEvent *xev)
   if (!seat)
     return;
 
-  if (InterceptResizeEvent (seat, xev))
+  if (InterceptResizeEvent (seat, subcompositor, xev))
     return;
 
   if (seat->flags & IsDragging)
@@ -4265,8 +4306,8 @@ DispatchBarrierHit (XIBarrierEvent *barrier)
 
   /* Report a barrier hit event as relative motion.  */
 
-  if (seat->focus_surface)
-    SendRelativeMotion (seat, seat->focus_surface,
+  if (seat->last_seen_surface)
+    SendRelativeMotion (seat, seat->last_seen_surface,
 			barrier->dx, barrier->dy,
 			barrier->time);
 
@@ -4538,8 +4579,13 @@ HandleKeyboardEdge (Seat *seat, Surface *target, uint32_t serial,
 		  seat->its_press_time);
 
   /* Clear the grab immediately since it is no longer used.  */
+
   if (seat->grab_held)
     CancelGrabEarly (seat);
+
+  /* Send leave to any surface that the pointer is currently within.
+     The position of the pointer is then restored upon entry.  */
+  EnteredSurface (seat, NULL, seat->its_press_time, 0, 0, False);
 
   /* Send the message to the window manager.  */
   XSendEvent (compositor.display,
@@ -4559,7 +4605,8 @@ HandleResizeUnmapped (void *data)
   Seat *seat;
 
   seat = data;
-  CancelResizeOperation (seat, seat->resize_time);
+  CancelResizeOperation (seat, seat->resize_time,
+			 NULL, NULL);
 }
 
 static Bool
@@ -4626,13 +4673,15 @@ FakePointerEdge (Seat *seat, Surface *target, uint32_t serial,
   if (state != Success)
     return False;
 
-  /* On the other hand, cancel focus locking, since we will not be
-     reporting motion events until the resize operation completes.
+  /* On the other hand, cancel focus locking and leave the surface,
+     since we will not be reporting motion events until the resize
+     operation completes.  */
 
-     Send leave events to any surface, since the pointer is
-     (logically) no longer inside.  */
   if (seat->grab_held)
-    CancelGrabEarly (seat);
+    {
+      SwapUnlockSurface (seat, NULL);
+      CancelGrabEarly (seat);
+    }
 
   /* Set the surface as the surface undergoing resize.  */
   seat->resize_surface = target;

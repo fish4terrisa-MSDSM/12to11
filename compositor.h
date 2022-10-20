@@ -816,6 +816,13 @@ typedef struct _SyncRelease SyncRelease;
 typedef struct _State State;
 typedef struct _FrameCallback FrameCallback;
 typedef enum _RoleType RoleType;
+typedef enum _FocusMode FocusMode;
+
+enum _FocusMode
+  {
+    SurfaceFocusIn,
+    SurfaceFocusOut,
+  };
 
 enum _RoleType
   {
@@ -1067,6 +1074,7 @@ struct _RoleFuncs
   void (*note_desync_child) (Surface *, Role *);
   void (*note_child_synced) (Surface *, Role *);
   void (*select_extra_events) (Surface *, Role *, unsigned long);
+  void (*note_focus) (Surface *, Role *, FocusMode);
 };
 
 struct _Role
@@ -1116,6 +1124,7 @@ extern void XLSurfaceMoveBy (Surface *, int, int);
 extern Window XLWindowFromSurface (Surface *);
 extern void XLUpdateSurfaceOutputs (Surface *, int, int, int, int);
 extern void XLSurfaceSelectExtraEvents (Surface *, unsigned long);
+extern void XLSurfaceNoteFocus (Surface *, FocusMode);
 
 extern void SurfaceToWindow (Surface *, double, double, double *, double *);
 extern void ScaleToWindow (Surface *, double, double, double *, double *);
@@ -1257,6 +1266,7 @@ struct _XdgRoleImplementationFuncs
   void (*post_resize) (Role *, XdgRoleImplementation *, int, int, int, int);
   void (*commit_inside_frame) (Role *, XdgRoleImplementation *);
   Bool (*is_window_mapped) (Role *, XdgRoleImplementation *);
+  void (*note_focus) (Role *, XdgRoleImplementation *, FocusMode);
 };
 
 struct _XdgRoleImplementation

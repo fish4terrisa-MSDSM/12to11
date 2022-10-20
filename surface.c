@@ -1741,6 +1741,21 @@ XLSurfaceSelectExtraEvents (Surface *surface, unsigned long event_mask)
 					    event_mask);
 }
 
+/* This function doesn't provide the seat that has now been focused
+   in.  It is assumed that the role will perform some kind of
+   reference counting in order to determine how many seats currently
+   have it focused.  */
+
+void
+XLSurfaceNoteFocus (Surface *surface, FocusMode focus)
+{
+  if (!surface->role || !surface->role->funcs.note_focus)
+    return;
+
+  surface->role->funcs.note_focus (surface, surface->role,
+				   focus);
+}
+
 
 
 /* The following functions convert from window to surface

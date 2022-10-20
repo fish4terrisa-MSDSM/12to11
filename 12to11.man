@@ -245,10 +245,7 @@ environment variable may help.
 Using this protocol translator under a window manager that does not at
 least support the
 .B _NET_WM_SYNC_REQUEST
-and
-.B _NET_WM_STATE
-window manager hints will result in Wayland programs running
-incorrectly.
+window manager protocol will result in Wayland programs running badly.
 .PP
 In addition, surfaces transforms are not supported nor reported.  The
 vast majority of clients seem not to make use of this feature, and

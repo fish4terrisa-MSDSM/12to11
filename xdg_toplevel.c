@@ -232,6 +232,9 @@ struct _XdgToplevel
      StatePendingConfigureSize is set.  */
   int configure_width, configure_height;
 
+  /* The number of seats that currently have this surface focused.  */
+  int focus_seat_count;
+
   /* Array of states.  */
   struct wl_array states;
 
@@ -571,27 +574,14 @@ WriteStates (XdgToplevel *toplevel)
 static void
 SendStates (XdgToplevel *toplevel)
 {
-  int width, height;
-
   WriteStates (toplevel);
 
-  /* Adjust the width and height we're sending by the window
-     geometry.  */
-  if (toplevel->state & StateMissingState)
-    XLXdgRoleGetCurrentGeometry (toplevel->role, NULL, NULL,
-				 &width, &height);
-  else
-    {
-      /* toplevel->role->surface should not be NULL here.  */
-      TruncateScaleToSurface (toplevel->role->surface,
-			      toplevel->width, toplevel->height,
-			      &width, &height);
-
-      XLXdgRoleCalcNewWindowSize (toplevel->role, width,
-				  height, &width, &height);
-    }
-
-  SendConfigure (toplevel, width, height);
+  /* When SendStates is called, it means the width and height of the
+     surface did not change.  weston-terminal and some other clients
+     that implement resize increments themselves will keep growing
+     their toplevels if width and height are specified here, so simply
+     send 0, 0 to make those clients decide their own size.  */
+  SendConfigure (toplevel, 0, 0);
 
   /* Mark the state has having been calculated if some state
      transition has occured.  */
@@ -2148,6 +2138,46 @@ ReplyToPing (XEvent *event)
 		      | SubstructureNotifyMask), &copy);
 }
 
+static void
+NoteFocus (Role *role, XdgRoleImplementation *impl, FocusMode mode)
+{
+  XdgToplevel *toplevel;
+  int old_focus;
+
+  toplevel = ToplevelFromRoleImpl (impl);
+  old_focus = toplevel->focus_seat_count;
+
+  /* Increase or decrease the number of seats that currently have this
+     surface under input focus.  */
+  switch (mode)
+    {
+    case SurfaceFocusIn:
+      toplevel->focus_seat_count++;
+      break;
+
+    case SurfaceFocusOut:
+      toplevel->focus_seat_count
+	= MAX (toplevel->focus_seat_count - 1, 0);
+      break;
+    }
+
+  /* Now, change the toplevel state accordingly.  */
+  if (old_focus && !toplevel->focus_seat_count)
+    {
+      /* The surface should no longer be activated.  */
+      toplevel->toplevel_state.activated = False;
+      WriteStates (toplevel);
+      SendStates (toplevel);
+    }
+  else
+    {
+      /* The surface should now be activated.  */
+      toplevel->toplevel_state.activated = True;
+      WriteStates (toplevel);
+      SendStates (toplevel);
+    }
+}
+
 static const struct xdg_toplevel_interface xdg_toplevel_impl =
   {
     .destroy = Destroy,
@@ -2209,6 +2239,11 @@ XLGetXdgToplevel (struct wl_client *client, struct wl_resource *resource,
   toplevel->impl.funcs.post_resize = PostResize;
   toplevel->impl.funcs.commit_inside_frame = CommitInsideFrame;
   toplevel->impl.funcs.is_window_mapped = IsWindowMapped;
+
+  if (!XLWmSupportsHint (_NET_WM_STATE_FOCUSED))
+    /* If _NET_WM_STATE_FOCUSED is unsupported, fall back to utilizing
+       focus in and focus out events to determine the focus state.  */
+    toplevel->impl.funcs.note_focus = NoteFocus;
 
   /* Set up the sentinel node for the list of unmap callbacks.  */
   toplevel->unmap_callbacks.next = &toplevel->unmap_callbacks;
