@@ -1,0 +1,12 @@
+*-*.c
+*-*.h
+viewporter.c
+viewporter.h
+*._man
+short_types.txt
+shaders.h
+transfer_atoms.h
+Makefile
+*.bak
+12to11
+*.o
