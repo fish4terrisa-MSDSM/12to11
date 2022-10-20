@@ -123,7 +123,7 @@ XLRelativePointerSendRelativeMotion (struct wl_resource *resource,
   uint32_t time_hi, time_lo;
 
   time_hi = microsecond_time >> 32;
-  time_lo = microsecond_time >> 32;
+  time_lo = microsecond_time & 0xffffffff;
 
   zwp_relative_pointer_v1_send_relative_motion (resource, time_hi, time_lo,
 						wl_fixed_from_double (dx),
