@@ -540,6 +540,14 @@ SetWindowGeometry (struct wl_client *client, struct wl_resource *resource,
   role->pending_state.window_geometry_y = y;
   role->pending_state.window_geometry_width = width;
   role->pending_state.window_geometry_height = height;
+
+#ifdef DEBUG_GEOMETRY_CALCULATION
+  fprintf (stderr, "Client requested geometry: [%d %d %d %d]\n",
+	   role->pending_state.window_geometry_x,
+	   role->pending_state.window_geometry_y,
+	   role->pending_state.window_geometry_width,
+	   role->pending_state.window_geometry_height);
+#endif
 }
 
 static void
@@ -1111,18 +1119,6 @@ NoteBounds (void *data, int min_x, int min_y,
 						  bounds_width,
 						  bounds_height);
 
-      if (role->state & StateDirtyFrameExtents)
-	{
-	  /* Only handle window geometry changes once a commit happens
-	     and the window is really resized.  */
-
-	  if (role->impl->funcs.handle_geometry_change)
-	    role->impl->funcs.handle_geometry_change (&role->role,
-						      role->impl);
-
-	  role->state &= ~StateDirtyFrameExtents;
-	}
-
       XResizeWindow (compositor.display, role->window,
 		     bounds_width, bounds_height);
       run_reconstrain_callbacks = True;
@@ -1132,6 +1128,18 @@ NoteBounds (void *data, int min_x, int min_y,
 					       role->impl,
 					       bounds_width,
 					       bounds_height);
+    }
+
+  if (role->state & StateDirtyFrameExtents)
+    {
+      /* Only handle window geometry changes once a commit happens and
+	 the window is really resized.  */
+
+      if (role->impl->funcs.handle_geometry_change)
+	role->impl->funcs.handle_geometry_change (&role->role,
+						  role->impl);
+
+      role->state &= ~StateDirtyFrameExtents;
     }
 
   /* Now, make sure the window stays at the same position relative to

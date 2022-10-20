@@ -45,16 +45,15 @@ typedef enum _DecorationMode DecorationMode;
 enum
   {
     StateIsMapped		 = 1,
-    StateMissingState		 = (1 << 1),
-    StatePendingMaxSize		 = (1 << 2),
-    StatePendingMinSize		 = (1 << 3),
-    StatePendingAckMovement	 = (1 << 4),
-    StatePendingResize		 = (1 << 5),
-    StatePendingConfigureSize	 = (1 << 6),
-    StatePendingConfigureStates	 = (1 << 7),
-    StateDecorationModeDirty	 = (1 << 8),
-    StateEverMapped		 = (1 << 9),
-    StateNeedDecorationConfigure = (1 << 10),
+    StatePendingMaxSize		 = (1 << 1),
+    StatePendingMinSize		 = (1 << 2),
+    StatePendingAckMovement	 = (1 << 3),
+    StatePendingResize		 = (1 << 4),
+    StatePendingConfigureSize	 = (1 << 5),
+    StatePendingConfigureStates	 = (1 << 6),
+    StateDecorationModeDirty	 = (1 << 7),
+    StateEverMapped		 = (1 << 8),
+    StateNeedDecorationConfigure = (1 << 9),
   };
 
 enum
@@ -484,12 +483,6 @@ NoteConfigureTime (Timer *timer, void *data, struct timespec time)
 
       /* Send the configure event.  */
       SendConfigure (toplevel, width, height);
-
-      /* Mark the state has having been calculated if some state
-	 transition has occured.  */
-      if (toplevel->toplevel_state.fullscreen
-	  || toplevel->toplevel_state.maximized)
-	toplevel->state &= ~StateMissingState;
     }
 
   /* Clear the pending size and state flags.  */
@@ -574,20 +567,21 @@ WriteStates (XdgToplevel *toplevel)
 static void
 SendStates (XdgToplevel *toplevel)
 {
+  int width, height;
+
   WriteStates (toplevel);
 
-  /* When SendStates is called, it means the width and height of the
-     surface did not change.  weston-terminal and some other clients
-     that implement resize increments themselves will keep growing
-     their toplevels if width and height are specified here, so simply
-     send 0, 0 to make those clients decide their own size.  */
-  SendConfigure (toplevel, 0, 0);
+  /* Adjust the width and height we're sending by the window geometry.
+     toplevel->role->surface should not be NULL here.  */
 
-  /* Mark the state has having been calculated if some state
-     transition has occured.  */
-  if (toplevel->toplevel_state.fullscreen
-      || toplevel->toplevel_state.maximized)
-    toplevel->state &= ~StateMissingState;
+  TruncateScaleToSurface (toplevel->role->surface,
+			  toplevel->width, toplevel->height,
+			  &width, &height);
+
+  XLXdgRoleCalcNewWindowSize (toplevel->role, width,
+			      height, &width, &height);
+
+  SendConfigure (toplevel, width, height);
 }
 
 static void
@@ -1190,7 +1184,7 @@ Map (XdgToplevel *toplevel)
      at this point.  */
   SubcompositorGarbage (XLSubcompositorFromXdgRole (toplevel->role));
 
-  toplevel->state |= StateIsMapped | StateMissingState | StateEverMapped;
+  toplevel->state |= StateIsMapped | StateEverMapped;
 
   /* Update the width and height from the xdg_surface bounds.  */
   toplevel->width = XLXdgRoleGetWidth (toplevel->role);
