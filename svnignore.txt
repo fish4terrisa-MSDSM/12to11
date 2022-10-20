@@ -10,3 +10,6 @@ Makefile
 *.bak
 12to11
 *.o
+vgcore*
+massif*
+callgrind*
