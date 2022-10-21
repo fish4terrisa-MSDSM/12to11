@@ -1078,10 +1078,11 @@ NoteBounds (void *data, int min_x, int min_y,
 {
   XdgRole *role;
   int bounds_width, bounds_height, root_x, root_y;
-  Bool run_reconstrain_callbacks;
+  Bool run_reconstrain_callbacks, root_position_initialized;
 
   role = data;
   run_reconstrain_callbacks = False;
+  root_position_initialized = False;
 
   if (XLFrameClockIsFrozen (role->clock))
     /* We are waiting for the acknowledgement of a configure event.
@@ -1112,6 +1113,15 @@ NoteBounds (void *data, int min_x, int min_y,
 	       bounds_width, bounds_height, role->bounds_width,
 	       role->bounds_height);
 #endif
+
+      /* Update the list of outputs that the surface is inside.
+	 First, get the root window position.  */
+      CurrentRootPosition (role, &root_x, &root_y);
+      root_position_initialized = True;
+
+      /* Next, update the output set.  */
+      XLUpdateSurfaceOutputs (role->role.surface, root_x + min_x,
+			      root_y + min_y, -1, -1);
       
       if (role->impl->funcs.note_window_pre_resize)
 	role->impl->funcs.note_window_pre_resize (&role->role,
@@ -1150,10 +1160,13 @@ NoteBounds (void *data, int min_x, int min_y,
       /* Move the window by the opposite of the amount the min_x and
 	 min_y changed.  */
 
-      CurrentRootPosition (role, &root_x, &root_y);
+      if (!root_position_initialized)
+	CurrentRootPosition (role, &root_x, &root_y);
+
       XMoveWindow (compositor.display, role->window,
 		   root_x + min_x + role->min_x,
 		   root_y + min_y + role->min_y);
+      run_reconstrain_callbacks = True;
 
       /* Set pending root window positions.  These positions will be
 	 used until the movement really happens, to avoid outdated
