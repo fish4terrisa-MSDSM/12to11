@@ -781,16 +781,16 @@ XLUpdateSurfaceOutputs (Surface *surface, int x, int y, int width,
   int n, i;
   struct wl_resource *resource;
 
-  if (BoxContains (pixman_region32_extents (&surface->output_region),
-		   x, y, width, height))
-    /* The surface didn't move past the output region.  */
-    return;
-
   if (width == -1)
     width = ViewWidth (surface->view);
 
   if (height == -1)
     height = ViewHeight (surface->view);
+
+  if (BoxContains (pixman_region32_extents (&surface->output_region),
+		   x, y, width, height))
+    /* The surface didn't move past the output region.  */
+    return;
 
   /* TODO: store the number of outputs somewhere instead of hardcoding
      256.  */
