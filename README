@@ -67,6 +67,7 @@ complete degree:
   'wp_single_pixel_buffer_manager_v1',          version:  1
   'zwp_pointer_constraints_v1',                 version:  1
   'zwp_relative_pointer_manager_v1',            version:  1
+  'zwp_idle_inhibit_manager_v1',                version:  1
 
 When built with EGL, the following Wayland protocol is also supported:
 
@@ -110,3 +111,7 @@ Running the binary should be simple as well:
   ./12to11
 
 Wayland programs will then run as regular X windows.
+
+Be sure to configure your system so that idle inhibition is reported
+correctly.  For more details, see the description of the
+idleInhibitCommand resource in the manual page.

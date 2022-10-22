@@ -1746,6 +1746,8 @@ GetRenderDevice (Bool *error)
 
   fd = fds[0];
 
+  XLAddFdFlag (fd, FD_CLOEXEC, True);
+
   if (fstat (fd, &dev_stat) != 0)
     {
       close (fd);

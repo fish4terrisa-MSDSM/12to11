@@ -931,6 +931,9 @@ AddProvider (RRProvider provider)
 
   fd = fds[0];
 
+  /* Make the file descriptor FD_CLOEXEC.  */
+  XLAddFdFlag (fd, FD_CLOEXEC, True);
+
   if (drmGetNodeTypeFromFd (fd) != DRM_NODE_RENDER)
     {
       name = drmGetDeviceNameFromFd2 (fd);
@@ -938,7 +941,7 @@ AddProvider (RRProvider provider)
       if (name)
 	{
 	  DebugPrint ("device name is %s", name);
-	  new = open (name, O_RDWR);
+	  new = open (name, O_RDWR | O_CLOEXEC);
 
 	  if (new >= 0)
 	    {

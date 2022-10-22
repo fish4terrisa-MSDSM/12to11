@@ -240,6 +240,7 @@ XLMain (int argc, char **argv)
   XLInitPointerConstraints ();
   XLInitRelativePointer ();
   XLInitKeyboardShortcutsInhibit ();
+  XLInitIdleInhibit ();
 
   /* This has to come after the rest of the initialization.  */
   DetermineServerTime ();

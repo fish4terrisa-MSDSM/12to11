@@ -1752,6 +1752,25 @@ XLSurfaceNoteFocus (Surface *surface, FocusMode focus)
   if (!surface->role || !surface->role->funcs.note_focus)
     return;
 
+  switch (focus)
+    {
+    case SurfaceFocusIn:
+      surface->num_focused_seats++;
+
+      /* Check for idle inhibition.  */
+      XLIdleInhibitNoticeSurfaceFocused (surface);
+      break;
+
+    case SurfaceFocusOut:
+      surface->num_focused_seats
+	= MAX (0, surface->num_focused_seats - 1);
+
+      if (!surface->num_focused_seats)
+	/* Check if any idle inhibitors are still active.  */
+	XLDetectSurfaceIdleInhibit ();
+      break;
+    }
+
   surface->role->funcs.note_focus (surface, surface->role,
 				   focus);
 }

@@ -105,22 +105,61 @@ list.  When \fBximStyles\fP is not specified, it defaults to:
 .EE
 .in
 .TP
-.B renderer \fP (class \fBRenderer\fP)
+.B renderer\fP (class \fBRenderer\fP)
 Specifies the rendering backend the protocol translator uses to
 composite the contents of Wayland surfaces onto X windows.  This can
 either be \fBpicture\fP (the XRender based compositor) or \fBegl\fP
 (the OpenGL ES 2.0 based compositor).
 .TP
-.B useDirectPresentation \fP (class \fBUseDirectPresentation\fP)
+.B useDirectPresentation\fP (class \fBUseDirectPresentation\fP)
 If ``True'' or ``true'', this resource enables the use of direct
 presentation on unredirected windows.  This is not yet complete
 pending the installation of required functionality in the X server.
 .TP
-.B wmProtocols \fP (class \fBWmProtocols\fP)
+.B wmProtocols\fP (class \fBWmProtocols\fP)
 Comma-separated list of window manager protocols, similar to
 \fBinputStyles\fP, that the protocol translator should enable or
 disable.  The current (and default) list of supported protocols are:
-\fBnetWmPing\fB.
+\fBnetWmPing\fP.
+.TP
+.B idleInhibitCommand\fP (class \fBIdleInhibitCommand\fP)
+.TP
+.B idleIntervalCommand\fP (class \fBIdleInhibitCommand\fP)
+.TP
+.B idleDeinhibitCommand\fP (class \fBIdleDeinhibitCommand\fP)
+These are commands that run when a focused Wayland client asks to
+inhibit the screen saver or screen locker, usually because a video is
+being played and does not require user interaction.
+\fBidleInhibitCommand\fP specifies a command that is run when one such
+client becomes focused or starts inhibiting the screen saver;
+\fBidleIntervalCommand\fP is a command that is run every several
+seconds (by default 60) while the screen saver is inhibited, and
+\fBidleDeinhibitCommand\fP is a command that is run once such a client
+stops inhibiting the screen saver or loses the input focus.
+.IP
+Since there are several different screen saver inhibition protocols
+used by different X desktops, the protocol translator refrains from
+implementing any of them.  Instead, it provides the ability to run any
+command necessary to inhibit and de-inhibit the screen saver.  For
+example, an
+.BR XScreenSaver(1)
+user may wish to apply the following resources:
+.IP
+.in +4
+.EX
+\fB12to11.IdleInhibitCommand: xscreensaver-command -deactivate\fP
+.EE
+.in
+.IP
+The commands specified are expected to finish.  If the process
+corresponding to one command is still running by the time another
+command should have been run, the other command will be queued until
+the first process exits.
+.TP
+.B idleCommandInterval\fP (class \fBIdleCommandInterval\fP)
+The number of seconds the protocol translator waits between
+invocations of the command specified in \fBidleIntervalCommand\fP.
+Defaults to 60.
 .IP
 .SH ENVIRONMENT
 Several environment variables exist that modify the behavior of the
@@ -215,6 +254,7 @@ zwp_text_input_manager_v3	1
 wp_single_pixel_buffer_manager_v1	1
 zwp_pointer_constraints_v1	1
 zwp_relative_pointer_manager	1
+zwp_idle_inhibit_manager_v1	1
 .TE
 .PP
 When the protocol translator is built with EGL support, the following

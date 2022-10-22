@@ -18,6 +18,7 @@ You should have received a copy of the GNU General Public License
 along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <sys/stat.h>
+#include <sys/fcntl.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -4346,6 +4347,7 @@ WriteKeymap (void)
   FILE *file;
   XkbFileInfo result;
   Bool ok;
+  int fd;
 
   if (keymap_fd != -1)
     close (keymap_fd);
@@ -4362,7 +4364,15 @@ WriteKeymap (void)
   result.type = XkmKeymapFile;
   result.xkb = xkb_desc;
 
-  file = fdopen (dup (keymap_fd), "w");
+  fd = fcntl (keymap_fd, F_DUPFD_CLOEXEC, 0);
+
+  if (fd < 0)
+    {
+      perror ("fcntl");
+      exit (1);
+    }
+
+  file = fdopen (fd, "w");
 
   if (!file)
     {

@@ -21,6 +21,7 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <sys/param.h>
 #include <sys/stat.h>
+#include <sys/poll.h>
 
 #include <limits.h>
 
@@ -649,6 +650,7 @@ extern void XLDeselectInputFromRootWindow (RootWindowSelection *);
 
 extern void XLRecordBusfault (void *, size_t);
 extern void XLRemoveBusfault (void *);
+extern Bool XLAddFdFlag (int, int, Bool);
 
 /* Defined in compositor.c.  */
 
@@ -914,6 +916,7 @@ enum _ClientDataType
     SubsurfaceData,
     PointerConfinementData,
     ShortcutInhibitData,
+    IdleInhibitData,
     MaxClientData,
   };
 
@@ -1017,6 +1020,9 @@ struct _Surface
 
   /* The number of outputs this surface is known to be on.  */
   int n_outputs;
+
+  /* The number of seats that have this surface focused.  */
+  int num_focused_seats;
 
   /* Bounds inside which the surface output need not be
      recomputed.  */
@@ -1691,6 +1697,21 @@ extern void XLRelativePointerSendRelativeMotion (struct wl_resource *,
 extern void XLInitKeyboardShortcutsInhibit (void);
 extern void XLCheckShortcutInhibition (Seat *, Surface *);
 extern void XLReleaseShortcutInhibition (Seat *, Surface *);
+
+/* Defined in idle_inhibit.c.  */
+
+extern void XLInitIdleInhibit (void);
+extern void XLIdleInhibitNoticeSurfaceFocused (Surface *);
+extern void XLDetectSurfaceIdleInhibit (void);
+
+/* Defined in process.c.  */
+
+typedef struct _ProcessQueue ProcessQueue;
+
+extern void ParseProcessString (const char *, char ***, size_t *);
+extern void RunProcess (ProcessQueue *, char **);
+extern ProcessQueue *MakeProcessQueue (void);
+extern int ProcessPoll (struct pollfd *, nfds_t, struct timespec *);
 
 /* Utility functions that don't belong in a specific file.  */
 

@@ -789,8 +789,9 @@ UnblockSigbus (void)
   sigset_t sigset;
 
   sigemptyset (&sigset);
+  sigaddset (&sigset, SIGBUS);
 
-  if (sigprocmask (SIG_BLOCK, &sigset, NULL))
+  if (sigprocmask (SIG_UNBLOCK, &sigset, NULL))
     {
       perror ("sigprocmask");
       abort ();
@@ -821,4 +822,38 @@ XLRemoveBusfault (void *data)
   BlockSigbus ();
   RemoveBusfault (&busfault_tree, data);
   UnblockSigbus ();
+}
+
+Bool
+XLAddFdFlag (int fd, int flag, Bool abort_on_error)
+{
+  int flags, rc;
+
+  flags = fcntl (fd, F_GETFD);
+
+  if (flags < 0)
+    {
+      if (abort_on_error)
+	{
+	  perror ("fcntl");
+	  abort ();
+	}
+      else
+	return False;
+    }
+
+  rc = fcntl (fd, F_SETFD, flags | flag);
+
+  if (rc < 0)
+    {
+      if (abort_on_error)
+	{
+	  perror ("fcntl");
+	  abort ();
+	}
+      else
+	return False;
+    }
+
+  return True;
 }

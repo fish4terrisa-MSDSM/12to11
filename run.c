@@ -272,7 +272,7 @@ RunStep (void)
       wl_display_flush_clients (compositor.wl_display);
     }
 
-  rc = ppoll (fds, 2 + i, &timeout, NULL);
+  rc = ProcessPoll (fds, 2 + i, &timeout);
 
   if (rc > 0)
     {
