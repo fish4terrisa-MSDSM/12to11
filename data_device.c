@@ -1210,7 +1210,15 @@ XLClearForeignSelection (Timestamp time)
   if (current_selection_data == &foreign_selection_key)
     {
       current_selection_data = NULL;
-
+      SendDataOffers ();
+    }
+  else if (current_selection_data)
+    {
+      /* The foreign selection was cleared, meaning CLIPBOARD has been
+	 disowned after the last foreign or local selection was set,
+	 and thus the local selection must be cleared as well.  */
+      wl_data_source_send_cancelled (current_selection_data->resource);
+      current_selection_data = NULL;
       SendDataOffers ();
     }
 

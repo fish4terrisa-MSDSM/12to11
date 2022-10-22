@@ -756,11 +756,26 @@ XLSetForeignPrimary (Timestamp time, CreateOfferFuncs functions)
 void
 XLClearForeignPrimary (Timestamp time)
 {
+  struct wl_resource *scratch;
+
   if (TimestampIs (time, Earlier, foreign_selection_time))
     return;
 
   if (primary_selection == &foreign_selection_key)
     {
+      primary_selection = NULL;
+      NoticeChanged ();
+    }
+  else if (primary_selection)
+    {
+      /* The foreign selection was cleared; that means PRIMARY has
+	 been disowned after the last foreign or local selection was
+	 set, which means the local selection must be cleared as
+	 well.  */
+      scratch = primary_selection->resource;
+      zwp_primary_selection_source_v1_send_cancelled (scratch);
+
+      /* Clear the primary selection and notice a change.  */
       primary_selection = NULL;
       NoticeChanged ();
     }

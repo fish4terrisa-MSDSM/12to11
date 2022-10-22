@@ -1093,13 +1093,32 @@ NoticePrimaryChanged (Time time)
 static void
 NoticeClipboardCleared (Time time)
 {
-  /* Ignore outdated events.  */
-  if (TimeIs (time, Earlier, last_x_selection_change))
+  /* Ignore outdated events.  time cannot simply be compared against
+     the selection change time, because some clients do this:
+
+       - data_device.set_selection (data_source, N)
+       - data_source.delete (data_source)
+       - data_device.set_selection (data_source, N)
+
+     Which results in the selection being disowned at the same time as
+     the last selection change time, but then re-owned immediately
+     afterwards, leading to an out-of-date SelectionNotify event with
+     owner None having a timestamp equal to that time.
+
+     Thus, only timestamps after last_x_selection_change are
+     considered as valid here if x_selection_targets is NULL.  */
+
+  if (!x_selection_targets)
+    {
+      if (!TimeIs (time, Later, last_x_selection_change))
+	return;
+    }
+  else if (TimeIs (time, Earlier, last_x_selection_change))
     return;
 
   DebugPrint ("CLIPBOARD was cleared at %lu\n", time);
 
-  last_x_selection_change = TimestampFromServerTime (time);
+  last_x_selection_change = TimestampFromClientTime (time);
   XLClearForeignSelection (last_x_selection_change);
 
   /* Free data that is no longer used.  */
@@ -1111,13 +1130,17 @@ NoticeClipboardCleared (Time time)
 static void
 NoticePrimaryCleared (Time time)
 {
-  /* Ignore outdated events.  */
-  if (TimeIs (time, Earlier, last_primary_time))
+  if (!x_primary_targets)
+    {
+      if (!TimeIs (time, Later, last_primary_time))
+	return;
+    }
+  else if (TimeIs (time, Earlier, last_primary_time))
     return;
 
   DebugPrint ("PRIMARY was cleared at %lu\n", time);
 
-  last_primary_time = TimestampFromServerTime (time);
+  last_primary_time = TimestampFromClientTime (time);
   XLClearForeignPrimary (last_primary_time);
 
   /* Free data that is no longer used.  */
@@ -1133,17 +1156,21 @@ HandleSelectionNotify (XFixesSelectionNotifyEvent *event)
     /* Ignore events sent when we get selection ownership.  */
     return;
 
+  /* Use the server timestamp in the fixes selection notify event
+     to synchronize the local time counter.  */
+  TimestampFromServerTime (event->timestamp);
+
   if (event->selection == CLIPBOARD
       && TimeIs (event->selection_timestamp, Later, last_clipboard_change))
     /* This time is used to keep track of whether or not things like
        disowning the selection were successful.  */
     last_clipboard_change
-      = TimestampFromServerTime (event->selection_timestamp);
+      = TimestampFromClientTime (event->selection_timestamp);
 
   if (event->selection == XA_PRIMARY
       && TimeIs (event->selection_timestamp, Later, last_primary_time))
     last_primary_time
-      = TimestampFromServerTime (event->selection_timestamp);
+      = TimestampFromClientTime (event->selection_timestamp);
 
   if (event->owner != None
       && event->selection == CLIPBOARD)
