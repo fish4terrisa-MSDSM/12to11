@@ -2018,7 +2018,7 @@ CancelResizeOperation (Seat *seat, Time time, Subcompositor *subcompositor,
 
   /* Ungrab the pointer.  */
   XIUngrabDevice (compositor.display, seat->master_pointer,
-		  xev->time);
+		  time);
 
   if (!subcompositor)
     return;

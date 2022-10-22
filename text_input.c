@@ -485,7 +485,7 @@ SetCursorRectangle (struct wl_client *client, struct wl_resource *resource,
   if ((input->current_state.pending & PendingCursorRectangle
        /* PendingEnabled will clear the current state's cursor
 	  rectangle.  */
-       && !input->pending_state.pending & PendingEnabled)
+       && !(input->pending_state.pending & PendingEnabled))
       && x == input->current_state.cursor_x
       && y == input->current_state.cursor_y
       && width == input->current_state.cursor_width
@@ -1956,8 +1956,8 @@ FindTextSections (const char *string, size_t string_size,
       while (factor)
 	{
 	  found = memrchr (string, '\n', found - string);
-	  DebugPrint ("LineStart processing found %p %zd", found,
-		      found - string);
+	  DebugPrint ("LineStart processing found %p %td", found,
+		      found ? found - string : 0);
 
 	  if (!found)
 	    {
@@ -2126,7 +2126,7 @@ EncodeIMString (const char *input, size_t input_size, int *chars)
     {
       rc = iconv (cd, &inbuf, &input_size, &outptr,
 		  &outbytesleft);
-      DebugPrint ("iconv gave: %tu", rc);
+      DebugPrint ("iconv gave: %zu", rc);
 
       if (rc == (size_t) -1)
 	{
@@ -2144,7 +2144,7 @@ EncodeIMString (const char *input, size_t input_size, int *chars)
 	      outsize += BUFSIZ;
 	      outbytesleft += BUFSIZ;
 
-	      DebugPrint ("expanding outsize to %tu, outbytesleft now %tu",
+	      DebugPrint ("expanding outsize to %zu, outbytesleft now %zu",
 			  outsize, outbytesleft);
 	    }
 	  else
@@ -2167,7 +2167,7 @@ EncodeIMString (const char *input, size_t input_size, int *chars)
     }
 
   /* The conversion finished.  */
-  DebugPrint ("conversion finished, size_out %tu",
+  DebugPrint ("conversion finished, size_out %zu",
 	      outsize - outbytesleft);
 
   /* Now, count the number of multibyte characters.  */
@@ -2624,7 +2624,7 @@ CheckStyles (XIM xim)
   /* Otherwise, find the best style in our order of preference.  */
   for (i = 0; xim_style_order[i] != XimStyleNone; ++i)
     {
-      DebugPrint ("considering style: %u", xim_style_order[i]);
+      DebugPrint ("considering style: %d", (int) xim_style_order[i]);
 
       switch (xim_style_order[i])
 	{
@@ -2945,7 +2945,7 @@ ConvertString (char *buffer, size_t nbytes, size_t *size_out)
   outsize = BUFSIZ;
   outbytesleft = outsize;
 
-  DebugPrint ("converting string of size %tu", nbytes);
+  DebugPrint ("converting string of size %zu", nbytes);
 
   /* Reset the cd state.  */
   iconv (current_cd, NULL, NULL, &outptr, &outbytesleft);
@@ -2956,7 +2956,7 @@ ConvertString (char *buffer, size_t nbytes, size_t *size_out)
       rc = iconv (current_cd, &buffer, &nbytes,
 		  &outptr, &outbytesleft);
 
-      DebugPrint ("iconv gave: %tu", rc);
+      DebugPrint ("iconv gave: %zu", rc);
 
       if (rc == (size_t) -1)
 	{
@@ -2974,7 +2974,7 @@ ConvertString (char *buffer, size_t nbytes, size_t *size_out)
 	      outsize += BUFSIZ;
 	      outbytesleft += BUFSIZ;
 
-	      DebugPrint ("expanding outsize to %tu, outbytesleft now %tu",
+	      DebugPrint ("expanding outsize to %zu, outbytesleft now %zu",
 			  outsize, outbytesleft);
 	    }
 	  else
@@ -2983,7 +2983,7 @@ ConvertString (char *buffer, size_t nbytes, size_t *size_out)
     }
 
  finish:
-  DebugPrint ("conversion finished, size_out %tu",
+  DebugPrint ("conversion finished, size_out %zu",
 	      outsize - outbytesleft);
 
   /* Return outbuf and the number of bytes put in it.  */
@@ -3032,7 +3032,7 @@ PreeditString (TextInput *input, const char *buffer,
 	  end += skip;
 	}
 
-      DebugPrint ("end-start (%p-%p): %zd", end, start,
+      DebugPrint ("end-start (%p-%p): %td", end, start,
 		  end - start);
 
       /* Now, start to end contain a UTF-8 sequence less than 4000
@@ -3101,7 +3101,7 @@ CommitString (TextInput *input, const char *buffer,
 	  end += skip;
 	}
 
-      DebugPrint ("end-start (%p-%p): %zd", end, start,
+      DebugPrint ("end-start (%p-%p): %td", end, start,
 		  end - start);
 
       /* Now, start to end contain a UTF-8 sequence less than 4000

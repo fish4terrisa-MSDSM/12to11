@@ -203,10 +203,7 @@ RunStep (void)
   struct pollfd *fds;
   PollFd **pollfds, *item, *last;
 
-  XFlush (compositor.display);
-  wl_display_flush_clients (compositor.wl_display);
-
-  fds = alloca (sizeof fds * (num_poll_fd + 2));
+  fds = alloca (sizeof *fds * (num_poll_fd + 2));
 
   /* This is used as an optimization to not have to loop over the
      entire descriptor list twice.  */
@@ -220,6 +217,12 @@ RunStep (void)
   /* Drain complete selection transfers.  */
   FinishTransfers ();
 
+  /* FinishTransfers can potentially send events to Wayland clients
+     and make X requests.  Flush after it is called.  */
+  XFlush (compositor.display);
+  wl_display_flush_clients (compositor.wl_display);
+
+  /* Obtain the connections.  */
   x_connection = ConnectionNumber (compositor.display);
   wl_connection = wl_event_loop_get_fd (compositor.wl_event_loop);
 

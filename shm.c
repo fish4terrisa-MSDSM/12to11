@@ -88,8 +88,6 @@ DereferencePool (Pool *pool)
   /* Cancel the busfault trap.  */
 
   if (pool->data != (void *) -1
-      /* If the pool is of size 0, no busfault was installed.  */
-      && pool->size
       /* If reading from the pool cannot possibly cause SIGBUS, then
 	 no bus fault trap was installed.  */
       && !(pool->flags & PoolCannotSigbus))
@@ -486,7 +484,7 @@ CreatePool (struct wl_client *client, struct wl_resource *resource,
   /* Begin trapping SIGBUS from this pool.  The client may truncate
      the file without telling us, in which case accessing its contents
      will cause crashes.  */
-  if (!(pool->flags & PoolCannotSigbus) && pool->size)
+  if (!(pool->flags & PoolCannotSigbus))
     XLRecordBusfault (pool->data, pool->size);
 
   pool->fd = fd;

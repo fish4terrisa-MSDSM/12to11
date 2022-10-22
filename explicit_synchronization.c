@@ -248,9 +248,8 @@ HandleSurfaceCommit (Synchronization *synchronization, Surface *surface)
 	 surface.  */
       surface->release->surface = surface;
 
-      if (surface->release
-	  && !(surface->pending_state.pending & PendingBuffer
-	       && surface->pending_state.buffer))
+      if (!(surface->pending_state.pending & PendingBuffer
+	    && surface->pending_state.buffer))
 	wl_resource_post_error (synchronization->resource,
 				NoBuffer, "no buffer attached"
 				" but release provided");

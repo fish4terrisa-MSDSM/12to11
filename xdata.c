@@ -1147,14 +1147,14 @@ HandleSelectionNotify (XFixesSelectionNotifyEvent *event)
 
   if (event->owner != None
       && event->selection == CLIPBOARD)
-    NoticeClipboardChanged (event->timestamp);
+    NoticeClipboardChanged (event->selection_timestamp);
   else if (event->selection == CLIPBOARD)
-    NoticeClipboardCleared (event->timestamp);
+    NoticeClipboardCleared (event->selection_timestamp);
   else if (event->owner != None
 	   && event->selection == XA_PRIMARY)
-    NoticePrimaryChanged (event->timestamp);
+    NoticePrimaryChanged (event->selection_timestamp);
   else if (event->selection == XA_PRIMARY)
-    NoticePrimaryCleared (event->timestamp);
+    NoticePrimaryCleared (event->selection_timestamp);
 }
 
 Bool

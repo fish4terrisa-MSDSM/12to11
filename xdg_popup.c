@@ -279,10 +279,7 @@ MoveWindow (XdgPopup *popup)
   int geometry_x, geometry_y, x, y;
   Window window;
 
-  /* No parent was specified.  */
-  if (!popup->parent)
-    return;
-
+  /* No parent was specified or the role is detached.  */
   if (!popup->role || !popup->parent)
     return;
 
@@ -416,10 +413,7 @@ InternalReposition (XdgPopup *popup)
   int x, y, width, height;
   FrameClock *clock;
 
-  /* No parent was specified.  */
-  if (!popup->parent)
-    return;
-
+  /* No parent was specified or the role is detached.  */
   if (!popup->role || !popup->parent)
     return;
 

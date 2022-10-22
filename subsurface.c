@@ -737,8 +737,7 @@ Setup (Surface *surface, Role *role)
   ViewInsert (parent_view, surface->view);
 
   /* Now move the subsurface to its initial location (0, 0) */
-  if (subsurface->parent)
-    MoveFractional (subsurface);
+  MoveFractional (subsurface);
 
   /* Now add the subsurface to the parent's list of subsurfaces.  */
   subsurface->parent->subsurfaces

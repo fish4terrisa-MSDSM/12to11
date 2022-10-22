@@ -2110,8 +2110,8 @@ static void
 AddShmFormat (uint32_t format)
 {
   shm_formats
-    = XLRealloc (shm_formats,
-		 sizeof *shm_formats * ++n_shm_formats);
+    = XLRealloc (shm_formats, (sizeof *shm_formats
+			       * ++n_shm_formats));
 
   shm_formats[n_shm_formats - 1].format = format;
 }
