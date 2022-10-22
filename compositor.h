@@ -773,6 +773,8 @@ extern void ViewInsertAfter (View *, View *, View *);
 extern void ViewInsertBefore (View *, View *, View *);
 extern void ViewInsertStart (View *, View *);
 
+extern Bool ViewIsVisible (View *);
+
 extern void ViewUnparent (View *);
 extern View *ViewGetParent (View *);
 extern void ViewAttachBuffer (View *, ExtBuffer *);
@@ -1393,6 +1395,7 @@ extern void XLSubsurfaceHandleParentCommit (Surface *);
 extern void XLInitSubsurfaces (void);
 extern void XLUpdateOutputsForChildren (Surface *, int, int);
 extern void XLUpdateDesynchronousChildren (Surface *, int *);
+extern Surface *XLSubsurfaceGetRoot (Surface *);
 
 /* Defined in data_device.c.  */
 

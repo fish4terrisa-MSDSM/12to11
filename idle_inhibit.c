@@ -133,6 +133,7 @@ static void
 DetectSurfaceIdleInhibit (void)
 {
   IdleInhibitor *inhibitor;
+  Surface *root;
 
   inhibitor = all_inhibitors.global_next;
   while (inhibitor != &all_inhibitors)
@@ -141,6 +142,18 @@ DetectSurfaceIdleInhibit (void)
 	{
 	  ChangeInhibitionTo (IdleInhibited);
 	  return;
+	}
+      else if (inhibitor->surface->role
+	       && inhibitor->surface->role_type == SubsurfaceType)
+	{
+	  /* This is a subsurface.  If it is visible and the toplevel
+	     parent has the input focus, then also inhibit system
+	     idle.  */
+	  root = XLSubsurfaceGetRoot (inhibitor->surface);
+
+	  if (root && ViewIsVisible (inhibitor->surface->view)
+	      && root->num_focused_seats)
+	    ChangeInhibitionTo (IdleInhibited);
 	}
 
       inhibitor = inhibitor->global_next;
@@ -286,6 +299,9 @@ CreateInhibitor (struct wl_client *client, struct wl_resource *resource,
   if (surface->num_focused_seats)
     /* See the comment at the beginning of the file.  */
     ChangeInhibitionTo (IdleInhibited);
+  else if (surface->role && surface->role_type == SubsurfaceType)
+    /* Check if this subsurface should cause inhibition.  */
+    DetectSurfaceIdleInhibit ();
 
   /* Set the implementation.  */
   wl_resource_set_implementation (inhibitor->resource, &idle_inhibitor_impl,

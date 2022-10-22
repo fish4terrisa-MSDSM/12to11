@@ -95,6 +95,9 @@ struct _Subsurface
   /* Whether or not a commit is pending.  */
   Bool pending_commit;
 
+  /* Whether or not this subsurface is mapped.  */
+  Bool mapped;
+
   /* The last dimensions and position that were used to update this
      surface's outputs.  */
   int output_x, output_y, output_width, output_height;
@@ -668,11 +671,26 @@ Commit (Surface *surface, Role *role)
     {
       ViewUnmap (surface->under);
       ViewUnmap (surface->view);
+
+      if (subsurface->mapped)
+	/* Check for idle inhibition changes.  */
+	XLDetectSurfaceIdleInhibit ();
+
+      subsurface->mapped = False;
     }
   else
-    /* Once a buffer is attached to the view, it is automatically
-       mapped.  */
-    ViewMap (surface->under);
+    {
+      /* Once a buffer is attached to the view, it is automatically
+	 mapped.  */
+      ViewMap (surface->under);
+
+     if (!subsurface->mapped)
+       /* Check if this subsurface being mapped would cause idle
+	  inhibitors to change.  */
+       XLDetectSurfaceIdleInhibit ();
+
+     subsurface->mapped = True;
+    }
 
   if (!subsurface->synchronous)
     {
@@ -824,6 +842,9 @@ Teardown (Surface *surface, Role *role)
     }
 
   DestroyBacking (subsurface);
+
+  /* Update whether or not idle inhibition should continue.  */
+  XLDetectSurfaceIdleInhibit ();
 }
 
 static void
@@ -1078,4 +1099,10 @@ XLUpdateDesynchronousChildren (Surface *parent, int *n_children)
       /* Update these numbers recursively as well.  */
       XLUpdateDesynchronousChildren (child, n_children);
     }
+}
+
+Surface *
+XLSubsurfaceGetRoot (Surface *surface)
+{
+  return GetRootSurface (surface);
 }

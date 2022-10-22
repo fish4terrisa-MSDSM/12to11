@@ -721,6 +721,20 @@ ViewVisibilityState (View *view, Bool *mapped)
   return view->link->next != view->link;
 }
 
+Bool
+ViewIsVisible (View *view)
+{
+  Bool mapped;
+
+  if (!ViewVisibilityState (view, &mapped))
+    return False;
+
+  if (IsSkipped (view))
+    return False;
+
+  return mapped;
+}
+
 static void
 ViewRecomputeChildren (View *view, int *doflags)
 {
