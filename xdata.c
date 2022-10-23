@@ -2265,7 +2265,7 @@ XLNoteLocalPrimary (Seat *seat, PDataSource *source)
 void
 XLInitXData (void)
 {
-  sigset_t set;
+  struct sigaction act;
   int rc, fixes_error_base, major, minor;
 
   rc = XFixesQueryExtension (compositor.display,
@@ -2309,13 +2309,13 @@ XLInitXData (void)
 
   /* Ignore SIGPIPE, since we could be writing to a pipe whose reading
      end was closed by the client.  */
-  sigemptyset (&set);
-  sigaddset (&set, SIGPIPE);
+  memset (&act, 0, sizeof act);
+  act.sa_handler = SIG_IGN;
 
-  if (pthread_sigmask (SIG_BLOCK, &set, NULL))
+  if (sigaction (SIGPIPE, &act, NULL))
     {
-      perror ("pthread_sigmask");
-      exit (1);
+      perror ("sigaction");
+      abort ();
     }
 }
 
