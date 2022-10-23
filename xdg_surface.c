@@ -1295,9 +1295,6 @@ NoteFrame (FrameMode mode, uint64_t id, void *data)
 	  /* End the frame.  */
 	  XLFrameClockEndFrame (role->clock);
 
-	  /* Clear the frame completed flag.  */
-	  role->state &= ~StateFrameStarted;
-
 	  /* No frame was started clock-side for this frame.  That
 	     means programs waiting for frame callbacks will not get
 	     any, so the frame callbacks must be run by hand.  */
@@ -1309,6 +1306,9 @@ NoteFrame (FrameMode mode, uint64_t id, void *data)
 
 	      RunFrameCallbacksConditionally (role);
 	    }
+
+	  /* Clear the frame completed flag.  */
+	  role->state &= ~StateFrameStarted;
 
 	  if (mode == ModePresented
 	      && renderer_flags & SupportsDirectPresent)

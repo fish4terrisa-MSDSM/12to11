@@ -798,7 +798,7 @@ Teardown (Surface *surface, Role *role)
 {
   Subsurface *subsurface;
   SurfaceActionClientData *client;
-  SurfaceAction *action;
+  SurfaceAction *action, *last;
   Subcompositor *subcompositor;
 
   subsurface = SubsurfaceFromRole (role);
@@ -831,8 +831,11 @@ Teardown (Surface *surface, Role *role)
 
 	  while (action != &client->actions)
 	    {
-	      if (action->subsurface == subsurface)
-		DestroySurfaceAction (action);
+	      last = action;
+	      action = action->next;
+
+	      if (last->subsurface == subsurface)
+		DestroySurfaceAction (last);
 	    }
 	}
 
