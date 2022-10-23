@@ -1457,6 +1457,17 @@ NoteFocus (Surface *surface, Role *role, FocusMode focus)
 				      focus);
 }
 
+static void
+OutputsChanged (Surface *surface, Role *role)
+{
+  XdgRole *xdg_role;
+
+  xdg_role = XdgRoleFromRole (role);
+
+  if (xdg_role->impl && xdg_role->impl->funcs.outputs_changed)
+    xdg_role->impl->funcs.outputs_changed (role, xdg_role->impl);
+}
+
 void
 XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
 		 uint32_t id, struct wl_resource *surface_resource)
@@ -1543,6 +1554,7 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
   role->role.funcs.note_child_synced = NoteChildSynced;
   role->role.funcs.select_extra_events = SelectExtraEvents;
   role->role.funcs.note_focus = NoteFocus;
+  role->role.funcs.outputs_changed = OutputsChanged;
 
   attrs.colormap = compositor.colormap;
   attrs.border_pixel = border_pixel;

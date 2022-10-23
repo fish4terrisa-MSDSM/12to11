@@ -653,7 +653,13 @@ NoticeOutputsMaybeChanged (void)
 
       surface = all_surfaces.next;
       for (; surface != &all_surfaces; surface = surface->next)
-	pixman_region32_clear (&surface->output_region);
+	{
+	  pixman_region32_clear (&surface->output_region);
+
+	  if (surface->role
+	      && surface->role->funcs.outputs_changed)
+	    surface->role->funcs.outputs_changed (surface, surface->role);
+	}
     }
 }
 
@@ -1092,6 +1098,51 @@ XLOutputSetChangeFunction (void (*change_func) (Time))
 }
 
 void
+XLGetMaxOutputBounds (int *x_min, int *y_min, int *x_max,
+		      int *y_max)
+{
+  int x1, y1, x2, y2;
+  Output *output;
+  XLList *tem;
+
+  x1 = y1 = INT_MAX;
+  x2 = y2 = INT_MIN;
+
+  if (!all_outputs)
+    {
+      *x_min = 0;
+      *y_min = 0;
+      *x_max = DisplayWidth (compositor.display,
+			     DefaultScreen (compositor.display)) - 1;
+      *y_max = DisplayHeight (compositor.display,
+			      DefaultScreen (compositor.display)) - 1;
+      return;
+    }
+
+  for (tem = all_outputs; tem; tem = tem->next)
+    {
+      output = tem->data;
+
+      if (output->x < x1)
+	x1 = output->x;
+
+      if (output->y < y1)
+	y1 = output->y;
+
+      if (output->x + output->width - 1 > x2)
+	x2 = output->x + output->width - 1;
+
+      if (output->y + output->height - 1 > y2)
+	y2 = output->y + output->height - 1;
+    }
+
+  *x_min = x1;
+  *y_min = y1;
+  *x_max = x2;
+  *y_max = y2;
+}
+
+void
 XLInitRROutputs (void)
 {
   Bool extension;
@@ -1153,3 +1204,4 @@ XLInitRROutputs (void)
   all_outputs = BuildOutputTree ();
   MakeGlobalsForOutputTree (all_outputs);
 }
+

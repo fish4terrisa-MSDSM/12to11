@@ -1083,6 +1083,7 @@ struct _RoleFuncs
   void (*note_child_synced) (Surface *, Role *);
   void (*select_extra_events) (Surface *, Role *, unsigned long);
   void (*note_focus) (Surface *, Role *, FocusMode);
+  void (*outputs_changed) (Surface *, Role *);
 };
 
 struct _Role
@@ -1156,6 +1157,7 @@ extern void *XLAddScaleChangeCallback (void *, void (*) (void *, int));
 extern void XLRemoveScaleChangeCallback (void *);
 extern void XLClearOutputs (Surface *);
 extern void XLOutputSetChangeFunction (void (*) (Time));
+extern void XLGetMaxOutputBounds (int *, int *, int *, int *);
 
 /* Defined in atoms.c.  */
 
@@ -1275,6 +1277,7 @@ struct _XdgRoleImplementationFuncs
   void (*commit_inside_frame) (Role *, XdgRoleImplementation *);
   Bool (*is_window_mapped) (Role *, XdgRoleImplementation *);
   void (*note_focus) (Role *, XdgRoleImplementation *, FocusMode);
+  void (*outputs_changed) (Role *, XdgRoleImplementation *);
 };
 
 struct _XdgRoleImplementation

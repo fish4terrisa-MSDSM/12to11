@@ -573,22 +573,31 @@ WriteStates (XdgToplevel *toplevel)
 }
 
 static void
+CurrentWindowGeometry (XdgToplevel *toplevel,
+		       int *width, int *height)
+{
+  /* Calculate the current window geometry for sending a configure
+     event.  */
+
+  TruncateScaleToSurface (toplevel->role->surface,
+			  toplevel->width,
+			  toplevel->height,
+			  width, height);
+
+  XLXdgRoleCalcNewWindowSize (toplevel->role, *width,
+			      *height, width, height);
+}
+
+static void
 SendStates (XdgToplevel *toplevel)
 {
   int width, height;
 
   WriteStates (toplevel);
 
-  /* Adjust the width and height we're sending by the window geometry.
-     toplevel->role->surface should not be NULL here.  */
+  /* toplevel->role->surface should not be NULL here.  */
 
-  TruncateScaleToSurface (toplevel->role->surface,
-			  toplevel->width, toplevel->height,
-			  &width, &height);
-
-  XLXdgRoleCalcNewWindowSize (toplevel->role, width,
-			      height, &width, &height);
-
+  CurrentWindowGeometry (toplevel, &width, &height);
   SendConfigure (toplevel, width, height);
 }
 
@@ -1219,6 +1228,17 @@ AckConfigure (Role *role, XdgRoleImplementation *impl, uint32_t serial)
 }
 
 static void
+SendOutputBounds (XdgToplevel *toplevel)
+{
+  int x_min, y_min, x_max, y_max;
+
+  XLGetMaxOutputBounds (&x_min, &y_min, &x_max, &y_max);
+  xdg_toplevel_send_configure_bounds (toplevel->resource,
+				      x_max - x_min + 1,
+				      y_max - y_min + 1);
+}
+
+static void
 Commit (Role *role, Surface *surface, XdgRoleImplementation *impl)
 {
   XdgToplevel *toplevel;
@@ -1255,6 +1275,14 @@ Commit (Role *role, Surface *surface, XdgRoleImplementation *impl)
 	Unmap (toplevel);
 
       FlushConfigurationTimer (toplevel);
+
+      if (wl_resource_get_version (toplevel->resource) >= 4)
+	/* Send the maximum bounds of the window to the client.  It
+	   isn't possible to predict where the window will be mapped,
+	   so unfortunately the precise output bounds can't be used
+	   here.  */
+	SendOutputBounds (toplevel);
+
       SendConfigure (toplevel, 0, 0);
     }
   else if (!toplevel->conf_reply)
@@ -2181,6 +2209,29 @@ NoteFocus (Role *role, XdgRoleImplementation *impl, FocusMode mode)
     }
 }
 
+static void
+OutputsChanged (Role *role, XdgRoleImplementation *impl)
+{
+  XdgToplevel *toplevel;
+  int width, height;
+
+  toplevel = ToplevelFromRoleImpl (impl);
+
+  /* The list of outputs changed.  Send the new bounds to the
+     client.  */
+  if (toplevel->resource)
+    {
+      if (wl_resource_get_version (toplevel->resource) < 4)
+	/* The client is too old to accept configure_bounds.  */
+	return;
+
+      /* Send the updated bounds to the toplevel.  */
+      SendOutputBounds (toplevel);
+      CurrentWindowGeometry (toplevel, &width, &height);
+      SendConfigure (toplevel, width, height);
+    }
+}
+
 static const struct xdg_toplevel_interface xdg_toplevel_impl =
   {
     .destroy = Destroy,
@@ -2242,6 +2293,7 @@ XLGetXdgToplevel (struct wl_client *client, struct wl_resource *resource,
   toplevel->impl.funcs.post_resize = PostResize;
   toplevel->impl.funcs.commit_inside_frame = CommitInsideFrame;
   toplevel->impl.funcs.is_window_mapped = IsWindowMapped;
+  toplevel->impl.funcs.outputs_changed = OutputsChanged;
 
   if (!XLWmSupportsHint (_NET_WM_STATE_FOCUSED))
     /* If _NET_WM_STATE_FOCUSED is unsupported, fall back to utilizing
