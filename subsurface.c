@@ -320,6 +320,16 @@ RunSurfaceActions (SurfaceAction *first)
 static void
 DestroySubsurface (struct wl_client *client, struct wl_resource *resource)
 {
+  Subsurface *subsurface;
+
+  subsurface = wl_resource_get_user_data (resource);
+
+  /* Now detach the role from its surface, which can be reused in the
+     future.  */
+  if (subsurface->role.surface)
+    XLSurfaceReleaseRole (subsurface->role.surface,
+			  &subsurface->role);
+
   wl_resource_destroy (resource);
 }
 

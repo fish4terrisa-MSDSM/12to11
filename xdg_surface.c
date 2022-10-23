@@ -467,6 +467,11 @@ Destroy (struct wl_client *client, struct wl_resource *resource)
       return;
     }
 
+  /* Now detach the role from its surface, which can be reused in the
+     future.  */
+  if (role->role.surface)
+    XLSurfaceReleaseRole (role->role.surface, &role->role);
+
   wl_resource_destroy (resource);
 }
 
