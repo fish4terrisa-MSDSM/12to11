@@ -29,7 +29,11 @@ typedef struct _CursorClockCallback CursorClockCallback;
 enum
   {
     /* 150ms.  */
-    MaxPresentationAge = 150000,
+    MaxPresentationAge	  = 150000,
+    /* 5000 microseconds.  This arbitrary value is the longest it
+       normally takes for a sync counter update to be processed by the
+       compositor.  */
+    PresentationThreshold = 5000,
   };
 
 /* Whether or not the compositor supports frame synchronization.  */
@@ -333,10 +337,17 @@ PostEndFrame (FrameClock *clock)
 	return;
     }
 
-  /* Use 3/4ths of the presentation time.  Any more and we risk the
-     counter value change signalling the end of the frame arriving
-     after the presentation deadline.  */
-  target = target - (clock->presentation_time / 4 * 3);
+  /* Use 5000 microseconds before the presentation time, or 3/4th of
+     it if it is less than 5000.  Any more and we risk the counter
+     value change signalling the end of the frame arriving after the
+     presentation deadline.  */
+  if (clock->presentation_time > PresentationThreshold)
+    target = target - (clock->presentation_time - PresentationThreshold);
+  else
+    /* However, if the presentation time is less than 5000
+       microseconds, use 3/4ths of it.  This computation seems to be a
+       good enough fallback.  */
+    target = target - (clock->presentation_time / 4 * 3);
 
   /* Add the remainder of now if it was probably truncated by the
      compositor.  */
