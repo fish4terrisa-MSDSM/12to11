@@ -3063,8 +3063,8 @@ SubcompositorLookupView (Subcompositor *subcompositor, int x, int y,
 
       /* Now see if the input region contains the given
 	 coordinates.  If it does, return the view.  */
-      if (pixman_region32_contains_point (&list->view->input, x, y,
-					  &box))
+      if (pixman_region32_contains_point (&list->view->input, temp_x,
+					  temp_y, &box))
 	{
 	  *view_x = list->view->abs_x - subcompositor->min_x;
 	  *view_y = list->view->abs_y - subcompositor->min_y;

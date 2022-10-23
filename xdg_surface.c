@@ -1235,9 +1235,11 @@ NoteFrame (FrameMode mode, uint64_t id, void *data)
       /* Record this frame counter as the pending frame.  */
       role->pending_frame = id;
 
-      if (!(role->state & StateFrameStarted)
-	  && XLFrameClockStartFrame (role->clock, False))
-	role->state |= StateFrameStarted;
+      if (!(role->state & StateFrameStarted))
+	{
+	  if (XLFrameClockStartFrame (role->clock, False))
+	    role->state |= StateFrameStarted;
+	}
 
       /* Also run role "commit inside frame" hook.  */
       if (role->impl && role->impl->funcs.commit_inside_frame)
@@ -1265,25 +1267,15 @@ NoteFrame (FrameMode mode, uint64_t id, void *data)
 	  /* End the frame.  */
 	  XLFrameClockEndFrame (role->clock);
 
-	  /* Clear the frame completed flag.  */
-	  role->state &= ~StateFrameStarted;
-
-	  /* Clients which commit when a configure event that has not
-	     yet been acked still expect frame callbacks to be called;
-	     however, frame callbacks are not provided by the frame
-	     clock while it is frozen.
-
-	     If that happens, just run the frame callback
-	     immediately.  */
-	  if (XLFrameClockIsFrozen (role->clock)
-	      /* If the window is not mapped, then the native frame
-		 clock will not draw frames.  Some clients do commit
-		 before the initial configure event and wait for the
-		 frame callback to be called after or before
-		 ack_configure, leading to the mapping commit never
-		 being performed.  */
+	  /* No frame was started clock-side for this frame.  That
+	     means programs waiting for frame callbacks will not get
+	     any, so the frame callbacks must be run by hand.  */
+	  if (!(role->state & StateFrameStarted)
 	      || !IsRoleMapped (role))
 	    RunFrameCallbacksConditionally (role);
+
+	  /* Clear the frame completed flag.  */
+	  role->state &= ~StateFrameStarted;
 
 	  if (mode == ModePresented
 	      && renderer_flags & SupportsDirectPresent)

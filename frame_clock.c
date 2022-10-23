@@ -367,7 +367,23 @@ StartFrame (FrameClock *clock, Bool urgent, Bool predict)
     return False;
 
   if (clock->in_frame)
-    return False;
+    {
+      if (clock->end_frame_timer
+	  /* If the end of the frame is still pending but EndFrame has
+	     been called, then treat the frame as if it has just been
+	     started.  */
+	  && clock->end_frame_called)
+	{
+	  /* In addition, require another EndFrame for the frame to
+	     end.  */
+	  clock->end_frame_called = False;
+	  return True;
+	}
+
+      /* Otherwise it genuinely is invalid to call StartFrame here, so
+	 return False.  */
+      return False;
+    }
 
   if (clock->need_configure)
     {
