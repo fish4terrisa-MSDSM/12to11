@@ -3705,6 +3705,18 @@ FindScrollValuator (Seat *seat, int number)
 }
 
 static void
+InterpolateAxes (Surface *surface, double movement_x,
+		 double movement_y, double *x_out,
+		 double *y_out)
+{
+  /* This is the algorithm used by most programs.  */
+  *x_out = movement_x * pow (ViewWidth (surface->view),
+			     2.0 / 3.0);
+  *x_out = movement_y * pow (ViewHeight (surface->view),
+			     2.0 / 3.0);
+}
+
+static void
 SendScrollAxis (Seat *seat, Surface *surface, Time time,
 		double x, double y, double axis_x, double axis_y,
 		int flags, int sourceid)
@@ -3734,8 +3746,16 @@ SendScrollAxis (Seat *seat, Surface *surface, Time time,
 	  pointer->info->last_enter_serial = serial;
 	}
 
-      if (wl_resource_get_version (pointer->resource) < 8)
+      if (wl_resource_get_version (pointer->resource) < 8
+	  /* Send pixel-wise axis events from devices that are most
+	     likely touchpads.  */
+	  || (deviceinfo->flags & DeviceCanFingerScroll
+	      || deviceinfo->flags & DeviceCanEdgeScroll))
 	{
+	  /* Interpolate the increment-relative axis values to pixel
+	     values.  */
+	  InterpolateAxes (surface, axis_x, axis_y, &axis_x, &axis_y);
+
 	  if (axis_x != 0.0)
 	    wl_pointer_send_axis (pointer->resource, time,
 				  WL_POINTER_AXIS_HORIZONTAL_SCROLL,
@@ -3843,8 +3863,6 @@ HandleValuatorMotion (Seat *seat, Surface *dispatch, double x, double y,
 
   if (value && dispatch)
     SendScrollAxis (seat, dispatch, event->time, x, y,
-		    /* FIXME: this is how GTK converts those values,
-		       but is it really right?  */
 		    total_x * 10, total_y * 10, flags,
 		    /* Also pass the event source device ID, which is
 		       used in an attempt to determine the axis
