@@ -2448,18 +2448,19 @@ SubcompositorUpdate (Subcompositor *subcompositor)
       StorePreviousDamage (subcompositor, NULL);
     }
 
+  /* Increase the frame count and announce the new frame number.  This
+     must be done even if no graphics changes were committed.  */
+  if (subcompositor->note_frame)
+    subcompositor->note_frame (ModeStarted,
+			       ++subcompositor->frame_counter,
+			       subcompositor->note_frame_data);
+
   /* If there's nothing to do, return.  */
 
   if (!start)
     /* There is no starting view.  Presentation is not cancelled in
        this case, because the surface should now be unmapped.  */
     goto complete;
-
-  /* Increase the frame count and announce the new frame number.  */
-  if (subcompositor->note_frame)
-    subcompositor->note_frame (ModeStarted,
-			       ++subcompositor->frame_counter,
-			       subcompositor->note_frame_data);
 
   /* Now update all views from start onwards.  */
 

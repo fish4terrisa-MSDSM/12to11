@@ -940,12 +940,40 @@ HandleResourceDestroy (struct wl_resource *resource)
   ReleaseBacking (role);
 }
 
+static Bool
+MaybeRunLateFrame (XdgRole *role)
+{
+  /* If there is a late frame, run it now.  Return whether or not a
+     late frame was run.  */
+
+  if (role->state & StateLateFrame)
+    {
+      /* Clear the late frame flag.  */
+      role->state &= ~StateLateFrame;
+
+      if (role->state & StateLateFrameAcked)
+	XLFrameClockUnfreeze (role->clock);
+
+      /* Now apply the state in the late frame.  */
+      SubcompositorUpdate (role->subcompositor);
+
+      /* Return True, as a new update has started.  */
+      return True;
+    }
+
+  return False;
+}
+
 static void
 AfterFrame (FrameClock *clock, void *data)
 {
   XdgRole *role;
 
   role = data;
+
+  /* Run any late frame.  */
+  if (MaybeRunLateFrame (role))
+    return;
 
   /* If all pending frames have been drawn, run frame callbacks.
      Unless some buffers have not yet been released, in which case the
@@ -1267,15 +1295,20 @@ NoteFrame (FrameMode mode, uint64_t id, void *data)
 	  /* End the frame.  */
 	  XLFrameClockEndFrame (role->clock);
 
+	  /* Clear the frame completed flag.  */
+	  role->state &= ~StateFrameStarted;
+
 	  /* No frame was started clock-side for this frame.  That
 	     means programs waiting for frame callbacks will not get
 	     any, so the frame callbacks must be run by hand.  */
 	  if (!(role->state & StateFrameStarted)
 	      || !IsRoleMapped (role))
-	    RunFrameCallbacksConditionally (role);
+	    {
+	      if (MaybeRunLateFrame (role))
+		return;
 
-	  /* Clear the frame completed flag.  */
-	  role->state &= ~StateFrameStarted;
+	      RunFrameCallbacksConditionally (role);
+	    }
 
 	  if (mode == ModePresented
 	      && renderer_flags & SupportsDirectPresent)
@@ -1574,7 +1607,6 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
 
   role->subcompositor = MakeSubcompositor ();
   role->clock = XLMakeFrameClockForWindow (role->window);
-
   XLFrameClockSetFreezeCallback (role->clock, HandleFreeze, role);
 
   SubcompositorSetTarget (role->subcompositor, &role->target);
