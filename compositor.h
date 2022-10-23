@@ -1177,7 +1177,7 @@ extern Atom _NET_WM_OPAQUE_REGION, _XL_BUFFER_RELEASE,
   XdndProxy, XdndEnter, XdndPosition, XdndStatus, XdndLeave, XdndDrop,
   XdndFinished, _NET_WM_FRAME_TIMINGS, _NET_WM_BYPASS_COMPOSITOR, WM_STATE,
   _NET_WM_WINDOW_TYPE, _NET_WM_WINDOW_TYPE_MENU, _NET_WM_WINDOW_TYPE_DND,
-  CONNECTOR_ID, _NET_WM_PID, _NET_WM_PING;
+  CONNECTOR_ID, _NET_WM_PID, _NET_WM_PING, libinput_Scrolling_Pixel_Distance;
 
 extern XrmQuark resource_quark, app_quark, QString;
 

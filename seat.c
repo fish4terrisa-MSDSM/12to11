@@ -565,6 +565,9 @@ struct _DeviceInfo
 {
   /* Some flags associated with this device.  */
   int flags;
+
+  /* The libinput scroll pixel distance, if available.  Else 15.  */
+  int scroll_pixel_distance;
 };
 
 #define SetMask(ptr, event)						\
@@ -1919,6 +1922,44 @@ UpdateScrollMethods (DeviceInfo *info, int deviceid)
 }
 
 static void
+UpdateScrollPixelDistance (DeviceInfo *info, int deviceid)
+{
+  unsigned char *data;
+  Status rc;
+  Atom actual_type;
+  int actual_format;
+  unsigned long nitems, bytes_after;
+
+  data = NULL;
+
+  /* This only works with the libinput driver.  */
+  rc = XIGetProperty (compositor.display, deviceid,
+		      libinput_Scrolling_Pixel_Distance,
+		      0, 1, False, XIAnyPropertyType,
+		      &actual_type, &actual_format,
+		      &nitems, &bytes_after, &data);
+
+  /* If there aren't enough items in the data, or the format is wrong,
+     return.  */
+  if (rc != Success || nitems < 1 || actual_format != 32 || !data)
+    {
+      if (data)
+	XFree (data);
+
+      /* Set the distance to the default, 15.  */
+      info->scroll_pixel_distance = 15;
+
+      return;
+    }
+
+  /* Now set the scroll pixel distance.  */
+  info->scroll_pixel_distance = ((long *) data)[0];
+
+  /* And free the data.  */
+  XLFree (data);
+}
+
+static void
 RecordDeviceInformation (XIDeviceInfo *deviceinfo)
 {
   DeviceInfo *info;
@@ -1945,6 +1986,10 @@ RecordDeviceInformation (XIDeviceInfo *deviceinfo)
 	 to compute what scroll methods are available.  This naturally
 	 only works with the libinput driver.  */
       UpdateScrollMethods (info, deviceinfo->deviceid);
+
+      /* Obtain the "libinput Scrolling Pixel Distance" property and
+	 use it if available.  If not, default to 15.  */
+      UpdateScrollPixelDistance (info, deviceinfo->deviceid);
 
       /* Uncatch errors.  */
       UncatchXErrors (NULL);
@@ -2602,6 +2647,9 @@ HandlePropertyChanged (XIPropertyEvent *event)
     /* Update scroll methods for the device whose property
        changed.  */
     UpdateScrollMethods (info, event->deviceid);
+  else if (event->property == libinput_Scrolling_Pixel_Distance)
+    /* Update the scroll pixel distance.  */
+    UpdateScrollPixelDistance (info, event->deviceid);
 }
 
 static Seat *
@@ -3705,15 +3753,21 @@ FindScrollValuator (Seat *seat, int number)
 }
 
 static void
-InterpolateAxes (Surface *surface, double movement_x,
-		 double movement_y, double *x_out,
-		 double *y_out)
+InterpolateAxes (Surface *surface, DeviceInfo *info,
+		 double movement_x, double movement_y,
+		 double *x_out, double *y_out)
 {
-  /* This is the algorithm used by most programs.  */
-  *x_out = movement_x * pow (ViewWidth (surface->view),
-			     2.0 / 3.0);
-  *x_out = movement_y * pow (ViewHeight (surface->view),
-			     2.0 / 3.0);
+  if (!info)
+    {
+      /* Multiply the deltas by 15 if no device was found.  */
+      *x_out = movement_x * 15;
+      *y_out = movement_y * 15;
+    }
+
+  /* Multiply these deltas by the scrolling pixel distance to obtain
+     the original delta.  */
+  *x_out = movement_x * info->scroll_pixel_distance;
+  *y_out = movement_y * info->scroll_pixel_distance;
 }
 
 static void
@@ -3749,12 +3803,14 @@ SendScrollAxis (Seat *seat, Surface *surface, Time time,
       if (wl_resource_get_version (pointer->resource) < 8
 	  /* Send pixel-wise axis events from devices that are most
 	     likely touchpads.  */
-	  || (deviceinfo->flags & DeviceCanFingerScroll
-	      || deviceinfo->flags & DeviceCanEdgeScroll))
+	  || (deviceinfo
+	      && (deviceinfo->flags & DeviceCanFingerScroll
+		  || deviceinfo->flags & DeviceCanEdgeScroll)))
 	{
 	  /* Interpolate the increment-relative axis values to pixel
 	     values.  */
-	  InterpolateAxes (surface, axis_x, axis_y, &axis_x, &axis_y);
+	  InterpolateAxes (surface, deviceinfo, axis_x, axis_y,
+			   &axis_x, &axis_y);
 
 	  if (axis_x != 0.0)
 	    wl_pointer_send_axis (pointer->resource, time,
@@ -3774,12 +3830,12 @@ SendScrollAxis (Seat *seat, Surface *surface, Time time,
 	  if (axis_x != 0.0)
 	    wl_pointer_send_axis_value120 (pointer->resource,
 					   WL_POINTER_AXIS_HORIZONTAL_SCROLL,
-					   axis_x * 12);
+					   axis_x * 120);
 
 	  if (axis_y != 0.0)
 	    wl_pointer_send_axis_value120 (pointer->resource,
 					   WL_POINTER_AXIS_VERTICAL_SCROLL,
-					   axis_y * 12);
+					   axis_y * 120);
 	}
 
       if (axis_y == 0.0 && axis_x == 0.0)
@@ -3862,8 +3918,8 @@ HandleValuatorMotion (Seat *seat, Surface *dispatch, double x, double y,
     }
 
   if (value && dispatch)
-    SendScrollAxis (seat, dispatch, event->time, x, y,
-		    total_x * 10, total_y * 10, flags,
+    SendScrollAxis (seat, dispatch, event->time, x, y, total_x,
+		    total_y, flags,
 		    /* Also pass the event source device ID, which is
 		       used in an attempt to determine the axis
 		       source.  */
