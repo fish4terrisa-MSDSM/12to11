@@ -36,6 +36,7 @@ enum
     StatePendingGrab	 = (1 << 2),
     StatePendingPosition = (1 << 3),
     StateAckPosition     = (1 << 4),
+    StateIsTopmost	 = (1 << 5),
   };
 
 struct _PropMotifWmHints
@@ -224,6 +225,40 @@ RevertGrabTo (XdgPopup *popup, Role *parent_role)
 }
 
 static void
+RevertTopmostTo (Role *parent_role)
+{
+  XdgPopup *parent;
+  XdgRoleImplementation *impl;
+
+  impl = XLImplementationOfXdgRole (parent_role);
+
+  if (!impl || XLTypeOfXdgRole (parent_role) != TypePopup)
+    return;
+
+  parent = PopupFromRoleImpl (impl);
+
+  /* Now, make the parent the topmost popup again.  This is done
+     outside RevertGrabTo because it is valid to destroy an unmapped
+     topmost popup.  */
+  parent->state |= StateIsTopmost;
+}
+
+static void
+ClearTopmostOf (Role *parent_role)
+{
+  XdgPopup *parent;
+  XdgRoleImplementation *impl;
+
+  impl = XLImplementationOfXdgRole (parent_role);
+
+  if (!impl || XLTypeOfXdgRole (parent_role) != TypePopup)
+    return;
+
+  parent = PopupFromRoleImpl (impl);
+  parent->state &= ~StateIsTopmost;
+}
+  
+static void
 Detach (Role *role, XdgRoleImplementation *impl)
 {
   XdgPopup *popup;
@@ -231,11 +266,18 @@ Detach (Role *role, XdgRoleImplementation *impl)
 
   popup = PopupFromRoleImpl (impl);
 
-  /* Detaching the popup means that it will be destroyed soon.  Revert
-     the grab to the parent and unmap it.  */
+  if (popup->parent)
+    {
+      if (popup->state & StateIsGrabbed
+	  || popup->state & StatePendingGrab)
+	RevertTopmostTo (popup->parent);
 
-  if (popup->state & StateIsGrabbed)
-    RevertGrabTo (popup, popup->parent);
+      /* Detaching the popup means that it will be destroyed soon.
+	 Revert the grab to the parent and unmap it.  */
+
+      if (popup->state & StateIsGrabbed)
+	RevertGrabTo (popup, popup->parent);
+    }
 
   if (popup->state & StateIsMapped)
     Unmap (popup);
@@ -537,7 +579,8 @@ Dismiss (XdgPopup *popup, Bool do_parents)
   XdgRoleImplementation *impl;
   XdgPopup *parent;
 
-  if (popup->state & StateIsGrabbed)
+  if (popup->state & StateIsGrabbed
+      && popup->parent)
     RevertGrabTo (popup, popup->parent);
 
   if (popup->state & StateIsMapped)
@@ -591,6 +634,14 @@ RecordGrabPending (XdgPopup *popup, Seat *seat, uint32_t serial)
       popup->pending_grab_seat = seat;
       popup->pending_grab_serial = serial;
 
+      /* This popup is now the topmost popup.  */
+      popup->state |= StateIsTopmost;
+
+      /* If the parent is also a popup, then it is no longer the
+	 topmost popup.  */
+      if (popup->parent)
+	ClearTopmostOf (popup->parent);
+
       popup->state |= StatePendingGrab;
     }
 }
@@ -635,6 +686,23 @@ Reposition (struct wl_client *client, struct wl_resource *resource,
   InternalReposition (popup);
 }
 
+static Bool
+CanDestroyPopup (XdgPopup *popup)
+{
+  if (popup->state & StateIsTopmost)
+    /* This is the topmost popup and can be destroyed.  */
+    return True;
+
+  if (!(popup->state & StateIsGrabbed)
+      && !(popup->state & StatePendingGrab))
+    /* This popup is not grabbed.  */
+    return True;
+
+  /* Otherwise, this popup cannot be destroyed; it is grabbed, but not
+     the topmost popup.  */
+  return False;
+}
+
 static void
 Destroy (struct wl_client *client, struct wl_resource *resource)
 {
@@ -642,56 +710,16 @@ Destroy (struct wl_client *client, struct wl_resource *resource)
 
   popup = wl_resource_get_user_data (resource);
 
+  if (!CanDestroyPopup (popup))
+    wl_resource_post_error (resource,
+			    XDG_WM_BASE_ERROR_NOT_THE_TOPMOST_POPUP,
+			    "trying to destroy non-topmost popup");
+
   if (popup->role)
     XLXdgRoleDetachImplementation (popup->role,
 				   &popup->impl);
 
   wl_resource_destroy (resource);
-}
-
-static Bool
-MaybeDismissPopup (XIDeviceEvent *xev)
-{
-  XdgRoleImplementation *impl;
-  XdgPopup *popup;
-
-  impl = XLLookUpXdgPopup (xev->event);
-
-  if (!impl)
-    return False;
-
-  popup = PopupFromRoleImpl (impl);
-
-  if (popup->state & StateIsGrabbed)
-    {
-      /* If the popup is grabbed and the click is outside the input
-	 region of the popup, this means a click has happened outside
-	 the client, and the popup should be dismissed.  */
-
-      if (!XLXdgRoleInputRegionContains (popup->role,
-					 lrint (xev->event_x),
-					 lrint (xev->event_y)))
-	{
-	  Dismiss (popup, True);
-	  return True;
-	}
-    }
-
-  return False;
-}
-
-static Bool
-HandleOneGenericEvent (XIEvent *event)
-{
-  switch (event->evtype)
-    {
-    case XI_ButtonRelease:
-    case XI_ButtonPress:
-      return MaybeDismissPopup ((XIDeviceEvent *) event);
-
-    default:
-      return False;
-    }
 }
 
 static Bool
@@ -832,10 +860,6 @@ XLGetXdgPopup (struct wl_client *client, struct wl_resource *resource,
 Bool
 XLHandleXEventForXdgPopups (XEvent *event)
 {
-  if (event->type == GenericEvent
-      && event->xgeneric.extension == xi2_opcode)
-    return HandleOneGenericEvent (event->xcookie.data);
-
   if (event->type == ConfigureNotify)
     return HandleOneConfigureNotify (event);
 
@@ -847,34 +871,4 @@ XLInitPopups (void)
 {
   live_popups.next = &live_popups;
   live_popups.last = &live_popups;
-}
-
-Bool
-XLHandleButtonForXdgPopups (Seat *seat, Surface *dispatch)
-{
-  XdgPopup *popup;
-  Bool rc;
-
-  /* This means a button press happened on dispatch, on seat.  Loop
-     through all grabbed popups.  Dismiss each one whose client is not
-     the same as dispatch.  */
-
-  popup = live_popups.next;
-  rc = False;
-
-  while (popup != &live_popups)
-    {
-      if (popup->state & StateIsGrabbed
-	  && seat == popup->grab_holder
-	  && (wl_resource_get_client (popup->resource)
-	      != wl_resource_get_client (dispatch->resource)))
-	{
-	  Dismiss (popup, True);
-	  rc = True;
-	}
-
-      popup = popup->next;
-    }
-
-  return rc;
 }

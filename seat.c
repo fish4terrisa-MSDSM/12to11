@@ -4268,13 +4268,6 @@ DispatchButton (Subcompositor *subcompositor, XIDeviceEvent *xev)
       return;
     }
 
-  /* Allow popups to be dismissed when the mouse button is released on
-     some other client's window.  */
-  if (XLHandleButtonForXdgPopups (seat, dispatch))
-    /* Ignore the button event that resulted in popup(s) being
-       dismissed.  */
-    return;
-
   /* If dispatching during an active grab, and the event is for the
      wrong client, translate the coordinates to the grab window.  */
   if (!CanDeliverEvents (seat, dispatch))

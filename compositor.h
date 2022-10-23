@@ -1354,7 +1354,6 @@ extern void XLGetXdgPopup (struct wl_client *, struct wl_resource *,
 			   uint32_t, struct wl_resource *,
 			   struct wl_resource *);
 extern Bool XLHandleXEventForXdgPopups (XEvent *);
-extern Bool XLHandleButtonForXdgPopups (Seat *, Surface *);
 extern void XLInitPopups (void);
 
 /* Defined in xerror.c.  */
