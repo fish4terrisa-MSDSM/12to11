@@ -182,6 +182,12 @@ ExistingModifier (BufferParams *params, uint32_t *current_hi,
 {
   int i, count;
 
+  /* Pacify -Wmaybe-uninitialized under -O2.  count is only non-zero
+     if both return arguments are initialized, but GCC thinks
+     otherwise.  */
+  *current_hi = 0;
+  *current_lo = 0;
+
   for (i = 0, count = 0; i < ArrayElements (params->entries); ++i)
     {
       if (params->entries[i].fd != -1)

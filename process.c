@@ -198,11 +198,12 @@ RunNext (ProcessQueue *queue)
 }
 
 static void
-ProcessPendingDescriptions (void)
+ProcessPendingDescriptions (Bool need_block)
 {
   ProcessQueue *queue;
 
-  Block (NULL);
+  if (need_block)
+    Block (NULL);
 
   for (queue = all_queues; queue; queue = queue->next)
     {
@@ -210,7 +211,8 @@ ProcessPendingDescriptions (void)
 	RunNext (queue);
     }
 
-  Unblock ();
+  if (need_block)
+    Unblock ();
 }
 
 static void
@@ -373,7 +375,7 @@ RunProcess (ProcessQueue *queue, char **arguments)
   queue->descriptions.next = desc;
 
   /* Process pending process descriptions.  */
-  ProcessPendingDescriptions ();
+  ProcessPendingDescriptions (True);
 }
 
 ProcessQueue *
@@ -405,7 +407,7 @@ ProcessPoll (struct pollfd *fds, nfds_t nfds,
      be run by ProcessPendingDescriptions.  If it arrives after, then
      ppoll will be interrupted with EINTR.  */
   Block (&oldset);
-  ProcessPendingDescriptions ();
+  ProcessPendingDescriptions (False);
   rc = ppoll (fds, nfds, timeout, &oldset);
   Unblock ();
 

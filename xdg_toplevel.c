@@ -1173,7 +1173,8 @@ Unmap (XdgToplevel *toplevel)
   toplevel->min_width = 0;
   toplevel->min_height = 0;
 
-  memset (&toplevel->state, 0, sizeof toplevel->states);
+  memset (&toplevel->toplevel_state, 0,
+	  sizeof toplevel->toplevel_state);
 
   /* If there is a pending configure timer, remove it.  */
   if (toplevel->configuration_timer)

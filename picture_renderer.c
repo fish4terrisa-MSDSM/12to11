@@ -212,6 +212,9 @@ struct _PictureTarget
 
   /* List of present completion callbacks.  */
   PresentCompletionCallback completion_callbacks;
+
+  /* List of buffers that were used in the course of an update.  */
+  XLList *buffers_used;
 };
 
 struct _DrmFormatInfo
@@ -485,14 +488,10 @@ FindBufferActivityRecord (PictureBuffer *buffer, PictureTarget *target)
 /* Record buffer activity involving the given buffer and target.  */
 
 static void
-RecordBufferActivity (RenderBuffer src, RenderTarget dest)
+RecordBufferActivity (PictureBuffer *buffer, PictureTarget *target,
+		      uint64_t roundtrip_id)
 {
   BufferActivityRecord *record;
-  PictureBuffer *buffer;
-  PictureTarget *target;
-
-  buffer = src.pointer;
-  target = dest.pointer;
 
   /* Try to find an existing record.  */
   record = FindBufferActivityRecord (buffer, target);
@@ -531,7 +530,7 @@ RecordBufferActivity (RenderBuffer src, RenderTarget dest)
       record->target = target;
     }
 
-  record->id = SendRoundtripMessage ();
+  record->id = roundtrip_id;
 }
 
 static void
@@ -614,33 +613,29 @@ UnlinkActivityRecord (BufferActivityRecord *record)
 static void
 HandleActivityEvent (uint64_t counter)
 {
-  BufferActivityRecord *record;
+  BufferActivityRecord *record, *last;
 
   /* Look through the global activity list for a record matching
      counter.  */
   record = all_activity.global_next;
   while (record != &all_activity)
     {
-      if (record->id == counter)
-	break;
-
+      last = record;
       record = record->global_next;
+
+      if (last->id == counter)
+	{
+	  /* Remove the record.  Then, run any callbacks pertaining to
+	     it.  This code mandates that there only be a single
+	     activity record for each buffer-target combination on the
+	     global list at any given time.  */
+	  UnlinkActivityRecord (last);
+	  MaybeRunIdleCallbacks (last->buffer, last->target);
+
+	  /* Free the record.  */
+	  XLFree (last);
+	}
     }
-
-  /* If record is all_activity (meaning no matching record was found),
-     return.  */
-  if (record == &all_activity)
-    return;
-
-  /* Remove the record.  Then, run any callbacks pertaining to it.
-     This code mandates that there only be a single activity record
-     for each buffer-target combination on the global list at any
-     given time.  */
-  UnlinkActivityRecord (record);
-  MaybeRunIdleCallbacks (record->buffer, record->target);
-
-  /* Free the record.  */
-  XLFree (record);
 }
 
 
@@ -916,6 +911,10 @@ DestroyRenderTarget (RenderTarget target)
 
   pict_target = target.pointer;
 
+  /* Assert that there are no more buffers left in the active buffer
+     list.  */
+  XLAssert (pict_target->buffers_used == NULL);
+
   if (pict_target->presentation_window)
     {
       XPresentFreeInput (compositor.display,
@@ -993,6 +992,9 @@ FillBoxesWithTransparency (RenderTarget target, pixman_box32_t *boxes,
     rects = alloca (sizeof *rects * nboxes);
   else
     rects = XLMalloc (sizeof *rects * nboxes);
+
+  /* Pacify GCC.  */
+  memset (rects, 0, sizeof *rects * nboxes);
 
   for (i = 0; i < nboxes; ++i)
     {
@@ -1189,8 +1191,41 @@ Composite (RenderBuffer buffer, RenderTarget target,
 		    /* dst-x, dst-y, width, height.  */
 		    x, y, width, height);
 
-  /* Record pending buffer activity.  */
-  RecordBufferActivity (buffer, target);
+  /* Record pending buffer activity; the roundtrip message is then
+     sent later.  */
+  picture_target->buffers_used
+    = XLListPrepend (picture_target->buffers_used, picture_buffer);
+}
+
+static void
+FinishRender (RenderTarget target, pixman_region32_t *damage)
+{
+  XLList *tem, *last;
+  PictureTarget *pict_target;
+  uint64_t roundtrip_id;
+
+  /* Finish rendering.  This function then sends a single roundtrip
+     message and records buffer activity for each buffer involved in
+     the update based on that.  */
+
+  roundtrip_id = SendRoundtripMessage ();
+  pict_target = target.pointer;
+  tem = pict_target->buffers_used;
+  while (tem)
+    {
+      last = tem;
+      tem = tem->next;
+
+      /* Record buffer activity on this one buffer.  */
+      RecordBufferActivity (last->data, pict_target,
+			    roundtrip_id);
+
+      /* Free the list element.  */
+      XLFree (last);
+    }
+
+  /* Clear buffers_used.  */
+  pict_target->buffers_used = NULL;
 }
 
 static int
@@ -1449,6 +1484,7 @@ static RenderFuncs picture_render_funcs =
     .fill_boxes_with_transparency = FillBoxesWithTransparency,
     .clear_rectangle = ClearRectangle,
     .composite = Composite,
+    .finish_render = FinishRender,
     .target_age = TargetAge,
     .import_fd_fence = ImportFdFence,
     .wait_fence = WaitFence,

@@ -1071,8 +1071,7 @@ struct _RoleFuncs
 
   /* These are optional.  */
   Bool (*early_commit) (Surface *, Role *);
-  Bool (*subframe) (Surface *, Role *);
-  void (*end_subframe) (Surface *, Role *);
+  void (*subsurface_update) (Surface *, Role *);
   Window (*get_window) (Surface *, Role *);
   void (*get_resize_dimensions) (Surface *, Role *, int *, int *);
   void (*post_resize) (Surface *, Role *, int, int, int, int);

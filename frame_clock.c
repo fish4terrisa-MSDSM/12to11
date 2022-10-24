@@ -30,10 +30,6 @@ enum
   {
     /* 150ms.  */
     MaxPresentationAge	  = 150000,
-    /* 5000 microseconds.  This arbitrary value is the longest it
-       normally takes for a sync counter update to be processed by the
-       compositor.  */
-    PresentationThreshold = 5000,
   };
 
 /* Whether or not the compositor supports frame synchronization.  */
@@ -74,16 +70,44 @@ struct _FrameClock
      and the value of the last frame that was marked as complete.  */
   uint64_t next_frame_id, finished_frame_id;
 
-  /* Whether or not we are waiting for a frame to be completely
-     painted.  */
-  Bool in_frame;
-
   /* A timer used as a fake synchronization source if frame
      synchronization is not supported.  */
   Timer *static_frame_timer;
 
   /* A timer used to end the next frame.  */
   Timer *end_frame_timer;
+
+    /* Callback run when the frame is frozen.  */
+  void (*freeze_callback) (void *);
+
+  /* Data for that callback.  */
+  void *freeze_callback_data;
+
+  /* The wanted configure value.  */
+  uint64_t configure_id;
+
+  /* The time the last frame was drawn.  */
+  uint64_t last_frame_time;
+
+  /* Any pending frame synchronization counter value, or 0.  */
+  uint64_t pending_sync_value;
+
+  /* The last frame drawn for whom a _NET_WM_FRAME_TIMINGS message has
+     not yet arrived.  */
+  uint64_t frame_timings_id;
+
+  /* The time the frame at frame_timings_id was drawn.  Used to
+     compute the presentation time.  */
+  uint64_t frame_timings_drawn_time;
+
+  /* The last known presentation time.  */
+  uint64_t last_presentation_time;
+
+  /* The refresh interval.  */
+  uint32_t refresh_interval;
+
+  /* The delay between the start of vblank and the redraw point.  */
+  uint32_t frame_delay;
 
   /* Whether or not configury is in progress, and whether or not this
      is frozen, and whether or not the frame shouldn't actually be
@@ -93,30 +117,13 @@ struct _FrameClock
   /* Whether or not EndFrame was called after StartFrame.  */
   Bool end_frame_called;
 
-  /* The wanted configure value.  */
-  uint64_t configure_id;
-
-  /* The time the last frame was drawn.  */
-  uint64_t last_frame_time;
-
-  /* The presentation time.  */
-  int32_t presentation_time;
-
-  /* The refresh interval.  */
-  uint32_t refresh_interval;
+  /* Whether or not we are waiting for a frame to be completely
+     painted.  */
+  Bool in_frame;
 
   /* Whether or not this frame clock should try to predict
      presentation times, in order to group frames together.  */
   Bool predict_refresh;
-
-  /* Callback run when the frame is frozen.  */
-  void (*freeze_callback) (void *);
-
-  /* Data for that callback.  */
-  void *freeze_callback_data;
-
-  /* Any pending frame synchronization counter value, or 0.  */
-  uint64_t pending_sync_value;
 };
 
 struct _CursorClockCallback
@@ -283,17 +290,20 @@ PostEndFrame (FrameClock *clock)
   XLAssert (clock->end_frame_timer == NULL);
 
   if (!clock->refresh_interval
-      || !clock->presentation_time)
+      || !clock->last_presentation_time)
     return;
 
   /* Obtain the monotonic clock time.  */
   clock_gettime (CLOCK_MONOTONIC, &current_time);
 
-  /* Calculate the time by which the next frame must be drawn.  It is
-     a multiple of the refresh rate with the vertical blanking
-     period added.  */
-  target = clock->last_frame_time + clock->presentation_time;
+  /* target is now the time the last frame was presented.  This is the
+     end of a vertical blanking period. */
+  target = clock->last_presentation_time;
+
+  /* now is the current time.  */
   now = HighPrecisionTimestamp (&current_time);
+
+  /* There is no additional offset to add to the time.  */
   additional = 0;
 
   /* If now is more than UINT32_MAX * 1000, then this timestamp may
@@ -313,9 +323,9 @@ PostEndFrame (FrameClock *clock)
 
   /* If the last time the frame time was obtained was that long ago,
      return immediately.  */
-  if (now - clock->last_frame_time >= MaxPresentationAge)
+  if (now - clock->last_presentation_time >= MaxPresentationAge)
     {
-      if ((fallback - clock->last_frame_time) <= MaxPresentationAge)
+      if ((fallback - clock->last_presentation_time) <= MaxPresentationAge)
 	{
 	  /* Some compositors wrap around once the X server time
 	     overflows the 32-bit Time type.  If now happens to be
@@ -331,23 +341,21 @@ PostEndFrame (FrameClock *clock)
 	return;
     }
 
+  /* Keep adding the refresh interval until target becomes the
+     presentation time of a frame in the future.  */
+
   while (target < now)
     {
       if (IntAddWrapv (target, clock->refresh_interval, &target))
 	return;
     }
 
-  /* Use 5000 microseconds before the presentation time, or 3/4th of
-     it if it is less than 5000.  Any more and we risk the counter
-     value change signalling the end of the frame arriving after the
-     presentation deadline.  */
-  if (clock->presentation_time > PresentationThreshold)
-    target = target - (clock->presentation_time - PresentationThreshold);
-  else
-    /* However, if the presentation time is less than 5000
-       microseconds, use 3/4ths of it.  This computation seems to be a
-       good enough fallback.  */
-    target = target - (clock->presentation_time / 4 * 3);
+  /* The vertical blanking period itself can't actually be computed
+     based on available data.  However, frame_delay must be inside the
+     vertical blanking period for it to make any sense, so use it to
+     compute the deadline instead.  Add about 100 us to the frame
+     delay to compensate for the roundtrip time.  */
+  target -= clock->frame_delay - 100;
 
   /* Add the remainder of now if it was probably truncated by the
      compositor.  */
@@ -627,22 +635,52 @@ XLFrameClockHandleFrameEvent (FrameClock *clock, XEvent *event)
 	  /* Run any frame callbacks, since drawing has finished.  */
 	  clock->in_frame = False;
 	  RunFrameCallbacks (clock);
+
+	  if (clock->frame_timings_id == -1)
+	    {
+	      /* Wait for the frame's presentation time to arrive,
+		 unless we are already waiting on a previous
+		 frame.  */
+	      clock->frame_timings_id = value;
+
+	      /* Also save the frame drawn time.  */
+	      clock->frame_timings_drawn_time = clock->last_frame_time;
+	    }
 	}
     }
 
   if (event->xclient.message_type == _NET_WM_FRAME_TIMINGS)
     {
+      /* Check that the frame timings are up to date.  */
+      low = event->xclient.data.l[0] & 0xffffffff;
+      high = event->xclient.data.l[1] & 0xffffffff;
+      value = low | (high << 32);
+
+      if (value != clock->frame_timings_id)
+	/* They are not.  */
+	return;
+
+      /* The timings message has arrived, so clear
+	 frame_timings_id.  */
+      clock->frame_timings_id = -1;
+
+      /* And set the last known presentation time.  */
+      clock->last_presentation_time = (clock->frame_timings_drawn_time
+				       + event->xclient.data.l[2]);
+
       /* Save the presentation time and refresh interval.  There is no
 	 need to mask these values, since they are being put into
 	 (u)int32_t.  */
-      clock->presentation_time = event->xclient.data.l[2];
       clock->refresh_interval = event->xclient.data.l[3];
+      clock->frame_delay = event->xclient.data.l[4];
 
-      if (clock->refresh_interval & (1U << 31))
+      if (clock->refresh_interval & (1U << 31)
+	  || clock->frame_delay == 0x80000000)
 	{
 	  /* This means frame timing information is unavailable.  */
-	  clock->presentation_time = 0;
 	  clock->refresh_interval = 0;
+	  clock->frame_delay = 0;
+	  clock->last_presentation_time = 0;
 	}
     }
 
@@ -701,6 +739,9 @@ XLMakeFrameClockForWindow (Window window)
 
   clock = XLCalloc (1, sizeof *clock);
   clock->next_frame_id = 0;
+
+  /* Set this to an invalid value.  */
+  clock->frame_timings_id = -1;
 
   XLOutputGetMinRefresh (&default_refresh_rate);
 

@@ -818,20 +818,10 @@ HandleScaleChanged (void *data, int new_scale)
      attached.  */
   subcompositor = ViewGetSubcompositor (surface->view);
 
-  if (subcompositor)
-    {
-      /* When updating stuff out-of-band, a subframe must be started
-	 around the update.  */
-
-      if (surface->role && surface->role->funcs.subframe
-	  && surface->role->funcs.subframe (surface, surface->role))
-	{
-	  SubcompositorUpdate (subcompositor);
-
-	  if (surface->role && surface->role->funcs.end_subframe)
-	    surface->role->funcs.end_subframe (surface, surface->role);
-	}
-    }
+  if (subcompositor
+      && surface->role
+      && surface->role->funcs.subsurface_update)
+    surface->role->funcs.subsurface_update (surface, surface->role);
 
   /* The scale has changed, so pointer confinement must be redone.  */
   XLPointerConstraintsReconfineSurface (surface);

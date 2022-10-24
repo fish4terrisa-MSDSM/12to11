@@ -342,8 +342,8 @@ Commit (Surface *surface, Role *role)
     MaybeUnmapWindow (icon);
 }
 
-static Bool
-Subframe (Surface *surface, Role *role)
+static void
+SubsurfaceUpdate (Surface *surface, Role *role)
 {
   IconSurface *icon;
 
@@ -354,20 +354,12 @@ Subframe (Surface *surface, Role *role)
       /* A frame is already in progress; schedule another one for
 	 later.  */
       icon->state |= StateLateFrame;
-      return False;
+      return;
     }
 
   /* I guess subsurface updates don't count as urgent frames?  */
   XLFrameClockStartFrame (icon->clock, False);
-  return True;
-}
-
-static void
-EndSubframe (Surface *surface, Role *role)
-{
-  IconSurface *icon;
-
-  icon = IconSurfaceFromRole (role);
+  SubcompositorUpdate (icon->subcompositor);
   XLFrameClockEndFrame (icon->clock);
 }
 
@@ -394,8 +386,7 @@ XLGetIconSurface (Surface *surface)
   role->role.funcs.teardown = Teardown;
   role->role.funcs.setup = Setup;
   role->role.funcs.release_buffer = ReleaseBuffer;
-  role->role.funcs.subframe = Subframe;
-  role->role.funcs.end_subframe = EndSubframe;
+  role->role.funcs.subsurface_update = SubsurfaceUpdate;
   role->role.funcs.get_window = GetWindow;
 
   /* Make an override-redirect window to use as the icon surface.  */

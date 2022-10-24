@@ -472,6 +472,9 @@ struct _Seat
   /* The time of the last key event sent.  */
   Time its_depress_time;
 
+  /* The name of the seat.  */
+  char *name;
+
   /* The grab surface.  While it exists, events for different clients
      will be reported relative to it.  */
   Surface *grab_surface;
@@ -583,12 +586,6 @@ struct _DeviceInfo
 static TextInputFuncs *input_funcs;
 
 #define CursorFromRole(role)	((SeatCursor *) (role))
-
-/* Subcompositor targets used inside cursor subframes.  */
-static RenderTarget cursor_subframe_target;
-
-/* Its associated pixmap.  */
-static Pixmap cursor_subframe_pixmap;
 
 
 
@@ -1037,6 +1034,7 @@ ReleaseSeat (Seat *seat)
   FreeDestroyListeners (seat);
   FreeModifierCallbacks (seat);
 
+  XLFree (seat->name);
   XLFree (seat->key_pressed);
   XLFree (seat);
 }
@@ -1277,120 +1275,16 @@ ReleaseBuffer (Surface *surface, Role *role, ExtBuffer *buffer)
   XLReleaseBuffer (buffer);
 }
 
-static Bool
-Subframe (Surface *surface, Role *role)
-{
-  RenderTarget target;
-  Pixmap pixmap;
-  int min_x, min_y, max_x, max_y, width, height, x, y;
-  int index;
-  Bool need_clear;
-  SeatCursor *cursor;
-
-  cursor = CursorFromRole (role);
-
-  if (SubcompositorIsEmpty (cursor->subcompositor))
-    /* The subcompositor is empty.  Don't set up the cursor
-       pixmap.  */
-    return False;
-
-  /* First, compute the bounds of the subcompositor.  */
-  SubcompositorBounds (cursor->subcompositor,
-		       &min_x, &min_y, &max_x, &max_y);
-
-  /* Then, its width and height.  */
-  width = max_x - min_x + 1;
-  height = max_y - min_y + 1;
-
-  /* If the cursor hotspot extends outside width and height, extend
-     the picture.  */
-  ComputeHotspot (cursor, min_x, min_y, &x, &y);
-
-  if (x < 0 || y < 0 || x >= width || y >= height)
-    {
-      if (x >= width)
-	width = x;
-      if (y >= width)
-	height = y;
-
-      if (x < 0)
-	width += -x;
-      if (y < 0)
-	height += -y;
-
-      need_clear = True;
-    }
-  else
-    need_clear = False;
-
-  if (cursor->cursor_ring)
-    /* If the width or height of the cursor ring changed, resize its
-       contents.  */
-    ResizeCursorRing (cursor->cursor_ring, width, height);
-  else
-    /* Otherwise, there is not yet a cursor ring.  Create one.  */
-    cursor->cursor_ring = MakeCursorRing (width, height);
-
-  /* Get an unused cursor from the cursor ring.  */
-  index = GetUnusedCursor (cursor->cursor_ring);
-  XLAssert (index != CursorRingBusy);
-
-  /* Set it as the cursor being used.  */
-  cursor->cursor_ring->used = index;
-
-  /* Get the target and pixmap.  */
-  target = cursor->cursor_ring->targets[index];
-  pixmap = cursor->cursor_ring->pixmaps[index];
-
-  /* If the bounds extend beyond the subcompositor, clear the
-     picture.  */
-  if (need_clear)
-    RenderClearRectangle (target, 0, 0, width, height);
-
-  /* Garbage the subcompositor, since cursor contents are not
-     preserved.  */
-  SubcompositorGarbage (cursor->subcompositor);
-
-  /* Set the right transform if the hotspot is negative.  */
-  SubcompositorSetProjectiveTransform (cursor->subcompositor,
-				       MAX (0, -x), MAX (0, -x));
-
-  /* Attach the rendering target.  */
-  SubcompositorSetTarget (cursor->subcompositor, &target);
-
-  /* Set the subframe target and pixmap to the target and pixmap in
-     use.  */
-  cursor_subframe_target = target;
-  cursor_subframe_pixmap = pixmap;
-
-  /* Return True to let the drawing proceed.  */
-  return True;
-}
-
 static void
-EndSubframe (Surface *surface, Role *role)
+SubsurfaceUpdate (Surface *surface, Role *role)
 {
   SeatCursor *cursor;
-  int min_x, min_y, max_x, max_y;
 
   cursor = CursorFromRole (role);
 
-  if (cursor_subframe_pixmap != None)
-    {
-      /* First, compute the bounds of the subcompositor.  */
-      SubcompositorBounds (cursor->subcompositor,
-			   &min_x, &min_y, &max_x, &max_y);
-
-      /* Apply the cursor.  */
-      ApplyCursor (cursor, cursor_subframe_target, min_x, min_y);
-
-      /* Finally, clear the target.  */
-      SubcompositorSetTarget (cursor->subcompositor, NULL);
-    }
-  else
-    ApplyEmptyCursor (cursor);
-
-  cursor_subframe_pixmap = None;
+  /* A desync subsurface's contents changed.  Update the cursor
+     again.  */
+  UpdateCursorFromSubcompositor (cursor);
 }
 
 static void
@@ -1422,8 +1316,7 @@ MakeCurrentCursor (Seat *seat, Surface *surface, int x, int y)
   role->role.funcs.teardown = Teardown;
   role->role.funcs.setup = Setup;
   role->role.funcs.release_buffer = ReleaseBuffer;
-  role->role.funcs.subframe = Subframe;
-  role->role.funcs.end_subframe = EndSubframe;
+  role->role.funcs.subsurface_update = SubsurfaceUpdate;
 
   /* Set up the subcompositor.  */
 
@@ -1759,8 +1652,6 @@ HandleBind (struct wl_client *client, void *data,
 	    uint32_t version, uint32_t id)
 {
   struct wl_resource *resource;
-  char *name;
-  size_t length;
   Seat *seat;
 
   seat = data;
@@ -1779,14 +1670,8 @@ HandleBind (struct wl_client *client, void *data,
   wl_seat_send_capabilities (resource, (WL_SEAT_CAPABILITY_POINTER
 					| WL_SEAT_CAPABILITY_KEYBOARD));
 
-  length = snprintf (NULL, 0, "X11 master device %d %d",
-		     seat->master_pointer, seat->master_keyboard);
-  name = alloca (length + 1);
-  snprintf (name, length + 1, "X11 master device %d %d",
-	    seat->master_pointer, seat->master_keyboard);
-
   if (wl_resource_get_version (resource) > 2)
-    wl_seat_send_name (resource, name);
+    wl_seat_send_name (resource, seat->name);
 
   RetainSeat (data);
 }
@@ -1835,6 +1720,7 @@ MakeSeatForDevicePair (int master_keyboard, int master_pointer,
   seat = XLCalloc (1, sizeof *seat);
   seat->master_keyboard = master_keyboard;
   seat->master_pointer = master_pointer;
+  seat->name = XLStrdup (pointer_info->name);
   seat->global = wl_global_create (compositor.wl_display,
 				   &wl_seat_interface, 8,
 				   seat, HandleBind);
@@ -4852,6 +4738,9 @@ StartResizeTracking (Seat *seat, Surface *surface, uint32_t serial,
 		     ResizeEdge edge)
 {
   WhatEdge type;
+
+  /* Seat cannot be NULL here, but -Wanalyzer disagrees.  */
+  XLAssert (seat != NULL);
 
   if (seat != IdentifySeat (&type, serial))
     return False;

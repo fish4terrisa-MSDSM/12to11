@@ -630,6 +630,33 @@ IsRoleMapped (XdgRole *role)
 					     role->impl);
 }
 
+/* Check if a frame can be drawn.  Return True if it is okay to call
+   SubcompositorUpdate, or schedule a frame after the current frame is
+   drawn and return False.  */
+
+static Bool
+CheckFrame (XdgRole *role)
+{
+  if (XLFrameClockFrameInProgress (role->clock))
+    {
+      if (XLFrameClockCanBatch (role->clock))
+	/* But if we can squeeze the frame inside the vertical
+	   blanking period, or a frame is in progress but EndFrame has
+	   not yet been called, go ahead.  */
+	return True;
+
+      role->state |= StateLateFrame;
+      role->state &= ~StatePendingFrameCallback;
+
+      if (role->state & StateWaitingForAckConfigure)
+	role->state &= ~StateLateFrameAcked;
+
+      return False;
+    }
+
+  return True;
+}
+
 static void
 Commit (Surface *surface, Role *role)
 {
@@ -682,42 +709,21 @@ Commit (Surface *surface, Role *role)
       xdg_role->state &= ~StateWaitingForAckCommit;
     }
 
-  /* If the window is unmapped, skip all of this code!  Once the
-     window is mapped again, the compositor will send _NET_FRAME_DRAWN
-     should a frame still be in progress.  */
-  if (!IsRoleMapped (xdg_role))
-    goto start_drawing;
-
   /* If the frame clock is frozen but we are no longer waiting for the
      configure event to be acknowledged by the client, unfreeze the
      frame clock.  */
   if (!(xdg_role->state & StateWaitingForAckConfigure))
     Unfreeze (xdg_role);
 
-  /* A frame is already in progress, so instead say that an urgent
-     update is needed immediately after the frame completes.  In any
-     case, don't run frame callbacks upon buffer release anymore.  */
-  if (XLFrameClockFrameInProgress (xdg_role->clock))
-    {
-      if (XLFrameClockCanBatch (xdg_role->clock))
-	/* But if we can squeeze the frame inside the vertical
-	   blanking period, or a frame is in progress but EndFrame has
-	   not yet been called, go ahead.  */
-	goto start_drawing;
+  /* Now, check if a frame can be drawn, or schedule a frame to be
+     drawn after this one completes.  */
 
-      xdg_role->state |= StateLateFrame;
-      xdg_role->state &= ~StatePendingFrameCallback;
+  if (!CheckFrame (xdg_role))
+    /* The frame cannot be drawn, because the compositor has not yet
+       drawn a previous frame.  */
+    return;
 
-      if (xdg_role->state & StateWaitingForAckConfigure)
-	xdg_role->state &= ~StateLateFrameAcked;
-      else
-	xdg_role->state |= StateLateFrameAcked;
-
-      return;
-    }
-
- start_drawing:
-
+  /* The frame can be drawn, so update the window contents now.  */
   SubcompositorUpdate (xdg_role->subcompositor);
 
   /* Do not end frames explicitly.  Instead, wait for the
@@ -871,52 +877,26 @@ ReleaseBuffer (Surface *surface, Role *role, ExtBuffer *buffer)
     }
 }
 
-static Bool
-Subframe (Surface *surface, Role *role)
+static void
+SubsurfaceUpdate (Surface *surface, Role *role)
 {
   XdgRole *xdg_role;
 
   xdg_role = XdgRoleFromRole (role);
 
-  /* If the frame clock is frozen, return False.  */
+  /* If the frame clock is frozen, don't update anything.  */
   if (XLFrameClockIsFrozen (xdg_role->clock))
-    {
-      /* However, run frame callbacks.  */
-      RunFrameCallbacksConditionally (xdg_role);
-      return False;
-    }
+    return;
 
-  /* Similarly, return False if the role is unmapped.  */
-  if (!IsRoleMapped (xdg_role))
-    return False;
+  /* If a frame is already in progress, return, but schedule a frame
+     to be drawn later.  */
 
-  /* If a frame is already in progress, return False.  Then, require a
-     late frame.  */
-  if (XLFrameClockFrameInProgress (xdg_role->clock))
-    {
-      if (XLFrameClockCanBatch (xdg_role->clock))
-	/* But if we can squeeze the frame inside the vertical
-	   blanking period, or a frame is in progress but EndFrame has
-	   not yet been called, go ahead.  */
-	return True;
+  if (!CheckFrame (xdg_role))
+    /* The frame cannot be drawn.  */
+    return;
 
-      xdg_role->state |= StateLateFrame;
-      xdg_role->state &= ~StatePendingFrameCallback;
-
-      if (xdg_role->state & StateWaitingForAckConfigure)
-	xdg_role->state &= ~StateLateFrameAcked;
-
-      return False;
-    }
-
-  return True;
-}
-
-static void
-EndSubframe (Surface *surface, Role *role)
-{
-  /* Don't end the frame here; instead, wait for the frame callback to
-     note that drawing the frame has finished.  */
+  /* The frame can be drawn, so update the window contents.  */
+  SubcompositorUpdate (xdg_role->subcompositor);
 }
 
 static Window
@@ -1573,8 +1553,7 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
   role->role.funcs.teardown = Teardown;
   role->role.funcs.setup = Setup;
   role->role.funcs.release_buffer = ReleaseBuffer;
-  role->role.funcs.subframe = Subframe;
-  role->role.funcs.end_subframe = EndSubframe;
+  role->role.funcs.subsurface_update = SubsurfaceUpdate;
   role->role.funcs.get_window = GetWindow;
   role->role.funcs.get_resize_dimensions = GetResizeDimensions;
   role->role.funcs.post_resize = PostResize;

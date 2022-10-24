@@ -593,6 +593,8 @@ RebalanceBusfault (Busfault **tree)
 	    RotateLeft (tree);
 	  else
 	    {
+	      XLAssert ((*tree)->left->right != NULL);
+
 	      RotateRight (&(*tree)->left);
 	      RotateLeft (tree);
 	    }
@@ -611,6 +613,8 @@ RebalanceBusfault (Busfault **tree)
 	    RotateRight (tree);
 	  else
 	    {
+	      XLAssert ((*tree)->right->left != NULL);
+
 	      RotateLeft (&(*tree)->right);
 	      RotateRight (tree);
 	    }

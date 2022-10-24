@@ -618,34 +618,19 @@ AfterParentCommit (Surface *surface, void *data)
   subsurface->pending_substate.flags = 0;
 }
 
-static Bool
-Subframe (Surface *surface, Role *role)
-{
-  Subsurface *subsurface;
-
-  subsurface = SubsurfaceFromRole (role);
-
-  if (!subsurface->parent || !subsurface->parent->role
-      || !subsurface->parent->role->funcs.subframe)
-    return True;
-
-  return subsurface->parent->role->funcs.subframe (subsurface->parent,
-						   subsurface->parent->role);
-}
-
 static void
-EndSubframe (Surface *surface, Role *role)
+SubsurfaceUpdate (Surface *surface, Role *role)
 {
   Subsurface *subsurface;
 
   subsurface = SubsurfaceFromRole (role);
 
   if (!subsurface->parent || !subsurface->parent->role
-      || !subsurface->parent->role->funcs.end_subframe)
+      || !subsurface->parent->role->funcs.subsurface_update)
     return;
 
-  subsurface->parent->role->funcs.end_subframe (subsurface->parent,
-						subsurface->parent->role);
+  subsurface->parent->role->funcs.subsurface_update (subsurface->parent,
+						     subsurface->parent->role);
 }
 
 static Window
@@ -704,15 +689,9 @@ Commit (Surface *surface, Role *role)
 
   if (!subsurface->synchronous)
     {
-      /* If the surface is asynchronous, draw this subframe now.
-	 Otherwise it is synchronous, so we should wait for the
-	 toplevel to end the frame.  */
-
-      if (Subframe (surface, role))
-	{
-	  SubcompositorUpdate (subcompositor);
-	  EndSubframe (surface, role);
-	}
+      /* Tell the parent that a subsurface changed.  It should then do
+	 whatever is appropriate to update the subsurface.  */
+      SubsurfaceUpdate (surface, role);
 
       /* If the size changed, update the outputs this surface is in
 	 the scanout area of.  */
@@ -845,14 +824,11 @@ Teardown (Surface *surface, Role *role)
 
       /* According to the spec, this removal should take effect
 	 immediately.  */
-      if (subcompositor
-	  && Subframe (surface, role))
-	{
-	  SubcompositorUpdate (subcompositor);
-	  EndSubframe (surface, role);
-	}
+      if (subcompositor)
+        SubsurfaceUpdate (surface, role);
     }
 
+  /* Destroy the backing data of the subsurface.  */
   DestroyBacking (subsurface);
 
   /* Update whether or not idle inhibition should continue.  */
@@ -971,8 +947,7 @@ GetSubsurface (struct wl_client *client, struct wl_resource *resource,
   subsurface->role.funcs.teardown = Teardown;
   subsurface->role.funcs.setup = Setup;
   subsurface->role.funcs.release_buffer = ReleaseBuffer;
-  subsurface->role.funcs.subframe = Subframe;
-  subsurface->role.funcs.end_subframe = EndSubframe;
+  subsurface->role.funcs.subsurface_update = SubsurfaceUpdate;
   subsurface->role.funcs.early_commit = EarlyCommit;
   subsurface->role.funcs.get_window = GetWindow;
   subsurface->role.funcs.rescale = Rescale;
