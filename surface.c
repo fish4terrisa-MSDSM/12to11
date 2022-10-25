@@ -507,6 +507,13 @@ GetEffectiveScale (int scale)
 }
 
 static void
+ApplyBufferTransform (Surface *surface)
+{
+  ViewSetTransform (surface->view,
+		    surface->current_state.transform);
+}
+
+static void
 ApplyScale (Surface *surface)
 {
   int scale, effective;
@@ -665,8 +672,12 @@ ApplyViewport (Surface *surface)
 
   if (state->buffer)
     {
-      max_width = XLBufferWidth (state->buffer);
-      max_height = XLBufferHeight (state->buffer);
+      max_width = (RotatesDimensions (state->transform)
+		   ? XLBufferHeight (state->buffer)
+		   : XLBufferWidth (state->buffer));
+      max_height = (RotatesDimensions (state->transform)
+		    ? XLBufferWidth (state->buffer)
+		    : XLBufferHeight (state->buffer));
     }
   else
     {
@@ -787,8 +798,16 @@ CheckViewportValues (Surface *surface)
   /* A buffer is attached and a viewport source rectangle is set;
      check that it remains in bounds.  */
 
-  width = XLBufferWidth (state->buffer);
-  height = XLBufferHeight (state->buffer);
+  if (RotatesDimensions (state->transform))
+    {
+      width = XLBufferHeight (state->buffer);
+      height = XLBufferWidth (state->buffer);
+    }
+  else
+    {
+      width = XLBufferWidth (state->buffer);
+      height = XLBufferHeight (state->buffer);
+    }
 
   if (state->src_x + state->src_width - 1 >= width / state->buffer_scale
       || state->src_y + state->src_height - 1 >= height / state->buffer_scale)
@@ -896,6 +915,9 @@ SavePendingState (Surface *surface)
   if (surface->pending_state.pending & PendingBufferScale)
     surface->cached_state.buffer_scale
       = surface->pending_state.buffer_scale;
+
+  if (surface->pending_state.pending & PendingBufferTransform)
+    surface->cached_state.transform = surface->pending_state.transform;
 
   if (surface->pending_state.pending & PendingViewportDest)
     {
@@ -1027,6 +1049,12 @@ InternalCommit (Surface *surface, State *pending)
     {
       surface->current_state.buffer_scale = pending->buffer_scale;
       ApplyScale (surface);
+    }
+
+  if (pending->pending & PendingBufferTransform)
+    {
+      surface->current_state.transform = pending->transform;
+      ApplyBufferTransform (surface);
     }
 
   if (pending->pending & PendingInputRegion)
@@ -1173,13 +1201,61 @@ Commit (struct wl_client *client, struct wl_resource *resource)
   InternalCommit (surface, &surface->pending_state);
 }
 
+static Bool
+GetBufferTransform (int32_t wayland_transform,
+		    BufferTransform *transform)
+{
+  switch (wayland_transform)
+    {
+    case WL_OUTPUT_TRANSFORM_NORMAL:
+      *transform = Normal;
+      return True;
+
+    case WL_OUTPUT_TRANSFORM_90:
+      *transform = CounterClockwise90;
+      return True;
+
+    case WL_OUTPUT_TRANSFORM_180:
+      *transform = CounterClockwise180;
+      return True;
+
+    case WL_OUTPUT_TRANSFORM_270:
+      *transform = CounterClockwise270;
+      return True;
+
+    case WL_OUTPUT_TRANSFORM_FLIPPED:
+      *transform = Flipped;
+      return True;
+
+    case WL_OUTPUT_TRANSFORM_FLIPPED_90:
+      *transform = Flipped90;
+      return True;
+
+    case WL_OUTPUT_TRANSFORM_FLIPPED_180:
+      *transform = Flipped180;
+      return True;
+
+    case WL_OUTPUT_TRANSFORM_FLIPPED_270:
+      *transform = Flipped270;
+      return True;
+    }
+
+  return False;
+}
+
 static void
 SetBufferTransform (struct wl_client *client, struct wl_resource *resource,
 		    int32_t transform)
 {
-  if (transform != WL_OUTPUT_TRANSFORM_NORMAL)
-    wl_resource_post_error (resource, WL_DISPLAY_ERROR_IMPLEMENTATION,
-			    "this compositor does not support buffer transforms");
+  Surface *surface;
+
+  surface = wl_resource_get_user_data (resource);
+
+  if (!GetBufferTransform (transform, &surface->pending_state.transform))
+    wl_resource_post_error (resource, WL_SURFACE_ERROR_INVALID_TRANSFORM,
+			    "invalid transform specified");
+  else
+    surface->pending_state.pending |= PendingBufferTransform;
 }
 
 static void
@@ -1249,6 +1325,7 @@ InitState (State *state)
   state->pending = PendingNone;
   state->buffer = NULL;
   state->buffer_scale = 1;
+  state->transform = Normal;
 
   /* Initialize the sentinel node.  */
   state->frame_callbacks.next = &state->frame_callbacks;
@@ -1506,18 +1583,6 @@ XLSurfaceReleaseRole (Surface *surface, Role *role)
   surface->output_x = INT_MIN;
   surface->output_y = INT_MIN;
   RunUnmapCallbacks (surface);
-}
-
-void
-XLStateAttachBuffer (State *state, ExtBuffer *buffer)
-{
-  AttachBuffer (state, buffer);
-}
-
-void
-XLStateDetachBuffer (State *state)
-{
-  ClearBuffer (state);
 }
 
 

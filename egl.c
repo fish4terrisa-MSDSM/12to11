@@ -35,6 +35,8 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include "linux-dmabuf-unstable-v1.h"
 
+/* TODO: implement buffer transforms.  */
+
 /* These are flags for the DrmFormats.  */
 
 enum

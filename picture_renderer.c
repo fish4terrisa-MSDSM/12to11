@@ -81,6 +81,9 @@ struct _BufferActivityRecord
   /* The counter ID.  */
   uint64_t id;
 
+  /* The sync fence.  */
+  Fence *fence;
+
   /* The forward links to the three lists.  */
   BufferActivityRecord *buffer_next, *target_next, *global_next;
 
@@ -127,6 +130,9 @@ struct _PictureBuffer
   /* Flags.  */
   int flags;
 
+  /* The width and height of the buffer.  */
+  short width, height;
+
   /* The last draw params associated with the picture.  */
   DrawParams params;
 
@@ -138,6 +144,8 @@ struct _PictureBuffer
 
   /* Ongoing buffer activity.  */
   BufferActivityRecord activity;
+
+  int compositable;
 };
 
 enum
@@ -264,6 +272,9 @@ struct _DmaBufRecord
 
   /* The depth of the pixmap.  */
   int depth;
+
+  /* The width and height.  */
+  short width, height;
 };
 
 /* Hash table mapping between presentation windows and targets.  */
@@ -388,6 +399,9 @@ static PresentCompletionCallback all_completion_callbacks;
 /* Whether or not direct presentation should be used.  */
 static Bool use_direct_presentation;
 
+/* Whether or not to use sync fences.  Currently never set.  */
+static Bool use_sync_fences;
+
 /* XRender, DRI3 and XPresent-based renderer.  A RenderTarget is just
    a Picture.  Here is a rough explanation of how the buffer release
    machinery works.
@@ -489,7 +503,7 @@ FindBufferActivityRecord (PictureBuffer *buffer, PictureTarget *target)
 
 static void
 RecordBufferActivity (PictureBuffer *buffer, PictureTarget *target,
-		      uint64_t roundtrip_id)
+		      uint64_t roundtrip_id, Fence *fence)
 {
   BufferActivityRecord *record;
 
@@ -530,7 +544,23 @@ RecordBufferActivity (PictureBuffer *buffer, PictureTarget *target,
       record->target = target;
     }
 
+  /* If there is already a fence, wait for it to complete.  */
+  if (record->fence)
+    {
+      /* Flush any trigger fence request that might have been
+	 made.  */
+      XFlush (compositor.display);
+
+      /* Start waiting.  */
+      FenceAwait (record->fence);
+    }
+
+  if (fence)
+    /* Retain the fence.  */
+    FenceRetain (fence);
+
   record->id = roundtrip_id;
+  record->fence = fence;
 }
 
 static void
@@ -599,6 +629,13 @@ MaybeRunIdleCallbacks (PictureBuffer *buffer, PictureTarget *target)
 static void
 UnlinkActivityRecord (BufferActivityRecord *record)
 {
+  /* Wait for the sync fence.  */
+
+  if (record->fence)
+    FenceAwait (record->fence);
+
+  record->fence = NULL;
+
   record->buffer_last->buffer_next = record->buffer_next;
   record->buffer_next->buffer_last = record->buffer_last;
   record->target_last->target_next = record->target_next;
@@ -943,6 +980,11 @@ DestroyRenderTarget (RenderTarget target)
       activity_last = activity_record;
       activity_record = activity_record->target_next;
 
+      if (activity_last->fence)
+	/* The TriggerFence request might not have been flushed.  So
+	   flush it now to avoid hangs.  */
+	XFlush (compositor.display);
+
       UnlinkActivityRecord (activity_last);
       XLFree (activity_last);
     }
@@ -1099,6 +1141,15 @@ GetSourceY (DrawParams *params)
   return 0.0;
 }
 
+static BufferTransform
+GetBufferTransform (DrawParams *params)
+{
+  if (params->flags & TransformSet)
+    return params->transform;
+
+  return Normal;
+}
+
 static Bool
 CompareStretch (DrawParams *params, DrawParams *other)
 {
@@ -1116,6 +1167,82 @@ CompareStretch (DrawParams *params, DrawParams *other)
 }
 
 static void
+ApplyInverseTransform (PictureBuffer *buffer, Matrix *matrix,
+		       BufferTransform transform)
+{
+  float width, height;
+
+  /* Note that the transform is applied in reverse, meaning that a
+     counterclockwise rotation is done clockwise, etc, as TRANSFORM
+     transforms destination coordinates to source ones.  */
+
+  width = buffer->width;
+  height = buffer->height;
+
+  switch (transform)
+    {
+    case Normal:
+      break;
+
+    case CounterClockwise90:
+      /* Apply clockwise 270 degree rotation around the origin.  */
+      MatrixRotate (matrix, M_PI * 1.5, 0, 0);
+
+      /* Translate y by the width.  */
+      MatrixTranslate (matrix, 0, -width);
+      break;
+
+    case CounterClockwise180:
+      /* Apply clockwise 180 degree rotation around the center.  */
+      MatrixRotate (matrix, M_PI, width / 2.0f, height / 2.0f);
+      break;
+
+    case CounterClockwise270:
+      /* Apply clockwise 90 degree rotation around the origin.  */
+      MatrixRotate (matrix, M_PI * 0.5, 0, 0);
+
+      /* Translate by the height.  */
+      MatrixTranslate (matrix, -height, 0);
+      break;
+
+    case Flipped:
+      /* Apply horizontal flip.  */
+      MatrixMirrorHorizontal (matrix, width);
+      break;
+
+    case Flipped90:
+      /* Apply horizontal flip.  */
+      MatrixMirrorHorizontal (matrix, width);
+
+      /* Apply clockwise 90 degree rotation around the origin.  */
+      MatrixRotate (matrix, M_PI * 0.5, 0, 0);
+
+      /* Translate by the height.  */
+      MatrixTranslate (matrix, -height, 0);
+      break;
+
+    case Flipped180:
+      /* Apply horizontal flip.  */
+      MatrixMirrorHorizontal (matrix, width);
+
+      /* Apply clockwise 180 degree rotation around the center.  */
+      MatrixRotate (matrix, M_PI, width / 2.0f, height / 2.0f);
+      break;
+
+    case Flipped270:
+      /* Apply horizontal flip.  */
+      MatrixMirrorHorizontal (matrix, width);
+
+      /* Apply clockwise 270 degree rotation around the origin.  */
+      MatrixRotate (matrix, M_PI * 1.5, 0, 0);
+
+      /* Translate y by the width.  */
+      MatrixTranslate (matrix, 0, -width);
+      break;
+    }
+}
+
+static void
 MaybeApplyTransform (PictureBuffer *buffer, DrawParams *params)
 {
   XTransform transform;
@@ -1124,6 +1251,8 @@ MaybeApplyTransform (PictureBuffer *buffer, DrawParams *params)
   if (GetScale (params) == GetScale (&buffer->params)
       && GetSourceX (params) == GetSourceX (&buffer->params)
       && GetSourceY (params) == GetSourceY (&buffer->params)
+      && (GetBufferTransform (params)
+	  == GetBufferTransform (&buffer->params))
       && CompareStretch (params, &buffer->params))
     /* Nothing changed.  */
     return;
@@ -1137,6 +1266,10 @@ MaybeApplyTransform (PictureBuffer *buffer, DrawParams *params)
   else
     {
       MatrixIdentity (&ftransform);
+
+      if (params->flags & TransformSet)
+	ApplyInverseTransform (buffer, &ftransform,
+			       params->transform);
 
       /* Note that these must be applied in the right order.  First,
 	 the scale is applied.  Then, the offset, and finally the
@@ -1173,6 +1306,7 @@ Composite (RenderBuffer buffer, RenderTarget target,
 {
   PictureBuffer *picture_buffer;
   PictureTarget *picture_target;
+  XLList *tem;
 
   picture_buffer = buffer.pointer;
   picture_target = target.pointer;
@@ -1191,8 +1325,19 @@ Composite (RenderBuffer buffer, RenderTarget target,
 		    /* dst-x, dst-y, width, height.  */
 		    x, y, width, height);
 
+  for (tem = picture_target->buffers_used; tem; tem = tem->next)
+    {
+      /* Return if the buffer is already in the buffers_used list.
+	 Otherwise, FinishRender will try to wait for a fence that has
+	 not yet been triggered.  */
+
+      if (tem->data == picture_buffer)
+	return;
+    }
+
   /* Record pending buffer activity; the roundtrip message is then
      sent later.  */
+
   picture_target->buffers_used
     = XLListPrepend (picture_target->buffers_used, picture_buffer);
 }
@@ -1203,22 +1348,41 @@ FinishRender (RenderTarget target, pixman_region32_t *damage)
   XLList *tem, *last;
   PictureTarget *pict_target;
   uint64_t roundtrip_id;
+  Fence *fence;
+
+  pict_target = target.pointer;
+
+  if (!pict_target->buffers_used)
+    /* No buffers were used.  */
+    return;
 
   /* Finish rendering.  This function then sends a single roundtrip
      message and records buffer activity for each buffer involved in
      the update based on that.  */
 
   roundtrip_id = SendRoundtripMessage ();
-  pict_target = target.pointer;
   tem = pict_target->buffers_used;
+
+  if (use_sync_fences)
+    {
+      /* Get a sync fence, then trigger it.  */
+      fence = GetFence ();
+
+      /* Trigger the fence.  */
+      XSyncTriggerFence (compositor.display, FenceToXFence (fence));
+    }
+  else
+    fence = NULL;
+
   while (tem)
     {
       last = tem;
       tem = tem->next;
 
-      /* Record buffer activity on this one buffer.  */
+      /* Record buffer activity on this one buffer.  A reference to
+	 the fence will be held.  */
       RecordBufferActivity (last->data, pict_target,
-			    roundtrip_id);
+			    roundtrip_id, fence);
 
       /* Free the list element.  */
       XLFree (last);
@@ -1933,6 +2097,8 @@ BufferFromDmaBuf (DmaBufAttributes *attributes, Bool *error)
   buffer->picture = picture;
   buffer->pixmap = pixmap;
   buffer->depth = depth;
+  buffer->width = attributes->width;
+  buffer->height = attributes->height;
 
   /* Initialize the list of release records.  */
   buffer->pending.buffer_next = &buffer->pending;
@@ -2008,6 +2174,8 @@ FinishDmaBufRecord (DmaBufRecord *pending, Bool success)
       buffer->picture = picture;
       buffer->pixmap = pending->pixmap;
       buffer->depth = pending->depth;
+      buffer->width = pending->width;
+      buffer->height = pending->height;
 
       /* Initialize the list of release records.  */
       buffer->pending.buffer_next = &buffer->pending;
@@ -2110,6 +2278,9 @@ BufferFromDmaBufAsync (DmaBufAttributes *attributes,
     = PictFormatForDmabufFormat (attributes->drm_format);
   record->pixmap = pixmap;
   record->depth = depth;
+  record->width = attributes->width;
+  record->height = attributes->height;
+
   XLAssert (record->format != NULL);
 
   record->next = pending_success.next;
@@ -2218,6 +2389,8 @@ BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
   buffer->picture = picture;
   buffer->pixmap = pixmap;
   buffer->depth = depth;
+  buffer->width = attributes->width;
+  buffer->height = attributes->height;
 
   /* Initialize the list of release records.  */
   buffer->pending.buffer_next = &buffer->pending;
@@ -2379,6 +2552,11 @@ FreeAnyBuffer (RenderBuffer buffer)
     {
       activity_last = activity_record;
       activity_record = activity_record->buffer_next;
+
+      if (activity_last->fence)
+	/* The TriggerFence request might not have been flushed.  So
+	   flush it now to avoid hangs.  */
+	XFlush (compositor.display);
 
       UnlinkActivityRecord (activity_last);
       XLFree (activity_last);

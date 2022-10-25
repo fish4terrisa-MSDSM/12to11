@@ -17,6 +17,8 @@ for more details.
 You should have received a copy of the GNU General Public License
 along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
+#include <stdio.h>
+
 #include "compositor.h"
 
 typedef struct _DestroyListener DestroyListener;

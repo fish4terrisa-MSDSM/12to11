@@ -98,8 +98,8 @@ This directory is organized as follows:
                   those containing MIME types or shaders
 
 Building the source code is simple, provided that you have the
-necessary libwayland-server library, pixman, XCB, DRM, and X extension
-libraries installed:
+necessary libwayland-server library, pixman, XCB, DRM, xshmfence, and
+X extension libraries installed:
 
   xmkmf # to generate the Makefile
   make  # to build the binary

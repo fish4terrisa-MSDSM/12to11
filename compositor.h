@@ -157,6 +157,7 @@ typedef struct _DrmFormat DrmFormat;
 typedef struct _ShmFormat ShmFormat;
 
 typedef enum _Operation Operation;
+typedef enum _BufferTransform BufferTransform;
 
 typedef void *IdleCallbackKey;
 typedef void *PresentCompletionKey;
@@ -167,6 +168,18 @@ typedef void (*DmaBufFailureFunc) (void *);
 typedef void (*BufferIdleFunc) (RenderBuffer, void *);
 typedef void (*PresentCompletionFunc) (void *);
 
+enum _BufferTransform
+  {
+    Normal,
+    CounterClockwise90,
+    CounterClockwise180,
+    CounterClockwise270,
+    Flipped,
+    Flipped90,
+    Flipped180,
+    Flipped270,
+  };
+
 enum _Operation
   {
     OperationOver,
@@ -176,19 +189,26 @@ enum _Operation
 enum
   {
     /* Scale has been set.  */
-    ScaleSet  = 1,
-
+    ScaleSet	 = 1,
+    /* Transform has been set.  */
+    TransformSet = (1 << 1),
     /* Offset has been set.  */
-    OffsetSet = (1 << 2),
-
+    OffsetSet	 = (1 << 2),
     /* Stretch has been set.  */
-    StretchSet = (1 << 3),
+    StretchSet	 = (1 << 3),
   };
+
+/* The transforms specified in the draw parameters are applied in the
+   following order: transform, scale, off_x, off_y, crop_width,
+   crop_height, stretch_width, stretch_height.  */
 
 struct _DrawParams
 {
   /* Which fields are set.  */
   int flags;
+
+  /* A transform by which to rotate the buffer.  */
+  BufferTransform transform;
 
   /* A scale factor to apply to the buffer.  */
   double scale;
@@ -643,6 +663,8 @@ extern void XLScaleRegion (pixman_region32_t *, pixman_region32_t *,
 			   float, float);
 extern void XLExtendRegion (pixman_region32_t *, pixman_region32_t *,
 			    int, int);
+extern void XLTransformRegion (pixman_region32_t *, pixman_region32_t *,
+			       BufferTransform, int, int);
 extern Time XLGetServerTimeRoundtrip (void);
 
 extern RootWindowSelection *XLSelectInputFromRootWindow (unsigned long);
@@ -786,6 +808,7 @@ extern void ViewSkip (View *);
 extern void ViewUnskip (View *);
 extern void ViewMoveFractional (View *, double, double);
 
+extern void ViewSetTransform (View *, BufferTransform);
 extern void ViewSetViewport (View *, double, double, double, double,
 			     double, double);
 extern void ViewClearViewport (View *);
@@ -837,19 +860,26 @@ enum _RoleType
     DndIconType,
   };
 
+#define RotatesDimensions(transform)		\
+  ((transform) == CounterClockwise90		\
+   || (transform) == CounterClockwise270	\
+   || (transform) == Flipped90			\
+   || (transform) == Flipped270)
+
 enum
   {
-    PendingNone		  = 0,
-    PendingOpaqueRegion	  = 1,
-    PendingInputRegion	  = (1 << 2),
-    PendingDamage	  = (1 << 3),
-    PendingSurfaceDamage  = (1 << 4),
-    PendingBuffer	  = (1 << 5),
-    PendingFrameCallbacks = (1 << 6),
-    PendingBufferScale	  = (1 << 7),
-    PendingAttachments	  = (1 << 8),
-    PendingViewportSrc	  = (1 << 9),
-    PendingViewportDest   = (1 << 10),
+    PendingNone		   = 0,
+    PendingOpaqueRegion	   = 1,
+    PendingInputRegion	   = (1 << 2),
+    PendingDamage	   = (1 << 3),
+    PendingSurfaceDamage   = (1 << 4),
+    PendingBuffer	   = (1 << 5),
+    PendingFrameCallbacks  = (1 << 6),
+    PendingBufferScale	   = (1 << 7),
+    PendingAttachments	   = (1 << 8),
+    PendingViewportSrc	   = (1 << 9),
+    PendingViewportDest	   = (1 << 10),
+    PendingBufferTransform = (1 << 11),
 
     /* Flags here are stored in `pending' of the current state for
        space reasons.  */
@@ -888,6 +918,9 @@ struct _State
 
   /* The scale of this buffer.  */
   int buffer_scale;
+
+  /* The buffer transform.  */
+  BufferTransform transform;
 
   /* List of frame callbacks.  */
   FrameCallback frame_callbacks;
@@ -1109,8 +1142,6 @@ extern void XLSurfaceReleaseRole (Surface *, Role *);
 
 extern void XLDefaultCommit (Surface *);
 
-extern void XLStateAttachBuffer (State *, ExtBuffer *);
-extern void XLStateDetachBuffer (State *);
 extern void XLSurfaceRunFrameCallbacks (Surface *, struct timespec);
 extern void XLSurfaceRunFrameCallbacksMs (Surface *, uint32_t);
 extern CommitCallback *XLSurfaceRunAtCommit (Surface *,
@@ -1661,6 +1692,8 @@ extern void MatrixIdentity (Matrix *);
 extern void MatrixTranslate (Matrix *, float, float);
 extern void MatrixScale (Matrix *, float, float);
 extern void MatrixExport (Matrix *, XTransform *);
+extern void MatrixRotate (Matrix *, float, float, float);
+extern void MatrixMirrorHorizontal (Matrix *, float);
 
 /* Defined in wp_viewporter.c.  */
 
@@ -1716,6 +1749,15 @@ extern void ParseProcessString (const char *, char ***, size_t *);
 extern void RunProcess (ProcessQueue *, char **);
 extern ProcessQueue *MakeProcessQueue (void);
 extern int ProcessPoll (struct pollfd *, nfds_t, struct timespec *);
+
+/* Defined in fence_ring.c.  */
+
+typedef struct _Fence Fence;
+
+extern Fence *GetFence (void);
+extern void FenceRetain (Fence *);
+extern void FenceAwait (Fence *);
+extern XSyncFence FenceToXFence (Fence *);
 
 /* Utility functions that don't belong in a specific file.  */
 

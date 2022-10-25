@@ -133,6 +133,58 @@ MatrixScale (Matrix *transform, float sx, float sy)
 }
 
 void
+MatrixRotate (Matrix *transform, float theta, float x, float y)
+{
+  Matrix temp, copy;
+
+  /* Translate the matrix to x, y, and then perform rotation by the
+     given angle in radians and translate back.  As the transform is
+     being performed in the X coordinate system, the given angle
+     describes a clockwise rotation.  */
+
+  MatrixIdentity (&temp);
+  memcpy (copy, transform, sizeof copy);
+
+  Index (temp, 0, 2) = x;
+  Index (temp, 1, 2) = y;
+
+  MatrixMultiply (copy, temp, transform);
+  MatrixIdentity (&temp);
+  memcpy (copy, transform, sizeof copy);
+
+  Index (temp, 0, 0) = cosf (theta);
+  Index (temp, 0, 1) = sinf (theta);
+  Index (temp, 1, 0) = -sinf (theta);
+  Index (temp, 1, 1) = cosf (theta);
+
+  MatrixMultiply (copy, temp, transform);
+  MatrixIdentity (&temp);
+  memcpy (copy, transform, sizeof copy);
+
+  Index (temp, 0, 2) = -x;
+  Index (temp, 1, 2) = -y;
+
+  MatrixMultiply (copy, temp, transform);
+}
+
+void
+MatrixMirrorHorizontal (Matrix *transform, float width)
+{
+  Matrix temp, copy;
+
+  /* Scale the matrix by -1, and then apply a tx of width, in effect
+     flipping the image horizontally.  */
+
+  MatrixIdentity (&temp);
+  memcpy (copy, transform, sizeof copy);
+
+  Index (temp, 0, 0) = -1.0f;
+  Index (temp, 0, 2) = width;
+
+  MatrixMultiply (copy, temp, transform);
+}
+
+void
 MatrixExport (Matrix *transform, XTransform *xtransform)
 {
   /* M1 M2 M3     X

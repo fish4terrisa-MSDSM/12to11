@@ -293,9 +293,6 @@ least support the
 .B _NET_WM_SYNC_REQUEST
 window manager protocol will result in Wayland programs running badly.
 .PP
-In addition, surfaces transforms are not supported nor reported.  The
-vast majority of clients seem not to make use of this feature, and
-implementing it would be a lot of trouble.
 .SH "SEE ALSO"
 X(7), Xorg(1)
 .SH AUTHORS

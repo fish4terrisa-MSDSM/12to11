@@ -11,7 +11,7 @@ DEPLIBS = $(DEPXLIB) $(DEPEXTENSIONLIB) $(DEPXRANDRLIB) $(DEPXRENDERLIB) \
 LOCAL_LIBRARIES = $(XLIB) $(EXTENSIONLIB) $(XCBLIB) $(XCB) $(XCB_SHM)      \
   $(XRANDRLIB) $(PIXMAN) $(XRENDERLIB) $(XILIB) $(XKBFILELIB) $(XFIXESLIB) \
   $(XCB_DRI3) $(XCB_SHAPE) $(WAYLAND_SERVER) $(XCB_RANDR) $(DRM)           \
-  $(XPRESENTLIB)
+  $(XPRESENTLIB) $(XSHMFENCELIB)
 
 INCLUDES := $(DRMINCLUDES) $(PIXMANINCLUDES)
 
@@ -25,7 +25,7 @@ SRCS = 12to11.c run.c alloc.c fns.c output.c compositor.c       \
   wp_viewporter.c decoration.c text_input.c                     \
   single_pixel_buffer.c drm_lease.c pointer_constraints.c       \
   time.c relative_pointer.c keyboard_shortcuts_inhibit.c        \
-  idle_inhibit.c process.c
+  idle_inhibit.c process.c fence_ring.c
 
 OBJS = 12to11.o run.o alloc.o fns.o output.o compositor.o       \
   surface.o region.o shm.o atoms.o subcompositor.o positioner.o \
@@ -37,7 +37,7 @@ OBJS = 12to11.o run.o alloc.o fns.o output.o compositor.o       \
   wp_viewporter.o decoration.o text_input.o                     \
   single_pixel_buffer.o drm_lease.o pointer_constraints.o       \
   time.o relative_pointer.o keyboard_shortcuts_inhibit.o        \
-  idle_inhibit.o process.o
+  idle_inhibit.o process.o fence_ring.o
 
 GENHEADERS = transfer_atoms.h
 

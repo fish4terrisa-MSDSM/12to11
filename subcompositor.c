@@ -276,6 +276,10 @@ struct _View
   /* Function called upon the view potentially being resized.  */
   void (*maybe_resized) (View *);
 
+  /* Some data associated with this view.  Can be a surface or
+     something else.  */
+  void *data;
+
   /* The damaged and opaque regions.  */
   pixman_region32_t damage, opaque;
 
@@ -289,15 +293,14 @@ struct _View
      (or topmost parent if the view hierarchy is detached).  */
   int abs_x, abs_y;
 
-  /* Some data associated with this view.  Can be a surface or
-     something else.  */
-  void *data;
-
   /* The scale of this view.  */
   int scale;
 
   /* Flags; whether or not this view is unmapped, etc.  */
   int flags;
+
+  /* Any transform associated with this view.  */
+  BufferTransform transform;
 
   /* The viewport data.  */
   double src_x, src_y, crop_width, crop_height, dest_width, dest_height;
@@ -495,6 +498,8 @@ MakeView (void)
   pixman_region32_init (&view->damage);
   pixman_region32_init (&view->opaque);
   pixman_region32_init (&view->input);
+
+  view->transform = Normal;
 #endif
 
   return view;
@@ -1627,6 +1632,60 @@ GetContentScale (int scale)
   return -scale + 1;
 }
 
+static BufferTransform
+InvertTransform (BufferTransform transform)
+{
+  switch (transform)
+    {
+    case CounterClockwise270:
+      return CounterClockwise90;
+
+    case CounterClockwise90:
+      return CounterClockwise270;
+
+    default:
+      return transform;
+    }
+}
+
+static int
+BufferWidthAfterTransform (View *view)
+{
+  if (RotatesDimensions (view->transform))
+    return XLBufferHeight (view->buffer);
+
+  return XLBufferWidth (view->buffer);
+}
+
+static int
+BufferHeightAfterTransform (View *view)
+{
+  if (RotatesDimensions (view->transform))
+    return XLBufferWidth (view->buffer);
+
+  return XLBufferHeight (view->buffer);
+}
+
+static void
+TransformBufferDamage (pixman_region32_t *damage,
+		       pixman_region32_t *source,
+		       View *view)
+{
+  int width, height;
+  BufferTransform inverse;
+
+  /* Invert the transform.  */
+  inverse = InvertTransform (view->transform);
+
+  /* Calculate the width and height of the buffer after the
+     transform.  */
+  width = XLBufferWidth (view->buffer);
+  height = XLBufferHeight (view->buffer);
+
+  /* Transform the damage.  */
+  XLTransformRegion (damage, source, inverse, width, height);
+}
+
 void
 ViewDamageBuffer (View *view, pixman_region32_t *damage)
 {
@@ -1638,9 +1697,10 @@ ViewDamageBuffer (View *view, pixman_region32_t *damage)
   if (!view->buffer)
     return;
 
-  if (!view->scale && !IsViewported (view))
-    /* There is no scale nor viewport.  Just damage the view
-       directly.  */
+  if (view->transform == Normal
+      && !view->scale && !IsViewported (view))
+    /* There is no scale, transform, nor viewport.  Just damage the
+       view directly.  */
     ViewDamage (view, damage);
   else
     {
@@ -1651,8 +1711,17 @@ ViewDamageBuffer (View *view, pixman_region32_t *damage)
       x_factor = GetContentScale (view->scale);
       y_factor = GetContentScale (view->scale);
 
-      /* Scale the region.  */
-      XLScaleRegion (&temp, damage, x_factor, y_factor);
+      if (view->transform != Normal)
+	{
+	  /* Transform the given buffer damage if need be.  */
+	  TransformBufferDamage (&temp, damage, view);
+
+	  /* Scale the region.  */
+	  XLScaleRegion (&temp, &temp, x_factor, y_factor);
+	}
+      else
+	/* Scale the region.  */
+	XLScaleRegion (&temp, damage, x_factor, y_factor);
 
       /* Next, apply the viewport.  */
       if (IsViewported (view))
@@ -1671,9 +1740,9 @@ ViewDamageBuffer (View *view, pixman_region32_t *damage)
 	     current buffer width/height.  */
 	  if (crop_width == -1)
 	    {
-	      crop_width = (XLBufferWidth (view->buffer)
+	      crop_width = (BufferWidthAfterTransform (view)
 			    * GetContentScale (view->scale));
-	      crop_height = (XLBufferHeight (view->buffer)
+	      crop_height = (BufferHeightAfterTransform (view)
 			     * GetContentScale (view->scale));
 	    }
 
@@ -1738,7 +1807,7 @@ ViewWidth (View *view)
        scaling.  */
     return ceil (view->dest_width);
 
-  width = XLBufferWidth (view->buffer);
+  width = BufferWidthAfterTransform (view);
 
   if (view->scale < 0)
     return ceil (width * (abs (view->scale) + 1));
@@ -1761,7 +1830,7 @@ ViewHeight (View *view)
        scaling.  */
     return ceil (view->dest_height);
 
-  height = XLBufferHeight (view->buffer);
+  height = BufferHeightAfterTransform (view);
 
   if (view->scale < 0)
     return ceil (height * (abs (view->scale) + 1));
@@ -1779,6 +1848,23 @@ ViewSetScale (View *view, int scale)
 
   /* Recompute subcompositor bounds; they could've changed.  */
   ViewAfterSizeUpdate (view);
+}
+
+void
+ViewSetTransform (View *view, BufferTransform transform)
+{
+  BufferTransform old_transform;
+
+  if (view->transform == transform)
+    return;
+
+  old_transform = view->transform;
+  view->transform = transform;
+
+  if (RotatesDimensions (transform)
+      != RotatesDimensions (old_transform))
+    /* Subcompositor bounds may have changed.  */
+    ViewAfterSizeUpdate (view);
 }
 
 void
@@ -1829,6 +1915,12 @@ ViewComputeTransform (View *view, DrawParams *params, Bool draw)
   params->off_x = 0.0;
   params->off_y = 0.0;
 
+  if (view->transform != Normal)
+    {
+      params->flags |= TransformSet;
+      params->transform = view->transform;
+    }
+
   if (view->scale)
     {
       /* There is a scale, so set it.  */
@@ -1856,9 +1948,9 @@ ViewComputeTransform (View *view, DrawParams *params, Bool draw)
 
       if (params->crop_width == -1)
 	{
-	  params->crop_width = (XLBufferWidth (view->buffer)
+	  params->crop_width = (BufferWidthAfterTransform (view)
 				* GetContentScale (view->scale));
-	  params->crop_height = (XLBufferHeight (view->buffer)
+	  params->crop_height = (BufferHeightAfterTransform (view)
 				 * GetContentScale (view->scale));
 	}
     }
