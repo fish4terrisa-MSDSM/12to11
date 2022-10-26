@@ -26,6 +26,7 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <drm_fourcc.h>
 
 #include "compositor.h"
+#include "drm_modifiers.h"
 
 #include <xcb/dri3.h>
 
@@ -37,6 +38,7 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 typedef struct _DrmFormatInfo DrmFormatInfo;
 typedef struct _DmaBufRecord DmaBufRecord;
+typedef struct _DrmModifierName DrmModifierName;
 
 typedef struct _PictureBuffer PictureBuffer;
 typedef struct _PictureTarget PictureTarget;
@@ -45,6 +47,15 @@ typedef struct _PresentRecord PresentRecord;
 typedef struct _BufferActivityRecord BufferActivityRecord;
 typedef struct _IdleCallback IdleCallback;
 typedef struct _PresentCompletionCallback PresentCompletionCallback;
+
+struct _DrmModifierName
+{
+  /* The modifier name.  */
+  const char *name;
+
+  /* The modifier code.  */
+  uint64_t modifier;
+};
 
 /* Structure describing an expected PresentIdleNotify from the X
    server.  */
@@ -277,6 +288,12 @@ struct _DmaBufRecord
   short width, height;
 };
 
+/* Number of format modifiers specified by the user.  */
+static int num_specified_modifiers;
+
+/* Array of user-specified format modifiers.  */
+static uint64_t *user_specified_modifiers;
+
 /* Hash table mapping between presentation windows and targets.  */
 static XLAssocTable *xid_table;
 
@@ -358,6 +375,13 @@ static DrmFormatInfo all_formats[] =
       .alpha = 0xf000,
       .bits_per_pixel = 16,
     },
+  };
+
+/* Array of all known DRM modifier names.  */
+static DrmModifierName known_modifiers[] =
+  {
+    /* Generated from drm_fourcc.h.  */
+    DrmModifiersList
   };
 
 /* DRM formats reported to the caller.  */
@@ -741,6 +765,112 @@ InitSynchronizedPresentation (void)
     use_direct_presentation = True;
 }
 
+static void
+AddAdditionalModifier (const char *name)
+{
+  int i, j;
+
+  for (i = 0; i < ArrayElements (known_modifiers) - 1; ++i)
+    {
+      if (!strcmp (known_modifiers[i].name, name))
+	{
+	  /* The modifier was found.  See if it already exists.  */
+	  for (j = 0; j < num_specified_modifiers; ++j)
+	    {
+	      if (user_specified_modifiers[j]
+		  == known_modifiers[i].modifier)
+		/* The modifier was already specified.  */
+		return;
+	    }
+
+	  /* Otherwise, increment num_specified_modifiers.  */
+	  num_specified_modifiers++;
+
+	  /* Make user_specified_modifiers big enough.  */
+	  user_specified_modifiers
+	    = XLRealloc (user_specified_modifiers,
+			 num_specified_modifiers
+			 * sizeof *user_specified_modifiers);
+
+	  /* And add the modifier.  */
+	  user_specified_modifiers[num_specified_modifiers - 1]
+	    = known_modifiers[i].modifier;
+	  return;
+	}
+    }
+
+  fprintf (stderr, "Unknown buffer format modifier: %s\n", name);
+}
+
+static void
+ParseAdditionalModifiers (const char *string)
+{
+  const char *end, *sep;
+  char *buffer;
+
+  end = string + strlen (string);
+
+  while (string < end)
+    {
+      /* Find the next comma.  */
+      sep = strchr (string, ',');
+
+      if (!sep)
+	sep = end;
+
+      /* Copy the text between string and sep into buffer.  */
+      buffer = alloca (sep - string + 1);
+      memcpy (buffer, string, sep - string);
+      buffer[sep - string] = '\0';
+
+      /* Add this modifier.  */
+      AddAdditionalModifier (buffer);
+
+      string = sep + 1;
+    }
+}
+
+static void
+InitAdditionalModifiers (void)
+{
+  XrmDatabase rdb;
+  XrmName namelist[3];
+  XrmClass classlist[3];
+  XrmValue value;
+  XrmRepresentation type;
+  char *name;
+
+  rdb = XrmGetDatabase (compositor.display);
+
+  if (!rdb)
+    return;
+
+  if (!asprintf (&name, "additionalModifiersOfScreen%d",
+		 DefaultScreen (compositor.display)))
+    return;
+
+  namelist[1] = XrmStringToQuark (name);
+  free (name);
+
+  namelist[0] = app_quark;
+  namelist[2] = NULLQUARK;
+
+  classlist[1] = XrmStringToQuark ("AdditionalModifiers");
+  classlist[0] = resource_quark;
+  classlist[2] = NULLQUARK;
+
+  /* Enable the use of direct presentation if
+     *.UseDirectPresentation.*.useDirectPresentation is true.  This is
+     still incomplete, as the features necessary for it to play nice
+     with frame synchronization have not yet been implemented in the X
+     server.  */
+
+  if (XrmQGetResource (rdb, namelist, classlist,
+		       &type, &value)
+      && type == QString)
+    ParseAdditionalModifiers ((const char *) value.addr);
+}
+
 /* Forward declaration.  */
 static void AddRenderFlag (int);
 
@@ -768,6 +898,9 @@ InitRenderFuncs (void)
   /* Figure out whether or not the user wants synchronized
      presentation.  */
   InitSynchronizedPresentation ();
+
+  /* Find out what additional modifiers the user wants.  */
+  InitAdditionalModifiers ();
 
   if (use_direct_presentation)
     AddRenderFlag (SupportsDirectPresent);
@@ -1167,82 +1300,6 @@ CompareStretch (DrawParams *params, DrawParams *other)
 }
 
 static void
-ApplyInverseTransform (PictureBuffer *buffer, Matrix *matrix,
-		       BufferTransform transform)
-{
-  float width, height;
-
-  /* Note that the transform is applied in reverse, meaning that a
-     counterclockwise rotation is done clockwise, etc, as TRANSFORM
-     transforms destination coordinates to source ones.  */
-
-  width = buffer->width;
-  height = buffer->height;
-
-  switch (transform)
-    {
-    case Normal:
-      break;
-
-    case CounterClockwise90:
-      /* Apply clockwise 270 degree rotation around the origin.  */
-      MatrixRotate (matrix, M_PI * 1.5, 0, 0);
-
-      /* Translate y by the width.  */
-      MatrixTranslate (matrix, 0, -width);
-      break;
-
-    case CounterClockwise180:
-      /* Apply clockwise 180 degree rotation around the center.  */
-      MatrixRotate (matrix, M_PI, width / 2.0f, height / 2.0f);
-      break;
-
-    case CounterClockwise270:
-      /* Apply clockwise 90 degree rotation around the origin.  */
-      MatrixRotate (matrix, M_PI * 0.5, 0, 0);
-
-      /* Translate by the height.  */
-      MatrixTranslate (matrix, -height, 0);
-      break;
-
-    case Flipped:
-      /* Apply horizontal flip.  */
-      MatrixMirrorHorizontal (matrix, width);
-      break;
-
-    case Flipped90:
-      /* Apply horizontal flip.  */
-      MatrixMirrorHorizontal (matrix, width);
-
-      /* Apply clockwise 90 degree rotation around the origin.  */
-      MatrixRotate (matrix, M_PI * 0.5, 0, 0);
-
-      /* Translate by the height.  */
-      MatrixTranslate (matrix, -height, 0);
-      break;
-
-    case Flipped180:
-      /* Apply horizontal flip.  */
-      MatrixMirrorHorizontal (matrix, width);
-
-      /* Apply clockwise 180 degree rotation around the center.  */
-      MatrixRotate (matrix, M_PI, width / 2.0f, height / 2.0f);
-      break;
-
-    case Flipped270:
-      /* Apply horizontal flip.  */
-      MatrixMirrorHorizontal (matrix, width);
-
-      /* Apply clockwise 270 degree rotation around the origin.  */
-      MatrixRotate (matrix, M_PI * 1.5, 0, 0);
-
-      /* Translate y by the width.  */
-      MatrixTranslate (matrix, 0, -width);
-      break;
-    }
-}
-
-static void
 MaybeApplyTransform (PictureBuffer *buffer, DrawParams *params)
 {
   XTransform transform;
@@ -1268,8 +1325,9 @@ MaybeApplyTransform (PictureBuffer *buffer, DrawParams *params)
       MatrixIdentity (&ftransform);
 
       if (params->flags & TransformSet)
-	ApplyInverseTransform (buffer, &ftransform,
-			       params->transform);
+	ApplyInverseTransform (buffer->width, buffer->height,
+			       &ftransform, params->transform,
+			       False);
 
       /* Note that these must be applied in the right order.  First,
 	 the scale is applied.  Then, the offset, and finally the
@@ -1796,8 +1854,9 @@ FindSupportedModifiers (int *pair_count_return)
 
 	  /* pair_count is the number of format-modifier pairs that
 	     will be returned.  First, add one for each implicit
-	     modifier, and another one for the linear modifier.  */
-	  pair_count += 2;
+	     modifier, and another one for each manually specified
+	     modifier.  */
+	  pair_count += 1 + num_specified_modifiers;
 	}
     }
 
@@ -1844,7 +1903,7 @@ FindSupportedModifiers (int *pair_count_return)
 static void
 InitDrmFormats (void)
 {
-  int pair_count, i, j, n;
+  int pair_count, i, j, n, k;
 
   /* First, look up which formats are supported.  */
   if (!FindSupportedFormats ())
@@ -1872,23 +1931,34 @@ InitDrmFormats (void)
       drm_formats[n].drm_modifier = DRM_FORMAT_MOD_INVALID;
       n++;
 
-      /* Check n < pair_count.  */
-      XLAssert (n < pair_count);
+      /* And add all of the user-specified modifiers.  */
+      for (j = 0; j < num_specified_modifiers; ++j)
+	{
+	  /* Assert that n < pair_count.  */
+	  XLAssert (n < pair_count);
 
-      /* And the linear modifier.  */
-      drm_formats[n].drm_format = all_formats[i].format_code;
-      drm_formats[n].drm_modifier = DRM_FORMAT_MOD_LINEAR;
-      n++;
+	  drm_formats[n].drm_format = all_formats[i].format_code;
+	  drm_formats[n].drm_modifier = user_specified_modifiers[j];
+	  n++;
+	}
 
       /* Now add every supported explicit modifier.  */
       for (j = 0; j < all_formats[i].n_supported_modifiers; ++i)
 	{
+	  /* Ignore previously specified modifiers.  */
+
 	  if ((all_formats[i].supported_modifiers[j]
-	       == DRM_FORMAT_MOD_INVALID)
-	      || (all_formats[i].supported_modifiers[j]
-		  == DRM_FORMAT_MOD_LINEAR))
-	    /* Ignore previously specified modifiers.  */
+	       == DRM_FORMAT_MOD_INVALID))
 	    continue;
+
+	  /* Ignore user-specified modifiers.  */
+
+	  for (k = 0; k < num_specified_modifiers; ++k)
+	    {
+	      if (user_specified_modifiers[k]
+		  == all_formats[i].supported_modifiers[j])
+		continue;
+	    }
 
 	  /* Check n < pair_count.  */
 	  XLAssert (n < pair_count);

@@ -353,9 +353,9 @@ PostEndFrame (FrameClock *clock)
   /* The vertical blanking period itself can't actually be computed
      based on available data.  However, frame_delay must be inside the
      vertical blanking period for it to make any sense, so use it to
-     compute the deadline instead.  Add about 100 us to the frame
+     compute the deadline instead.  Add about 200 us to the frame
      delay to compensate for the roundtrip time.  */
-  target -= clock->frame_delay - 100;
+  target -= clock->frame_delay - 200;
 
   /* Add the remainder of now if it was probably truncated by the
      compositor.  */

@@ -13,3 +13,4 @@ Makefile
 vgcore*
 massif*
 callgrind*
+drm_modifiers.h

@@ -227,3 +227,192 @@ MatrixExport (Matrix *transform, XTransform *xtransform)
 
 #undef Export
 }
+
+/* Various routines shared between renderers.  */
+
+void
+ApplyInverseTransform (int buffer_width, int buffer_height, Matrix *matrix,
+		       BufferTransform transform, Bool cartesian)
+{
+  float width, height;
+
+  /* Note that the transform is applied in reverse, meaning that a
+     counterclockwise rotation is done clockwise, etc, as TRANSFORM
+     transforms destination coordinates to source ones.  CARTESIAN
+     specifies whether or not an actual cartesian coordinate system is
+     being used.  */
+
+  width = buffer_width;
+  height = buffer_height;
+
+  switch (transform)
+    {
+    case Normal:
+      break;
+
+    case CounterClockwise90:
+
+      if (!cartesian)
+	{
+	  /* Apply clockwise 270 degree rotation around the
+	     origin.  */
+	  MatrixRotate (matrix, M_PI * 1.5, 0, 0);
+
+	  /* Translate y by the width.  */
+	  MatrixTranslate (matrix, 0, -width);
+	}
+      else
+	{
+	  /* Apply clockwise 270 degree rotation around the
+	     origin.  */
+	  MatrixRotate (matrix, M_PI * 0.5, 0, 1);
+
+	  /* Translate by the width.  */
+	  MatrixTranslate (matrix, 0, width);
+	}
+
+      break;
+
+    case CounterClockwise180:
+      /* Apply clockwise 180 degree rotation around the center.  */
+      MatrixRotate (matrix, M_PI, width / 2.0f, height / 2.0f);
+      break;
+
+    case CounterClockwise270:
+
+      if (!cartesian)
+	{
+	  /* Apply clockwise 90 degree rotation around the origin.  */
+	  MatrixRotate (matrix, M_PI * 0.5, 0, 0);
+
+	  /* Translate by the height.  */
+	  MatrixTranslate (matrix, -height, 0);
+	}
+      else
+	{
+	  /* Apply clockwise 90 degree rotation around the origin.  */
+	  MatrixRotate (matrix, M_PI * 1.5, 0, 1);
+
+	  /* Translate by the height.  */
+	  MatrixTranslate (matrix, -height, 0);
+	}
+
+      break;
+
+    case Flipped:
+      /* Apply horizontal flip.  */
+      MatrixMirrorHorizontal (matrix, width);
+      break;
+
+    case Flipped90:
+      /* Apply horizontal flip.  */
+      MatrixMirrorHorizontal (matrix, width);
+
+      /* Apply clockwise 90 degree rotation around the origin.  */
+      MatrixRotate (matrix, M_PI * 0.5, 0, 0);
+
+      /* Translate by the height.  */
+      MatrixTranslate (matrix, -height, 0);
+      break;
+
+    case Flipped180:
+      /* Apply horizontal flip.  */
+      MatrixMirrorHorizontal (matrix, width);
+
+      /* Apply clockwise 180 degree rotation around the center.  */
+      MatrixRotate (matrix, M_PI, width / 2.0f, height / 2.0f);
+      break;
+
+    case Flipped270:
+      /* Apply horizontal flip.  */
+      MatrixMirrorHorizontal (matrix, width);
+
+      /* Apply clockwise 270 degree rotation around the origin.  */
+      MatrixRotate (matrix, M_PI * 1.5, 0, 0);
+
+      /* Translate y by the width.  */
+      MatrixTranslate (matrix, 0, -width);
+      break;
+    }
+}
+
+void
+TransformBox (pixman_box32_t *box, BufferTransform transform,
+	      int width, int height)
+{
+  pixman_box32_t work;
+
+  switch (transform)
+    {
+    case Normal:
+      work = *box;
+      break;
+
+    case CounterClockwise90:
+      work.x1 = height - box->y2;
+      work.y1 = box->x1;
+      work.x2 = height - box->y1;
+      work.y2 = box->x2;
+      break;
+
+    case CounterClockwise180:
+      work.x1 = width - box->x2;
+      work.y1 = height - box->y2;
+      work.x2 = width - box->x1;
+      work.y2 = height - box->y1;
+      break;
+
+    case CounterClockwise270:
+      work.x1 = box->y1;
+      work.y1 = width - box->x2;
+      work.x2 = box->y2;
+      work.y2 = width - box->x1;
+      break;
+
+    case Flipped:
+      work.x1 = width - box->x2;
+      work.y1 = box->y1;
+      work.x2 = width - box->x1;
+      work.y2 = box->y2;
+      break;
+
+    case Flipped90:
+      work.x1 = box->y1;
+      work.y1 = box->x1;
+      work.x2 = box->y2;
+      work.y2 = box->x2;
+      break;
+
+    case Flipped180:
+      work.x1 = box->x1;
+      work.y1 = height - box->y2;
+      work.x2 = box->x2;
+      work.y2 = height - box->y1;
+      break;
+
+    case Flipped270:
+      work.x1 = height - box->y2;
+      work.y1 = width - box->x2;
+      work.x2 = height - box->y1;
+      work.y2 = width - box->x1;
+      break;
+    }
+
+  *box = work;
+}
+
+BufferTransform
+InvertTransform (BufferTransform transform)
+{
+  switch (transform)
+    {
+    case CounterClockwise270:
+      return CounterClockwise90;
+
+    case CounterClockwise90:
+      return CounterClockwise270;
+
+    default:
+      return transform;
+    }
+}

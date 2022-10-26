@@ -39,7 +39,7 @@ OBJS = 12to11.o run.o alloc.o fns.o output.o compositor.o       \
   time.o relative_pointer.o keyboard_shortcuts_inhibit.o        \
   idle_inhibit.o process.o fence_ring.o
 
-GENHEADERS = transfer_atoms.h
+GENHEADERS = transfer_atoms.h drm_modifiers.h
 
 #ifdef HaveEglSupport
 
@@ -98,6 +98,9 @@ transfer_atoms.h: short_types.txt mime0.awk mime1.awk mime2.awk mime3.awk \
 	awk -f mime3.awk short_types.txt >> $@
 	awk -f mime4.awk short_types.txt >> $@
 
+drm_modifiers.h: modifiers.awk $(DRMFOURCCH)
+	awk -f modifiers.awk $(DRMFOURCCH) > $@
+
 /* Now, define generated files.  */
 
 #define ScannerTarget(name)                                   @@\
@@ -134,8 +137,7 @@ $(OBJS): $(GENHEADERS)
 depend:: $(GENHEADERS) $(SRCS)
 
 cleandir::
-	$(RM) $(GENHEADERS) $(GENSRCS) transfer_atoms.h short_types.txt \
-	      12to11.tar.gz
+	$(RM) $(GENHEADERS) $(GENSRCS) short_types.txt 12to11.tar.gz
 
 /* Undefine _BSD_SOURCE and _SVID_SOURCE, since both are deprecated
    and are also superseeded by _GNU_SOURCE.  */

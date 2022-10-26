@@ -160,6 +160,23 @@ the first process exits.
 The number of seconds the protocol translator waits between
 invocations of the command specified in \fBidleIntervalCommand\fP.
 Defaults to 60.
+.TP
+.B additionalModifiersOfScreen\fP\fINUMBER\fP (class \fBAdditionalModifiers\fP)
+A comma-separated list of additional DRM modifiers that can be applied
+to each format.  These modifiers must be specified by their names
+inside the `drm_fourcc.h' system header, and should be used if your X
+graphics driver fails to report which modifiers are available.
+\fINUMBER\fP should be replaced with the number of the screen on which
+the protocol translator is running.
+
+On 9th Generation Intel systems, for example, you may want to set this
+to:
+.IP
+.in +4
+.EX
+\fB12to11.AdditionalModifiers: I915_FORMAT_MOD_X_TILED,DRM_FORMAT_MOD_LINEAR\fP
+.EE
+.in
 .IP
 .SH ENVIRONMENT
 Several environment variables exist that modify the behavior of the

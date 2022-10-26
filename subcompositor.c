@@ -1632,22 +1632,6 @@ GetContentScale (int scale)
   return -scale + 1;
 }
 
-static BufferTransform
-InvertTransform (BufferTransform transform)
-{
-  switch (transform)
-    {
-    case CounterClockwise270:
-      return CounterClockwise90;
-
-    case CounterClockwise90:
-      return CounterClockwise270;
-
-    default:
-      return transform;
-    }
-}
-
 static int
 BufferWidthAfterTransform (View *view)
 {
