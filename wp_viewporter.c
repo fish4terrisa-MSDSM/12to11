@@ -117,6 +117,13 @@ SetSource (struct wl_client *client, struct wl_resource *resource,
     wl_resource_post_error (resource, WP_VIEWPORT_ERROR_BAD_VALUE,
 			    "invalid source rectangle specified");
 
+  if (ext->surface->current_state.src_x == src_x
+      && ext->surface->current_state.src_y == src_y
+      && ext->surface->current_state.src_width == src_width
+      && ext->surface->current_state.src_height == src_height)
+    /* No change happened.  */
+    return;
+
   ext->surface->pending_state.pending |= PendingViewportSrc;
   ext->surface->pending_state.src_x = src_x;
   ext->surface->pending_state.src_y = src_y;
@@ -147,6 +154,11 @@ SetDestination (struct wl_client *client, struct wl_resource *resource,
 			      "invalid destination size specified");
       return;
     }
+
+  if (ext->surface->current_state.dest_width == width
+      && ext->surface->current_state.dest_height == height)
+    /* No change happened.  */
+    return;
 
   ext->surface->pending_state.pending |= PendingViewportDest;
   ext->surface->pending_state.dest_width = width;
