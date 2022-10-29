@@ -345,6 +345,7 @@ TransformBox (pixman_box32_t *box, BufferTransform transform,
   switch (transform)
     {
     case Normal:
+    default:
       work = *box;
       break;
 

@@ -161,12 +161,14 @@ typedef enum _BufferTransform BufferTransform;
 
 typedef void *IdleCallbackKey;
 typedef void *PresentCompletionKey;
+typedef void *RenderCompletionKey;
 
 typedef void (*DmaBufSuccessFunc) (RenderBuffer, void *);
 typedef void (*DmaBufFailureFunc) (void *);
 
 typedef void (*BufferIdleFunc) (RenderBuffer, void *);
 typedef void (*PresentCompletionFunc) (void *);
+typedef void (*RenderCompletionFunc) (void *);
 
 enum _BufferTransform
   {
@@ -361,20 +363,30 @@ struct _RenderFuncs
 		     int, int, int, int, DrawParams *);
 
   /* Finish rendering, and swap changes in given damage to display.
-     May be NULL.  */
-  void (*finish_render) (RenderTarget, pixman_region32_t *);
+     May be NULL.  If a callback is passed and a non-NULL key is
+     returned, then the rendering will not actually have finished
+     until the callback is run.  */
+  RenderCompletionKey (*finish_render) (RenderTarget, pixman_region32_t *,
+					RenderCompletionFunc, void *);
+
+  /* Cancel the callback returned by finish_render.  */
+  void (*cancel_completion_callback) (RenderCompletionKey);
 
   /* Return the age of the target.  Value is a number not less than
-     -1, describing the "age" of the contents of the target.
-
+     -2, describing the "age" of the contents of the target.
+     
      -1 means the buffer contains no valid contents, and must be
-      redrawn from scratch.  0 means the buffer contains the contents
-      at the time of the last call to `finish_render', 1 means the
-      buffer contains the contents at the time of the second last
-      call to `finish_render', and so on.
+     redrawn from scratch.  0 means the buffer contains the contents
+     at the time of the last call to `finish_render', 1 means the
+     buffer contains the contents at the time of the second last call
+     to `finish_render', and so on.
 
-      Note that when a render target is first created, the renderer
-      may chose to return 0 instead of 1.  */
+     -2 means the buffer contents are of the last call to
+      FinishRender, but are invalid for any rendering call other than
+      present_to_window.
+
+     Note that when a render target is first created, the renderer may
+     chose to return 0 instead of 1.  */
   int (*target_age) (RenderTarget);
 
   /* Create a rendering "fence" object, that serves to explicitly
@@ -407,11 +419,6 @@ struct _RenderFuncs
 
   /* Cancel the given presentation callback.  */
   void (*cancel_presentation_callback) (PresentCompletionKey);
-  
-  /* Cancel any presentation that might have happened to the window
-     backing the given target.  This must be called before any normal
-     drawing operations.  */
-  void (*cancel_presentation) (RenderTarget);
 
   /* Some flags.  NeverAges means targets always preserve contents
      that were previously drawn.  */
@@ -512,6 +519,10 @@ struct _BufferFuncs
   /* Ensure wait_for_idle can be called.  May be NULL.  */
   void (*set_need_wait_for_idle) (RenderTarget);
 
+  /* Return whether or not the given buffer can be treated as
+     completely opaque.  */
+  Bool (*is_buffer_opaque) (RenderBuffer);
+
   /* Called during renderer initialization.  */
   void (*init_buffer_funcs) (void);
 };
@@ -535,7 +546,11 @@ extern void RenderFillBoxesWithTransparency (RenderTarget, pixman_box32_t *,
 extern void RenderClearRectangle (RenderTarget, int, int, int, int);
 extern void RenderComposite (RenderBuffer, RenderTarget, Operation, int,
 			     int, int, int, int, int, DrawParams *);
-extern void RenderFinishRender (RenderTarget, pixman_region32_t *);
+extern RenderCompletionKey RenderFinishRender (RenderTarget,
+					       pixman_region32_t *,
+					       RenderCompletionFunc,
+					       void *);
+extern void RenderCancelCompletionCallback (RenderCompletionKey);
 extern int RenderTargetAge (RenderTarget);
 extern RenderFence RenderImportFdFence (int, Bool *);
 extern void RenderWaitFence (RenderFence);
@@ -546,7 +561,6 @@ extern PresentCompletionKey RenderPresentToWindow (RenderTarget, RenderBuffer,
 						   PresentCompletionFunc,
 						   void *);
 extern void RenderCancelPresentationCallback (PresentCompletionKey);
-extern void RenderCancelPresentation (RenderTarget);
 
 extern DrmFormat *RenderGetDrmFormats (int *);
 extern dev_t RenderGetRenderDevice (Bool *);
@@ -571,6 +585,7 @@ extern void RenderCancelIdleCallback (IdleCallbackKey);
 extern Bool RenderIsBufferIdle (RenderBuffer, RenderTarget);
 extern void RenderWaitForIdle (RenderBuffer, RenderTarget);
 extern void RenderSetNeedWaitForIdle (RenderTarget);
+extern Bool RenderIsBufferOpaque (RenderBuffer);
 
 /* Defined in run.c.  */
 
@@ -1760,8 +1775,11 @@ extern int ProcessPoll (struct pollfd *, nfds_t, struct timespec *);
 typedef struct _Fence Fence;
 
 extern Fence *GetFence (void);
+extern Fence *GetLooseFence (void);
+extern void FenceTrigger (Fence *);
 extern void FenceRetain (Fence *);
 extern void FenceAwait (Fence *);
+extern void FenceRelease (Fence *);
 extern XSyncFence FenceToXFence (Fence *);
 
 /* Utility functions that don't belong in a specific file.  */

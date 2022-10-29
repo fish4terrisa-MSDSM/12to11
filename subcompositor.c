@@ -149,11 +149,8 @@ enum
     /* This means that there is at least one unmapped view in this
        subcompositor.  */
     SubcompositorIsPartiallyMapped = (1 << 4),
-    /* This means that the subcompositor is frozen and updates should
-       do nothing.  */
-    SubcompositorIsFrozen	   = (1 << 5),
     /* This means that the subcompositor has a target attached.  */
-    SubcompositorIsTargetAttached  = (1 << 6),
+    SubcompositorIsTargetAttached  = (1 << 5),
   };
 
 #define IsGarbaged(subcompositor)				\
@@ -175,11 +172,6 @@ enum
   ((subcompositor)->state |= SubcompositorIsPartiallyMapped)
 #define IsPartiallyMapped(subcompositor)			\
   ((subcompositor)->state & SubcompositorIsPartiallyMapped)
-
-#define SetFrozen(subcompositor)				\
-  ((subcompositor)->state |= SubcompositorIsFrozen)
-#define IsFrozen(subcompositor)					\
-  ((subcompositor)->state & SubcompositorIsFrozen)
 
 #define SetTargetAttached(subcompositor)			\
   ((subcompositor)->state |= SubcompositorIsTargetAttached)
@@ -269,6 +261,9 @@ struct _View
   /* Buffer data.  */
 
 #ifndef TEST
+  /* Width and height of the view.  Not valid until ViewAfterSizeUpdate!  */
+  int width, height;
+
   /* The buffer associated with this view, or None if nothing is
      attached.  */
   ExtBuffer *buffer;
@@ -279,6 +274,9 @@ struct _View
   /* Some data associated with this view.  Can be a surface or
      something else.  */
   void *data;
+
+  /* Culling data; this is not valid after drawing completes.  */
+  pixman_region32_t *cull_region;
 
   /* The damaged and opaque regions.  */
   pixman_region32_t damage, opaque;
@@ -359,6 +357,9 @@ struct _Subcompositor
 
   /* The last attached presentation callback, if any.  */
   PresentCompletionKey present_key;
+
+  /* The last attached render completion callback, if any.  */
+  RenderCompletionKey render_key;
 
   /* The minimum origin of any surface in this subcompositor.  Used to
      compute the actual size of the subcompositor.  */
@@ -1232,53 +1233,6 @@ main (int argc, char **argv)
 #endif
 
 
-/* The subcompositor composites its inferior views to a drawable,
-   normally a window, each time the SubcompositorUpdate function is
-   called.  Since it is not very efficient to draw every view every
-   time an update occurs, the subcompositor keeps track of which parts
-   of the inferiors have changed, and uses that information to only
-   composite a reasonable minimum set of inferiors and screen areas on
-   each update (reasonable meaning whatever can be computed quickly
-   while keeping graphics updates fast).  The subcompositor also keeps
-   track of which areas of an inferior are opaque, and uses that
-   information to avoid compositing in response to damage on inferiors
-   that are obscured from above.
-
-   The subcompositor normally assumes that the contents of the target
-   drawable are what was drawn by the subcompositor during previous
-   updates.  With that in mind, the subcompositor tries to calculate a
-   "global damage region" consisting of the areas of the target that
-   have to be updated, and a "update inferior", the first inferior
-   that will be composited onto the target drawable, by unioning up
-   damage and opaque regions of each inferior until the first
-   unobscured inferior is found.  Then, the contents of all inferiors
-   that intersect with the global damage region are composited onto
-   the target drawable.  Afterwards, the damage region of each
-   inferior is cleared, and the process can begin again.
-
-   However, under some situations, the contents of the target drawable
-   may reflect what was drawn two or three invocations of
-   SubcompositorUpdate ago.  To enable efficient updates when that is
-   the case, the subcompositor will keep track of the global damage
-   regions of the past two updates, and intersect the resulting global
-   damage region of each invocation with the appropriate number of
-   previous regions.
-
-   For simplicity's sake, the update inferior is reset to the first
-   view in the subcompositor's inferior list whenever the global
-   damage region is intersected with the damage region of a previous
-   update.
-
-   Such computation is not reliable, however, if the size or position
-   of a view changes.  In the interest of keeping thing simple, every
-   inferior is composited onto the target drawable whenever a view
-   change is detected.  These changes are marked by calls to the macro
-   SetGarbaged.
-
-   Further more, the X server can sometimes erase the contents of an
-   area of the target window, in response to it being obscured.  When
-   that happens, that area is entirely composited to the target
-   window.  See SubcompositorExpose for more details.  */
 
 #ifndef TEST
 
@@ -1295,6 +1249,10 @@ ViewAfterSizeUpdate (View *view)
 
   if (view->maybe_resized)
     view->maybe_resized (view);
+
+  /* Calculate view->width and view->height again.  */
+  view->width = ViewWidth (view);
+  view->height = ViewHeight (view);
 
   if (!view->subcompositor || !ViewVisibilityState (view, &mapped)
       || !mapped || IsSkipped (view))
@@ -1342,25 +1300,20 @@ ViewAttachBuffer (View *view, ExtBuffer *buffer)
 	SetGarbaged (view->subcompositor);
     }
 
-  if ((buffer && !old)
-      || (old && !buffer)
-      || (buffer && old
-	  && (XLBufferWidth (buffer) != XLBufferWidth (old)
-	      || XLBufferHeight (buffer) != XLBufferHeight (old))))
+  if (((buffer && !old)
+       || (old && !buffer)
+       || (buffer && old
+	   && (XLBufferWidth (buffer) != XLBufferWidth (old)
+	       || XLBufferHeight (buffer) != XLBufferHeight (old))))
+      && !IsViewported (view))
     {
-      if (view->subcompositor
-	  /* If a viewport is specified, then the view width and
-	     height are determined independently from the buffer
-	     size.  */
-	  && !IsViewported (view))
-	{
-	  /* A new buffer was attached, so garbage the subcompositor
-	     as well.  */
-	  SetGarbaged (view->subcompositor);
+      /* Recompute view and subcompositor bounds.  */
+      ViewAfterSizeUpdate (view);
 
-	  /* Recompute view and subcompositor bounds.  */
-	  ViewAfterSizeUpdate (view);
-	}
+      if (view->subcompositor)
+	/* A new buffer was attached, so garbage the subcompositor as
+	   well.  */
+	SetGarbaged (view->subcompositor);
     }
 
   if (buffer && IsViewUnmapped (view))
@@ -1614,13 +1567,19 @@ ViewFree (View *view)
   XLFree (view);
 }
 
+/* Forward declaration.  */
+static void ApplyBufferDamage (View *, pixman_region32_t *);
+
 void
 ViewDamage (View *view, pixman_region32_t *damage)
 {
   /* This damage must be transformed by the viewport and scale, but
      must NOT be transformed by the subpixel (fractional) offset.  */
-  pixman_region32_union (&view->damage, &view->damage,
-			 damage);
+  pixman_region32_union (&view->damage, &view->damage, damage);
+
+  /* Update any attached buffer with the given damage.  */
+  if (view->buffer)
+    ApplyBufferDamage (view, damage);
 }
 
 static double
@@ -1738,7 +1697,7 @@ ViewDamageBuffer (View *view, pixman_region32_t *damage)
 	}
 
       /* Damage the view.  */
-      pixman_region32_union (&view->damage, &view->damage, &temp);
+      ViewDamage (view, &temp);
       pixman_region32_fini (&temp);
     }
 }
@@ -1952,6 +1911,20 @@ ViewComputeTransform (View *view, DrawParams *params, Bool draw)
     }
 }
 
+static void
+ApplyBufferDamage (View *view, pixman_region32_t *damage)
+{
+  DrawParams params;
+  RenderBuffer buffer;
+
+  /* Compute the transform.  */
+  ViewComputeTransform (view, &params, False);
+  buffer = XLRenderBufferFromBuffer (view->buffer);
+
+  /* Upload the buffer contents.  */
+  RenderUpdateBufferForDamage (buffer, damage, &params);
+}
+
 void
 SubcompositorSetOpaqueCallback (Subcompositor *subcompositor,
 				void (*opaque_changed) (Subcompositor *,
@@ -1992,30 +1965,6 @@ SubcompositorSetNoteFrameCallback (Subcompositor *subcompositor,
 {
   subcompositor->note_frame = note_frame;
   subcompositor->note_frame_data = data;
-}
-
-static void
-FillBoxesWithTransparency (Subcompositor *subcompositor,
-			   pixman_box32_t *boxes, int nboxes)
-{
-  RenderFillBoxesWithTransparency (subcompositor->target, boxes,
-				   nboxes, subcompositor->min_x,
-				   subcompositor->min_y);
-}
-
-static Bool
-ViewContainsExtents (View *view, pixman_box32_t *box)
-{
-  int x, y, width, height;
-
-  x = view->abs_x;
-  y = view->abs_y;
-  width = ViewWidth (view);
-  height = ViewHeight (view);
-
-  return (box->x1 >= x && box->y1 >= y
-	  && box->x2 <= x + width
-	  && box->y2 <= x + height);
 }
 
 void
@@ -2081,73 +2030,6 @@ StorePreviousDamage (Subcompositor *subcompositor,
 			  update_region);
 }
 
-static Bool
-IntersectBoxes (pixman_box32_t *in, pixman_box32_t *other,
-		pixman_box32_t *out)
-{
-  pixman_box32_t a, b;
-
-  /* Take copies of all the boxes, since one of them might be out.  */
-  a = *in;
-  b = *other;
-
-  out->x1 = MAX (a.x1, b.x1);
-  out->y1 = MAX (a.y1, b.y1);
-
-  out->x2 = MIN (a.x2, b.x2);
-  out->y2 = MIN (a.y2, b.y2);
-
-  /* If the intersection is empty, return False.  */
-  if (out->x2 - out->x1 < 0 || out->y2 - out->y1 < 0)
-    return False;
-
-  return True;
-}
-
-static Bool
-NoViewsAfter (View *first_view)
-{
-  List *list;
-  View *view;
-
-  list = first_view->link->next;
-
-  while (list != first_view->link)
-    {
-      view = list->view;
-
-      if (!view)
-	goto next_1;
-
-      if (IsViewUnmapped (view))
-	{
-	  /* Skip the unmapped view.  */
-	  list = view->inferior;
-	  goto next_1;
-	}
-
-      if (IsSkipped (view))
-	{
-	  /* We must skip this view, as it represents (for
-	     instance) a subsurface that has been added, but not
-	     committed.  */
-	  goto next_1;
-	}
-
-      if (!view->buffer)
-	goto next_1;
-
-      /* There is view in front of view that potentially obscures it.
-	 Bail out! */
-      return False;
-
-    next_1:
-      list = list->next;
-    }
-
-  return True;
-}
-
 static void
 PresentCompletedCallback (void *data)
 {
@@ -2157,7 +2039,6 @@ PresentCompletedCallback (void *data)
 
   /* The presentation callback should still be set here.  */
   XLAssert (subcompositor->present_key != NULL);
-
   subcompositor->present_key = NULL;
 
   /* Call the presentation callback if it is still set.  */
@@ -2167,892 +2048,872 @@ PresentCompletedCallback (void *data)
 			       subcompositor->note_frame_data);
 }
 
-void
-SubcompositorUpdate (Subcompositor *subcompositor)
+static void
+RenderCompletedCallback (void *data)
 {
-  pixman_region32_t update_region, temp, start_opaque;
-  pixman_region32_t total_opaque, total_input;
-  View *start, *original_start, *view, *first;
+  Subcompositor *subcompositor;
+
+  subcompositor = data;
+
+  /* The render completion callback must still be set here.  */
+  XLAssert (subcompositor->render_key != NULL);
+  subcompositor->render_key = NULL;
+
+  /* Call the frame function if it s still set.  */
+  if (subcompositor->note_frame)
+    subcompositor->note_frame (ModeComplete,
+			       subcompositor->frame_counter,
+			       subcompositor->note_frame_data);
+}
+
+#define SkipSlug(list, view, next)				\
+  {								\
+    if (!list->view)						\
+      goto next;						\
+								\
+    if (IsViewUnmapped (list->view))				\
+      {								\
+	/* Skip the unmapped view.  */				\
+	list = list->view->inferior;				\
+	SetPartiallyMapped (subcompositor);			\
+	goto next;						\
+      }								\
+								\
+    if (IsSkipped (list->view))					\
+      {								\
+	/* We must skip this view, as it represents (for	\
+	   instance) a subsurface that has been added, but not	\
+	   committed.  */					\
+	SetPartiallyMapped (subcompositor);			\
+	goto next;						\
+      }								\
+								\
+    if (!list->view->buffer)					\
+      goto next;						\
+								\
+    view = list->view;						\
+								\
+  }
+
+/* Update ancillary data upon commit.  This includes the input and
+   opaque regions.  */
+
+static void
+SubcompositorUpdateAncillary (Subcompositor *subcompositor)
+{
+  Bool update_input, update_opaque;
   List *list;
-  pixman_box32_t *boxes, *extents, temp_boxes;
-  int nboxes, i, tx, ty, view_width, view_height;
-  Operation op;
+  View *view;
+  pixman_region32_t input, opaque, temp;
+
+  if (IsGarbaged (subcompositor))
+    {
+      update_opaque
+	= subcompositor->opaque_change != NULL;
+      update_input
+	= subcompositor->input_change != NULL;
+
+      pixman_region32_init (&input);
+      pixman_region32_init (&opaque);
+    }
+  else
+    {
+      update_opaque = (IsOpaqueDirty (subcompositor)
+		       && subcompositor->opaque_change);
+      update_input = (IsInputDirty (subcompositor)
+		      && subcompositor->input_change);
+
+      if (update_input)
+	pixman_region32_init (&input);
+
+      if (update_opaque)
+	pixman_region32_init (&opaque);
+    }
+
+  if (!update_input && !update_opaque)
+    /* There is nothing to update.  */
+    return;
+
+  /* This is a temporary region used for some operations.  */
+  pixman_region32_init (&temp);
+
+  list = subcompositor->inferiors->next;
+
+  while (list != subcompositor->inferiors)
+    {
+      SkipSlug (list, view, next);
+
+      if (update_input)
+	{
+	  /* Add this view's input region to the total.  */
+	  pixman_region32_intersect_rect (&temp, &view->input, 0, 0,
+					  view->width, view->height);
+	  pixman_region32_translate (&temp, view->abs_x, view->abs_y);
+	  pixman_region32_union (&input, &input, &temp);
+	}
+
+      if (update_opaque)
+	{
+	  /* Add this view's opaque region to the total.  */
+	  pixman_region32_intersect_rect (&temp, &view->opaque, 0, 0,
+					  view->width, view->height);
+	  pixman_region32_translate (&temp, view->abs_x, view->abs_y);
+	  pixman_region32_union (&opaque, &opaque, &temp);
+	}
+
+    next:
+      list = list->next;
+    }
+
+  /* Now, notify the client of any changes.  */
+
+  if (update_input)
+    subcompositor->input_change (subcompositor,
+				 subcompositor->input_change_data,
+				 &input);
+
+  if (update_opaque)
+    subcompositor->opaque_change (subcompositor,
+				  subcompositor->opaque_change_data,
+				  &opaque);
+
+  /* And free the temp regions.  */
+
+  pixman_region32_fini (&temp);
+
+  if (update_input)
+    pixman_region32_fini (&input);
+
+  if (update_opaque)
+    pixman_region32_fini (&opaque);
+
+  subcompositor->state &= ~SubcompositorIsOpaqueDirty;
+  subcompositor->state &= ~SubcompositorIsInputDirty;
+}
+
+static pixman_region32_t *
+CopyRegion (pixman_region32_t *source)
+{
+  pixman_region32_t *region;
+
+  region = XLMalloc (sizeof *region);
+  pixman_region32_init (region);
+  pixman_region32_copy (region, source);
+
+  return region;
+}
+
+static void
+FreeRegion (pixman_region32_t *region)
+{
+  pixman_region32_fini (region);
+  XLFree (region);
+}
+
+static Bool
+AnyParentUnmapped (View *view, List **link)
+{
+  View *unmapped;
+
+  if (!IsPartiallyMapped (view->subcompositor))
+    return False;
+
+  /* Find the topmost unmapped parent of VIEW, or VIEW itself, if any,
+     and set *link to its link pointer.  */
+  unmapped = NULL;
+
+  while (view)
+    {
+      if (IsViewUnmapped (view))
+	unmapped = view;
+
+      view = view->parent;
+    }
+
+  if (unmapped)
+    {
+      *link = unmapped->link;
+      return True;
+    }
+
+  return False;
+}
+
+static void
+DoCull (Subcompositor *subcompositor, pixman_region32_t *damage,
+	pixman_region32_t *background)
+{
+  List *list;
+  View *view;
+  pixman_region32_t temp;
   RenderBuffer buffer;
-  int min_x, min_y, age, n_seen;
-  DrawParams draw_params;
-  Bool presented;
-  PresentCompletionKey key;
 
-  /* Just return if no target was specified.  */
-  if (!IsTargetAttached (subcompositor))
-    return;
+  view = NULL;
 
-  /* Likewise if the subcompositor is "frozen".  */
-  if (IsFrozen (subcompositor))
-    return;
+  /* Process the background region.  The background must at most be
+     drawn beneath the damage; anywhere else, it will be obscured by
+     the opaque parts of views above or the bottommost view.  */
+  pixman_region32_intersect (background, background, damage);
 
-  if (subcompositor->present_key)
-    /* Cancel the presentation callback.  The next presentation will
-       either be to an unmapped window, cancel the presentation, or
-       start a new one.  */
-    RenderCancelPresentationCallback (subcompositor->present_key);
-  subcompositor->present_key = NULL;
+  /* Perform culling.  Walk the inferior list from top to bottom.
+     Each time a view is encountered and has an opaque region, set
+     damage as its "clip region", and then subtract its opaque region
+     from damage.  */
 
-  list = subcompositor->inferiors;
+  pixman_region32_init (&temp);
+  list = subcompositor->inferiors->last;
+  while (list != subcompositor->inferiors)
+    {
+      if (!list->view)
+	goto last;
+
+      if (AnyParentUnmapped (list->view, &list))
+	/* Skip the unmapped view.  */
+	goto last;
+
+      if (IsSkipped (list->view))
+	/* We must skip this view, as it represents (for instance) a
+	   subsurface that has been added, but not committed.  */
+	goto last;
+
+      if (!list->view->buffer)
+	goto last;
+
+      view = list->view;
+      buffer = XLRenderBufferFromBuffer (list->view->buffer);
+
+      /* Set view's cull region to the intersection of the current
+	 region and its bounds.  */
+      pixman_region32_intersect_rect (&temp, damage,
+				      view->abs_x,
+				      view->abs_y,
+				      view->width,
+				      view->height);
+
+      /* Don't set the cull region if it is empty.  */
+      if (pixman_region32_not_empty (&temp))
+	view->cull_region = CopyRegion (&temp);
+
+      /* Subtract the damage region by the view's opaque region.  */
+
+      if (!pixman_region32_not_empty (&view->opaque))
+	goto last;
+
+      if (RenderIsBufferOpaque (buffer))
+	/* If the buffer is opaque, we can just ignore its opaque
+	   region.  */
+	pixman_region32_init_rect (&temp, view->abs_x, view->abs_y,
+				   view->width, view->height);
+      else
+	{
+	  pixman_region32_intersect_rect (&temp, &view->opaque, 0, 0,
+					  view->width, view->height);
+	  pixman_region32_translate (&temp, view->abs_x, view->abs_y);
+	}
+
+      pixman_region32_subtract (damage, damage, &temp);
+
+      /* Also subtract the opaque region from the background.  */
+      pixman_region32_subtract (background, background, &temp);
+
+      /* If damage is already empty, finish early.  */
+      if (!pixman_region32_not_empty (damage))
+	break;
+
+    last:
+      list = list->last;
+    }
+
+  if (view && view->cull_region)
+    /* Also subtract the region of the bottommost view that will be
+       drawn from the background, as it will use PictOpCopy.  */
+    pixman_region32_subtract (background, background, view->cull_region);
+
+  pixman_region32_fini (&temp);
+}
+
+static void
+DrawBackground (Subcompositor *subcompositor, pixman_region32_t *damage)
+{
+  pixman_box32_t *boxes;
+  int nboxes;
+
+  boxes = pixman_region32_rectangles (damage, &nboxes);
+
+  if (nboxes)
+    RenderFillBoxesWithTransparency (subcompositor->target, boxes,
+				     nboxes, subcompositor->min_x,
+				     subcompositor->min_y);
+}
+
+static void
+CompositeSingleView (View *view, pixman_region32_t *region,
+		     Operation op, DrawParams *transform)
+{
+  pixman_box32_t *boxes;
+  int nboxes, i;
+  RenderBuffer buffer;
+  int min_x, min_y, tx, ty;
+  Subcompositor *subcompositor;
+
+  subcompositor = view->subcompositor;
   min_x = subcompositor->min_x;
   min_y = subcompositor->min_y;
   tx = subcompositor->tx;
   ty = subcompositor->ty;
-  start = NULL;
-  original_start = NULL;
-  pixman_region32_init (&temp);
-  pixman_region32_init (&update_region);
-  n_seen = 0;
-  presented = False;
 
-  start = subcompositor->inferiors->next->view;
-  age = RenderTargetAge (subcompositor->target);
+  boxes = pixman_region32_rectangles (region, &nboxes);
+  buffer = XLRenderBufferFromBuffer (view->buffer);
 
-  /* If there is not enough prior damage available to satisfy age, set
-     it to -1.  */
+  for (i = 0; i < nboxes; ++i)
+    RenderComposite (buffer, view->subcompositor->target, op,
+		     /* src-x.  */
+		     boxes[i].x1 - view->abs_x,
+		     /* src-y.  */
+		     boxes[i].y1 - view->abs_y,
+		     /* dst-x.  */
+		     boxes[i].x1 - min_x + tx,
+		     /* dst-y.  */
+		     boxes[i].y1 - min_y + ty,
+		     /* width.  */
+		     boxes[i].x2 - boxes[i].x1,
+		     /* height.  */
+		     boxes[i].y2 - boxes[i].y1,
+		     /* draw-params.  */
+		     transform);
+}
 
-  if (age > 0 && !subcompositor->last_damage)
-    age = -1;
+static void
+InitBackground (Subcompositor *subcompositor,
+		pixman_region32_t *region)
+{
+  int min_x, min_y, max_x, max_y;
 
-  if (age > 2 && !subcompositor->before_damage)
-    age = -1;
+  min_x = subcompositor->min_x;
+  min_y = subcompositor->min_y;
+  max_x = subcompositor->max_x;
+  max_y = subcompositor->max_y;
 
-  /* If the subcompositor is garbaged, clear all prior damage.  */
-  if (IsGarbaged (subcompositor))
+  pixman_region32_init_rect (region, min_x, min_y,
+			     max_x - min_x + 1,
+			     max_y - min_y + 1);
+}
+
+static Bool
+TryPresent (View *view, pixman_region32_t *damage, DrawParams *transform)
+{
+  PresentCompletionKey key, existing_key;
+  RenderBuffer buffer;
+
+  if (view->abs_x == view->subcompositor->min_x
+      && view->abs_y == view->subcompositor->min_y
+      && view->width == (view->subcompositor->max_x
+			 - view->subcompositor->min_x
+			 + 1)
+      && view->height == (view->subcompositor->max_y
+			  - view->subcompositor->min_y
+			  + 1)
+      && view->subcompositor->note_frame
+      && !transform->flags)
     {
-      if (subcompositor->last_damage)
-	pixman_region32_clear (subcompositor->last_damage);
-
-      if (subcompositor->before_damage)
-	pixman_region32_clear (subcompositor->before_damage);
-
-      /* Reset these fields to NULL, so we do not try to use them
-	 later on.  */
-      subcompositor->last_damage = NULL;
-      subcompositor->before_damage = NULL;
-    }
-
-  /* Clear the "is partially mapped" flag.  It will be set later on if
-     there is actually a partially mapped view.  */
-  subcompositor->state &= ~SubcompositorIsPartiallyMapped;
-
-  if (subcompositor->note_bounds)
-    subcompositor->note_bounds (subcompositor->note_bounds_data,
-				min_x, min_y, subcompositor->max_x,
-				subcompositor->max_y);
-
-  /* Note the size of this subcompositor, so the viewport can be set
-     accordingly.  */
-  RenderNoteTargetSize (subcompositor->target,
-			subcompositor->max_x - min_x + 1,
-		        subcompositor->max_y - min_y + 1);
-
-  if (!IsGarbaged (subcompositor)
-      /* If the target contents are too old or invalid, we go down the
-	 usual IsGarbaged code path, except we do not recompute the
-	 input or opaque regions unless they are dirty.  */
-      && (age >= 0 && age < 3))
-    {
-      start = NULL;
-      original_start = NULL;
-
-      if (IsOpaqueDirty (subcompositor))
-	pixman_region32_init (&total_opaque);
-
-      if (IsInputDirty (subcompositor))
-	pixman_region32_init (&total_input);
-
-      pixman_region32_init (&start_opaque);
-
-      do
-	{
-	  view = list->view;
-
-	  if (!view)
-	    goto next;
-
-	  if (IsViewUnmapped (view))
-	    {
-	      /* The view is unmapped.  Skip past it and all its
-		 children.  */
-	      list = view->inferior;
-
-	      /* Set the "is partially mapped" flag.  This is an
-		 optimization used to make inserting views in deeply
-		 nested hierarchies faster.  */
-	      SetPartiallyMapped (subcompositor);
-	      goto next;
-	    }
-
-	  if (IsSkipped (view))
-	    {
-	      /* We must skip this view, as it represents (for
-		 instance) a subsurface that has been added, but not
-		 committed.  */
-	      SetPartiallyMapped (subcompositor);
-	      goto next;
-	    }
-
-	  if (!view->buffer)
-	    goto next;
-
-	  /* Increase the number of views seen count.  */
-	  n_seen++;
-
-	  /* Obtain the view width and height here.  */
-	  view_width = ViewWidth (view);
-	  view_height = ViewHeight (view);
-
-	  if (!start)
-	    {
-	      start = view;
-	      original_start = view;
-	    }
-
-	  if (pixman_region32_not_empty (&list->view->opaque))
-	    {
-	      /* Translate the region into the subcompositor
-		 coordinate space.  */
-	      pixman_region32_translate (&list->view->opaque,
-					 list->view->abs_x,
-					 list->view->abs_y);
-
-	      /* Only use the intersection between the opaque region
-		 and the rectangle of the view, since the opaque areas
-		 cannot extend outside it.  */
-
-	      pixman_region32_intersect_rect (&temp, &view->opaque,
-					      view->abs_x, view->abs_y,
-					      view_width, view_height);
-
-	      if (IsOpaqueDirty (subcompositor))
-		pixman_region32_union (&total_opaque, &total_opaque, &temp);
-
-	      pixman_region32_subtract (&update_region,
-					&update_region, &temp);
-
-	      /* This view will obscure all preceding damaged areas,
-		 so make start here.  This optimization is disabled if
-		 the target contents are too old, as prior damage
-		 could reveal contents below.  */
-	      if (!pixman_region32_not_empty (&update_region) && !age)
-		{
-		  start = list->view;
-
-		  /* Now that start changed, record the opaque region.
-		     That way, if some damage happens outside the
-		     opaque region in the future, this operation can
-		     be undone.  */
-		  pixman_region32_copy (&start_opaque, &view->opaque);
-		}
-
-	      pixman_region32_translate (&list->view->opaque,
-					 -list->view->abs_x,
-					 -list->view->abs_y);
-	    }
-
-	  if (pixman_region32_not_empty (&list->view->input)
-	      && IsInputDirty (subcompositor))
-	    {
-	      /* Translate the region into the subcompositor
-		 coordinate space.  */
-	      pixman_region32_translate (&list->view->input,
-					 list->view->abs_x,
-					 list->view->abs_y);
-
-	      pixman_region32_intersect_rect (&temp, &view->input,
-					      view->abs_x, view->abs_y,
-					      view_width, view_height);
-
-	      pixman_region32_union (&total_input, &total_input, &temp);
-
-	      /* Restore the original input region.  */
-	      pixman_region32_translate (&list->view->input,
-					 -list->view->abs_x,
-					 -list->view->abs_y);
-	    }
-
-	  /* Update the attached buffer from the damage.  This is only
-	     required on some backends, where we have to upload data
-	     from a shared memory buffer to the graphics hardware.
-
-	     The update is performed even when there is no damage,
-	     because the initial data might need to be uploaded.
-	     However, the function does not perform partial updates
-	     when the damage region is empty.  */
-
-	  /* Compute the transform and put it in draw_params, so TRT
-	     can be done in the rendering backend.  */
-	  ViewComputeTransform (view, &draw_params, False);
-
-	  buffer = XLRenderBufferFromBuffer (view->buffer);
-	  RenderUpdateBufferForDamage (buffer, &list->view->damage,
-				       &draw_params);
-
-	  if (pixman_region32_not_empty (&list->view->damage))
-	    {
-	      /* Translate the region into the subcompositor
-		 coordinate space.  */
-	      pixman_region32_translate (&list->view->damage,
-					 list->view->abs_x,
-					 list->view->abs_y);
-
-	      /* Similarly intersect the damage region with the
-		 clipping.  */
-	      pixman_region32_intersect_rect (&temp, &list->view->damage,
-					      view->abs_x, view->abs_y,
-					      view_width, view_height);
-
-	      /* If a fractional offset is set, extend the damage by 1
-		 pixel to cover the offset.  */
-	      if (view->fract_x != 0.0 && view->fract_y != 0.0)
-		{
-		  XLExtendRegion (&temp, &temp, 1, 1);
-
-		  /* Intersect the region again.  */
-		  pixman_region32_intersect_rect (&temp, &temp, view->abs_x,
-						  view->abs_y, view_width,
-						  view_height);
-		}
-
-	      /* Union the region with the update region.  */
-	      pixman_region32_union (&update_region, &temp, &update_region);
-
-	      /* If the damage extends outside the area known to be
-		 obscured by the current start, reset start back to
-		 the original starting point.  */
-	      if (start != original_start && original_start)
-		{
-		  pixman_region32_subtract (&temp, &list->view->damage,
-					    &start_opaque);
-
-		  if (pixman_region32_not_empty (&temp))
-		    start = original_start;
-		}
-
-	      /* Clear the damaged area, since it will either be drawn
-		 or be obscured.  */
-	      pixman_region32_clear (&list->view->damage);
-	    }
-
-	next:
-	  list = list->next;
-	}
-      while (list != subcompositor->inferiors);
-
-      if (IsOpaqueDirty (subcompositor))
-	{
-	  /* The opaque region changed, so run any callbacks.  */
-	  if (subcompositor->opaque_change)
-	    {
-	      /* Translate this to appear in the "virtual" coordinate
-		 space.  */
-	      pixman_region32_translate (&total_opaque, -min_x, -min_y);
-
-	      subcompositor->opaque_change (subcompositor,
-					    subcompositor->opaque_change_data,
-					    &total_opaque);
-	    }
-
-	  pixman_region32_fini (&total_opaque);
-	}
-
-      if (IsInputDirty (subcompositor))
-	{
-	  /* The input region changed, so run any callbacks.  */
-	  if (subcompositor->input_change)
-	    {
-	      /* Translate this to appear in the "virtual" coordinate
-		 space.  */
-	      pixman_region32_translate (&total_input, -min_x, -min_y);
-
-	      subcompositor->input_change (subcompositor,
-					   subcompositor->input_change_data,
-					   &total_input);
-	    }
-
-	  pixman_region32_fini (&total_input);
-	}
-
-      pixman_region32_fini (&start_opaque);
-
-      /* First store previous damage.  */
-      StorePreviousDamage (subcompositor, &update_region);
-
-      /* Now, apply any prior damage that might be required.  */
-      if (age > 0)
-	pixman_region32_union (&update_region, &update_region,
-			       /* This is checked to exist upon
-				  entering this code path.  */
-			       subcompositor->last_damage);
-
-      if (age > 1)
-	pixman_region32_union (&update_region, &update_region,
-			       /* This is checked to exist upon
-				  entering this code path.  */
-			       subcompositor->before_damage);
-    }
-  else
-    {
-      /* To save from iterating over all the views twice, perform the
-	 input and opaque region updates in the draw loop instead.  */
-
-      if (IsGarbaged (subcompositor))
-	{
-	  pixman_region32_init (&total_opaque);
-	  pixman_region32_init (&total_input);
-	}
-      else
-	{
-	  /* Otherwise, we are in the IsGarbaged code because the
-	     target contents are too old.  Only initialize the opaque
-	     and input regions if they are dirty.  */
-
-	  if (IsOpaqueDirty (subcompositor))
-	    pixman_region32_init (&total_opaque);
-
-	  if (IsInputDirty (subcompositor))
-	    pixman_region32_init (&total_input);
-	}
-
-      /* Either way, put something in the prior damage ring.  */
-      StorePreviousDamage (subcompositor, NULL);
-    }
-
-  /* Increase the frame count and announce the new frame number.  This
-     must be done even if no graphics changes were committed.  */
-  if (subcompositor->note_frame)
-    subcompositor->note_frame (ModeStarted,
-			       ++subcompositor->frame_counter,
-			       subcompositor->note_frame_data);
-
-  /* If there's nothing to do, return.  */
-
-  if (!start)
-    /* There is no starting view.  Presentation is not cancelled in
-       this case, because the surface should now be unmapped.  */
-    goto complete;
-
-  /* Now update all views from start onwards.  */
-
-  list = start->link;
-  first = NULL;
-
-  /* Begin rendering.  This is unnecessary on XRender, but required on
-     EGL to make the surface current and set the viewport.  */
-  RenderStartRender (subcompositor->target);
-
-  do
-    {
-      view = list->view;
-
-      if (!view)
-	goto next_1;
-
-      if (IsViewUnmapped (view))
-	{
-	  /* Skip the unmapped view.  */
-	  list = view->inferior;
-
-	  /* Set the "is partially mapped" flag.  This is an
-	     optimization used to make inserting views in deeply
-	     nested hierarchies faster.  */
-	  SetPartiallyMapped (subcompositor);
-	  goto next_1;
-	}
-
-      if (IsSkipped (view))
-	{
-	  /* We must skip this view, as it represents (for
-	     instance) a subsurface that has been added, but not
-	     committed.  */
-	  SetPartiallyMapped (subcompositor);
-	  goto next_1;
-	}
-
-      if (!view->buffer)
-	goto next_1;
-
-      /* Get the view width and height here.  */
-      view_width = ViewWidth (view);
-      view_height = ViewHeight (view);
-
-      /* And the buffer.  */
       buffer = XLRenderBufferFromBuffer (view->buffer);
 
-      if (IsGarbaged (subcompositor))
-	/* Update the attached buffer from the damage.  This is only
-	   required on some backends, where we have to upload data
-	   from a shared memory buffer to the graphics hardware.
+      /* Now, we know that the view overlaps the entire subcompositor
+	 and has no transforms, and can thus be presented.  Translate
+	 the damage into the window coordinate space.  */
+      pixman_region32_translate (damage, -view->subcompositor->min_x,
+				 -view->subcompositor->min_y);
 
-	   As the damage cannot be trusted while the subcompositor is
-	   update, pass NULL; this tells the renderer to update the
-	   entire buffer.
+      /* Present the buffer with the given damage.  */
+      key = RenderPresentToWindow (view->subcompositor->target, buffer,
+				   damage, PresentCompletedCallback,
+				   view->subcompositor);
 
-	   Note that if the subcompositor is not garbaged, then this
-	   has already been done.  */
-	RenderUpdateBufferForDamage (buffer, NULL, NULL);
-      else if (age < 0 || age >= 3)
+      /* Translate the damage back.  */
+      pixman_region32_translate (damage, view->subcompositor->min_x,
+				 view->subcompositor->min_y);
+
+      if (key)
 	{
-	  /* Compute the transform and put it in draw_params, so TRT
-	     can be done in the rendering backend.  */
-	  ViewComputeTransform (view, &draw_params, False);
+	  /* BeginFrame should have canceled the presentation.
+	     However, a present key may still exist if this
+	     presentation is being done in response to an
+	     exposure.  */
+	  existing_key = view->subcompositor->present_key;
 
-	  /* The target contents are too old, but the damage can be
-	     trusted.  */
-	  RenderUpdateBufferForDamage (buffer, &view->damage,
-				       &draw_params);
+	  if (existing_key)
+	    RenderCancelPresentationCallback (existing_key);
+
+	  /* Do the same for the render completion callback, if
+	     any.  */
+	  if (view->subcompositor->render_key)
+	    RenderCancelCompletionCallback (view->subcompositor->render_key);
+	  view->subcompositor->render_key = NULL;
+
+	  /* Presentation was successful.  Attach the presentation key
+	     to the subcompositor.  */
+	  view->subcompositor->present_key = key;
+	  return True;
 	}
+    }
 
-      /* Compute the transform and put it in draw_params.  */
-      ViewComputeTransform (view, &draw_params, True);
+  /* Presentation failed.  */
+  return False;
+}
 
-      if (!first)
-	{
-	  /* See if the first mapped and visible view after start is eligible
-	     for direct presentation.  It is considered eligible if:
+static void
+ClearDamage (Subcompositor *subcompositor)
+{
+  List *list;
+  View *view;
 
-	     - its bounds match that of the subcompositor.
-	     - its depth and masks match that of the subcompositor.
-	     - it is not occluded by any other view, above or below.
-	     - it has no transform whatsoever.
+  list = subcompositor->inferiors->next;
 
-	     Also, presentation is done asynchronously, so we only
-	     consider the view as eligible for presentation if
-	     completion callbacks are attached.  */
+  while (list != subcompositor->inferiors)
+    {
+      SkipSlug (list, view, next);
 
-	  if (!draw_params.flags
-	      && view->abs_x == subcompositor->min_x
-	      && view->abs_y == subcompositor->min_y
-	      && view_width == SubcompositorWidth (subcompositor)
-	      && view_height == SubcompositorHeight (subcompositor)
-	      /* N.B. that n_seen is not set (0) if the view is
-		 garbaged.  */
-	      && (n_seen == 1 || (!n_seen && NoViewsAfter (view)))
-	      && subcompositor->note_frame)
-	    {
-	      /* Direct presentation is okay.  Present the pixmap to
-		 the drawable.  */
-	      if (IsGarbaged (subcompositor))
-		key = RenderPresentToWindow (subcompositor->target, buffer,
-					     NULL, PresentCompletedCallback,
-					     subcompositor);
-	      else
-		key = RenderPresentToWindow (subcompositor->target, buffer,
-					     &update_region,
-					     PresentCompletedCallback,
-					     subcompositor);
+      /* Clear the damage.  */
+      pixman_region32_clear (&view->damage);
 
-	      /* Now set presented to whether or not key is non-NULL.  */
-	      presented = key != NULL;
-
-	      /* And set the presentation callback.  */
-	      subcompositor->present_key = key;
-
-	      if (presented)
-		{
-		  /* If presentation succeeded, don't composite.
-		     Instead, just continue looping to set the input
-		     region if garbaged.  */
-
-		  if (!IsGarbaged (subcompositor) && (age >= 0 && age < 3))
-		    /* And if not garbaged, skip everything.  */
-		    goto present_success;
-		  else
-		    goto present_success_garbaged;
-		}
-	    }
-	  else
-	    {
-	      RenderCancelPresentation (subcompositor->target);
-
-	      /* Tell the surface to make the compositor redirect the
-		 window again.  */
-	      if (subcompositor->note_frame)
-		subcompositor->note_frame (ModeNotifyDisablePresent,
-					   subcompositor->frame_counter,
-					   subcompositor->note_frame_data);
-	    }
-
-	  /* The first view with an attached buffer should be drawn
-	     with PictOpSrc so that transparency is applied correctly,
-	     if it contains the entire update region.  */
-
-	  if (IsGarbaged (subcompositor) || age < 0 || age >= 3)
-	    {
-	      extents = &temp_boxes;
-
-	      /* Make extents the entire region, since that's what is
-		 being updated.  */
-	      temp_boxes.x1 = min_x;
-	      temp_boxes.y1 = min_y;
-	      temp_boxes.x2 = subcompositor->max_x + 1;
-	      temp_boxes.y2 = subcompositor->max_y + 1;
-	    }
-	  else
-	    extents = pixman_region32_extents (&update_region);
-
-	  if (ViewContainsExtents (view, extents))
-	    /* The update region is contained by the entire view, so
-	       use source.  */
-	    op = OperationSource;
-	  else
-	    {
-	      /* Otherwise, fill the whole update region with
-		 transparency.  */
-
-	      if (IsGarbaged (subcompositor) || age < 0 || age >= 3)
-		{
-		  /* Use the entire subcompositor bounds if
-		     garbaged.  */
-		  boxes = &temp_boxes;
-		  nboxes = 1;
-		}
-	      else
-		boxes = pixman_region32_rectangles (&update_region,
-						    &nboxes);
-
-	      /* Fill with transparency.  */
-	      FillBoxesWithTransparency (subcompositor,
-					 boxes, nboxes);
-
-	      /* And use over as usual.  */
-	      op = OperationOver;
-	    }
-	}
-      else
-	op = OperationOver;
-
-      if (presented && (IsGarbaged (subcompositor)
-			|| age < 0 || age >= 3))
-	goto present_success_garbaged;
-
-      first = view;
-
-      if (!IsGarbaged (subcompositor) && (age >= 0 && age < 3))
-	{
-	  /* Next, composite every rectangle in the update region
-	     intersecting with the target.  */
-	  boxes = pixman_region32_rectangles (&update_region, &nboxes);
-
-	  for (i = 0; i < nboxes; ++i)
-	    {
-	      /* Check if the rectangle is completely inside the
-		 region.  We used to take the intersection of the
-		 region, but that proved to be too slow.  */
-
-	      temp_boxes.x1 = view->abs_x;
-	      temp_boxes.y1 = view->abs_y;
-	      temp_boxes.x2 = view->abs_x + view_width;
-	      temp_boxes.y2 = view->abs_y + view_height;
-
-	      if (IntersectBoxes (&boxes[i], &temp_boxes, &temp_boxes))
-		RenderComposite (buffer, subcompositor->target, op,
-				 /* src-x.  */
-				 BoxStartX (temp_boxes) - view->abs_x,
-				 /* src-y.  */
-				 BoxStartY (temp_boxes) - view->abs_y,
-				 /* dst-x.  */
-				 BoxStartX (temp_boxes) - min_x + tx,
-				 /* dst-y.  */
-				 BoxStartY (temp_boxes) - min_y + ty,
-				 /* width.  */
-				 BoxWidth (temp_boxes),
-				 /* height, draw-params.  */
-				 BoxHeight (temp_boxes), &draw_params);
-	    }
-	}
-      else
-	{
-	  /* If the subcompositor is garbaged, composite the entire
-	     view to the right location.  */
-	  RenderComposite (buffer, subcompositor->target, op,
-			   /* src-x, src-y.  */
-			   0, 0,
-			   /* dst-x.  */
-			   view->abs_x - min_x + tx,
-			   /* dst-y.  */
-			   view->abs_y - min_y + ty,
-			   /* width.  */
-			   view_width,
-			   /* height, draw-params.  */
-			   view_height, &draw_params);
-
-	present_success_garbaged:
-	  /* Clear the damaged area, since it will either be drawn or
-	     be obscured.  We didn't get a chance to clear the damage
-	     earlier, since the compositor was garbaged.  */
-	  pixman_region32_clear (&view->damage);
-
-	  /* Also adjust the opaque and input regions here.  */
-
-	  if (pixman_region32_not_empty (&view->opaque)
-	      /* If the subcompositor is garbaged, the opaque region
-		 must always be updated.  But if we are here because
-		 the target is too old, it must only be updated if the
-		 opaque region is also dirty.  */
-	      && (IsGarbaged (subcompositor)
-		  || IsOpaqueDirty (subcompositor)))
-	    {
-	      /* Translate the region into the global coordinate
-		 space.  */
-	      pixman_region32_translate (&list->view->opaque,
-					 list->view->abs_x,
-					 list->view->abs_y);
-
-	      pixman_region32_intersect_rect (&temp, &view->opaque,
-					      view->abs_x, view->abs_y,
-					      view_width, view_height);
-	      pixman_region32_union (&total_opaque, &temp, &total_opaque);
-
-	      /* Translate it back.  */
-	      pixman_region32_translate (&list->view->opaque,
-					 -list->view->abs_x,
-					 -list->view->abs_y);
-	    }
-
-	  if (pixman_region32_not_empty (&view->input)
-	      /* Ditto for the input region.  */
-	      && (IsGarbaged (subcompositor)
-		  || IsInputDirty (subcompositor)))
-	    {
-	      /* Translate the region into the global coordinate
-		 space.  */
-	      pixman_region32_translate (&list->view->input,
-					 list->view->abs_x,
-					 list->view->abs_y);
-	      pixman_region32_intersect_rect (&temp, &view->input,
-					      view->abs_x, view->abs_y,
-					      view_width, view_height);
-	      pixman_region32_union (&total_input, &temp, &total_input);
-
-	      /* Translate it back.  */
-	      pixman_region32_translate (&list->view->input,
-					 -list->view->abs_x,
-					 -list->view->abs_y);
-	    }
-	}
-
-    next_1:
+    next:
       list = list->next;
     }
-  while (list != subcompositor->inferiors);
+}
 
- present_success:
+static void
+ClearCull (Subcompositor *subcompositor)
+{
+  List *list;
+  View *view;
 
-  /* Swap changes to display.  */
+  /* Free the cull region of every view.  */
+  list = subcompositor->inferiors->next;
+  view = NULL;
 
-  if (IsGarbaged (subcompositor) || age < 0 || age >= 3)
-    RenderFinishRender (subcompositor->target, NULL);
-  else
-    /* Swap changes to display based on the update region.  */
-    RenderFinishRender (subcompositor->target, &update_region);
-
- complete:
-
-  if (IsGarbaged (subcompositor)
-      || ((age < 0 || age >= 3)
-	  && (IsInputDirty (subcompositor)
-	      || IsOpaqueDirty (subcompositor))))
+  while (list != subcompositor->inferiors)
     {
-      if (IsGarbaged (subcompositor)
-	  || IsOpaqueDirty (subcompositor))
-	{
-	  /* The opaque region changed, so run any callbacks.  */
-	  if (subcompositor->opaque_change)
-	    {
-	      /* Translate this to appear in the "virtual" coordinate
-		 space.  */
-	      pixman_region32_translate (&total_opaque, -min_x, -min_y);
+      SkipSlug (list, view, next);
 
-	      subcompositor->opaque_change (subcompositor,
-					    subcompositor->opaque_change_data,
-					    &total_opaque);
-	    }
+      if (view->cull_region)
+	FreeRegion (view->cull_region);
+      view->cull_region = NULL;
 
-	  pixman_region32_fini (&total_opaque);
-	}
+    next:
+      list = list->next;
+    }
+}
 
-      if (IsGarbaged (subcompositor)
-	  || IsInputDirty (subcompositor))
-	{
-	  /* The input region changed, so run any callbacks.  */
-	  if (subcompositor->input_change)
-	    {
-	      /* Translate this to appear in the "virtual" coordinate
-		 space.  */
-	      pixman_region32_translate (&total_input, -min_x, -min_y);
+static Bool
+CheckBailOnDraw (Subcompositor *subcompositor)
+{
+  List *list;
+  View *view;
 
-	      subcompositor->input_change (subcompositor,
-					   subcompositor->input_change_data,
-					   &total_input);
-	    }
+  list = subcompositor->inferiors->next;
+  view = NULL;
 
-	  pixman_region32_fini (&total_input);
-	}
+  while (list != subcompositor->inferiors)
+    {
+      if (view && view->cull_region)
+	/* This view will be drawn beneath some other view, so
+	   presentation is not possible.  */
+	goto need_bail;
+
+      SkipSlug (list, view, next);
+
+    next:
+      list = list->next;
     }
 
-  pixman_region32_fini (&temp);
-  pixman_region32_fini (&update_region);
+  /* This only means that views prior to the last view will not be
+     drawn.  We won't know if the topmost view can be presented until
+     we actually try.  */
+  return True;
 
-  /* The update has completed, so the compositor is no longer
-     garbaged.  */
-  subcompositor->state &= ~SubcompositorIsGarbaged;
-  subcompositor->state &= ~SubcompositorIsOpaqueDirty;
-  subcompositor->state &= ~SubcompositorIsInputDirty;
+ need_bail:
+  ClearCull (subcompositor);
 
-  /* Call the frame complete function if presentation did not happen.  */
+  /* And bail out.  */
+  return False;
+}
+
+static Bool
+SubcompositorComposite1 (Subcompositor *subcompositor,
+			 pixman_region32_t *damage,
+			 Bool bail_on_draw)
+{
+  List *list;
+  View *view;
+  pixman_region32_t background;
+  Operation op;
+  pixman_region32_t copy;
+  DrawParams transform;
+  Bool success, presented;
+  RenderCompletionKey key;
+
+  /* Draw the first view by copying.  */
+  op = OperationSource;
+  pixman_region32_init (&copy);
+  pixman_region32_copy (&copy, damage);
+
+  /* Initialize the background region.  */
+  InitBackground (subcompositor, &background);
+
+  /* Cull out parts of the damage that are obscured by opaque portions
+     of views.  */
+  DoCull (subcompositor, damage, &background);
+
+  if (pixman_region32_not_empty (&background))
+    {
+      /* The background has to be drawn below the bottommost view, so
+	 presentation is not possible.  Return if bail_on_draw.  */
+      if (bail_on_draw)
+	{
+	  /* Free the cull regions and temp regions.  */
+	  pixman_region32_fini (&background);
+	  pixman_region32_fini (&copy);
+	  ClearCull (subcompositor);
+
+	  return False;
+	}
+
+      /* Now draw the background.  */
+      DrawBackground (subcompositor, &background);
+    }
+
+  /* Free the background region.  */
+  pixman_region32_fini (&background);
+
+  /* bail_on_draw means that this function should return and let
+     SubcompositorUpdate draw again upon encountering a view that
+     cannot be presented.  */
+
+  if (bail_on_draw && !CheckBailOnDraw (subcompositor))
+    {
+      /* Free the temp region.  */
+      pixman_region32_fini (&copy);
+
+      return False;
+    }
+
+  list = subcompositor->inferiors->next;
+
+  /* Also recalculate whether or not the subcompositor is partially
+     mapped while at this.  */
+  subcompositor->state &= ~SubcompositorIsPartiallyMapped;
+
+  /* Start rendering.  */
+  RenderStartRender (subcompositor->target);
+  view = NULL;
+  success = True;
+  presented = False;
+
+  while (list != subcompositor->inferiors)
+    {
+      /* Update the views at the start of the loop.  Thus, if there is
+	 only a single view, we can present it instead.  */
+
+      if (view && view->cull_region)
+	{
+	  /* Compute the transform.  */
+	  ViewComputeTransform (view, &transform, True);
+
+	  /* Copy or composite the view contents.  */
+	  CompositeSingleView (view, view->cull_region, op,
+			       &transform);
+
+	  /* And free the cull region.  */
+	  FreeRegion (view->cull_region);
+	  view->cull_region = NULL;
+
+	  /* Subsequent views should be composited.  */
+	  op = OperationOver;
+	}
+
+      SkipSlug (list, view, next);
+
+    next:
+      list = list->next;
+    }
+
+  /* Finally, update the last view.  */
+  if (view && view->cull_region)
+    {
+      /* Compute the transform.  */
+      ViewComputeTransform (view, &transform, True);
+
+      /* This is the topmost view.  If there are no preceeding
+	 views, present it.  */
+      if (op != OperationSource
+	  || !TryPresent (view, view->cull_region, &transform))
+	{
+	  if (bail_on_draw)
+	    /* CompositeSingleView will be called, bail! */
+	    success = False;
+	  else
+	    /* Copy or composite the view contents.  */
+	    CompositeSingleView (view, view->cull_region, op,
+				 &transform);
+	}
+      else
+	/* Set this flag to true so the code below doesn't scribble
+	   over the presentation callback.  */
+	presented = True;
+
+      /* And free the cull region.  */
+      FreeRegion (view->cull_region);
+      view->cull_region = NULL;
+    }
+
+  /* If a note_frame callback is attached, then this function can pass
+     a RenderCompletedCallback to the picture renderer and have it
+     present the back buffer to the window.  If not, however, it must
+     use XCopyArea so that the buffer swap is done in order wrt to
+     other requests.  */
+
   if (subcompositor->note_frame && !presented)
+    {
+      /* This goes down the XPresentPixmap code path.  N.B. that no
+	 buffer swap must happen if presentation happened.  */
+      if (subcompositor->render_key)
+	RenderCancelCompletionCallback (subcompositor->render_key);
+      if (subcompositor->present_key)
+	RenderCancelPresentationCallback (subcompositor->present_key);
+      subcompositor->present_key = NULL;
+
+      pixman_region32_translate (damage, -subcompositor->min_x,
+				 -subcompositor->min_y);
+      key = RenderFinishRender (subcompositor->target, &copy,
+				RenderCompletedCallback, subcompositor);
+      pixman_region32_fini (&copy);
+
+      subcompositor->render_key = key;
+    }
+  else
+    {
+      if (subcompositor->render_key)
+	RenderCancelCompletionCallback (subcompositor->render_key);
+      subcompositor->render_key = NULL;
+
+      /* We must spare the presentation key if presentation
+	 happened.  */
+      if (!presented && subcompositor->present_key)
+	{
+	  RenderCancelPresentationCallback (subcompositor->present_key);
+	  subcompositor->present_key = NULL;
+	}
+
+      /* This goes down the XCopyArea code path, unless presentation
+	 happened, in which case it does nothing.  */
+      pixman_region32_translate (damage, -subcompositor->min_x,
+				 -subcompositor->min_y);
+      key = RenderFinishRender (subcompositor->target, &copy, NULL,
+				NULL);
+      pixman_region32_fini (&copy);
+    }
+
+  if (success)
+    /* Proceeed to clear the damage region of each view.  */
+    ClearDamage (subcompositor);
+
+  return success;
+}
+
+static Bool
+SubcompositorComposite (Subcompositor *subcompositor)
+{
+  pixman_region32_t damage, temp;
+  List *list;
+  View *view;
+  int age;
+  Bool rc;
+
+  age = RenderTargetAge (subcompositor->target);
+
+  /* First, calculate a global damage region.  */
+
+  pixman_region32_init (&damage);
+  pixman_region32_init (&temp);
+  list = subcompositor->inferiors->next;
+
+  while (list != subcompositor->inferiors)
+    {
+      SkipSlug (list, view, next);
+
+      /* Add the view's damage region to the output damage region.  */
+      pixman_region32_intersect_rect (&temp, &view->damage, 0, 0,
+				      view->width, view->height);
+      pixman_region32_translate (&temp, view->abs_x, view->abs_y);
+      pixman_region32_union (&damage, &damage, &temp);
+
+    next:
+      list = list->next;
+    }
+
+  /* If there is no damage, just return without drawing anything.  */
+  if (!pixman_region32_not_empty (&damage))
+    return True;
+
+  if (age == -1 || age > 2)
+    /* The target is too old.  */
+    return False;
+
+  if ((age > 0 && !subcompositor->last_damage)
+      || (age > 1 && !subcompositor->before_damage))
+    /* Damage required for incremental update is missing.  */
+    return False;
+
+  /* Copy the damage so StorePreviousDamage gets the damage before it
+     was unioned.  */
+  pixman_region32_copy (&temp, &damage);
+
+  /* Now, damage contains the current damage of each view.  Add any
+     previous damage if required.  */
+
+  if (age > 0)
+    pixman_region32_union (&damage, &damage,
+			   subcompositor->last_damage);
+
+  if (age > 1)
+    pixman_region32_union (&damage, &damage,
+			   subcompositor->before_damage);
+
+  /* Add this damage onto the damage ring.  */
+  StorePreviousDamage (subcompositor, &temp);
+  pixman_region32_fini (&temp);
+
+  /* Finally, paint.  If age is -2, then we must bail if the
+     background could be drawn or the view is not presentable.  */
+  rc = SubcompositorComposite1 (subcompositor, &damage, age == -2);
+
+  pixman_region32_fini (&damage);
+
+  return rc;
+}
+
+static void
+SubcompositorRedraw (Subcompositor *subcompositor)
+{
+  pixman_region32_t damage;
+
+  /* Damage the entire subcompositor and render it.  */
+  pixman_region32_init_rect (&damage, subcompositor->min_x,
+			     subcompositor->min_y,
+			     SubcompositorWidth (subcompositor),
+			     SubcompositorHeight (subcompositor));
+  SubcompositorComposite1 (subcompositor, &damage, False);
+  pixman_region32_fini (&damage);
+}
+
+static void
+BeginFrame (Subcompositor *subcompositor)
+{
+  if (!subcompositor->note_frame)
+    return;
+
+  subcompositor->note_frame (ModeStarted,
+			     ++subcompositor->frame_counter,
+			     subcompositor->note_frame_data);
+
+  /* Cancel any presentation callback that is currently in
+     progress.  */
+  if (subcompositor->present_key)
+    RenderCancelPresentationCallback (subcompositor->present_key);
+  subcompositor->present_key = NULL;
+
+  /* Cancel any render callback that is currently in progress.  */
+  if (subcompositor->render_key)
+    RenderCancelCompletionCallback (subcompositor->render_key);
+  subcompositor->render_key = NULL;
+}
+
+static void
+EndFrame (Subcompositor *subcompositor)
+{
+  if (!subcompositor->note_frame)
+    return;
+
+  /* Make sure that we wait for the presentation callback or render
+     callback if they are attached.  */
+
+  if (!subcompositor->present_key && !subcompositor->render_key)
     subcompositor->note_frame (ModeComplete,
 			       subcompositor->frame_counter,
 			       subcompositor->note_frame_data);
 }
 
 void
-SubcompositorExpose (Subcompositor *subcompositor, XEvent *event)
+SubcompositorUpdate (Subcompositor *subcompositor)
 {
-  List *list;
-  View *view;
-  int x, y, width, height, nboxes, min_x, min_y, tx, ty;
-  pixman_box32_t extents, *boxes;
-  int i;
-  Operation op;
-  pixman_region32_t temp;
-  RenderBuffer buffer;
-  DrawParams draw_params;
+  Bool could_composite;
 
-  /* Graphics exposures are not yet handled.  */
-  if (event->type == GraphicsExpose)
-    return;
-
-  /* No target?  No update.  */
   if (!IsTargetAttached (subcompositor))
     return;
 
-  x = event->xexpose.x + subcompositor->min_x;
-  y = event->xexpose.y + subcompositor->min_y;
-  width = event->xexpose.width;
-  height = event->xexpose.height;
+  if (subcompositor->note_bounds)
+    subcompositor->note_bounds (subcompositor->note_bounds_data,
+				subcompositor->min_x,
+				subcompositor->min_y,
+				subcompositor->max_x,
+				subcompositor->max_y);
 
-  min_x = subcompositor->min_x;
-  min_y = subcompositor->min_y;
-  tx = subcompositor->tx;
-  ty = subcompositor->ty;
+  RenderNoteTargetSize (subcompositor->target,
+			SubcompositorWidth (subcompositor),
+			SubcompositorHeight (subcompositor));
 
-  extents.x1 = x;
-  extents.y1 = y;
-  extents.x2 = x + width;
-  extents.y2 = y + height;
-
-  view = NULL;
-
-  /* Draw every subsurface overlapping the exposure region from the
-     subcompositor onto the target.  Most importantly, do NOT update
-     the bounds of the target, in case the exposure is in response to
-     a resize.  */
-
-  list = subcompositor->inferiors;
-
-  /* Begin rendering.  This is unnecessary on XRender, but required on
-     EGL to make the surface current and set the viewport.  */
-  RenderStartRender (subcompositor->target);
-
-  do
+  if (IsGarbaged (subcompositor))
     {
-      if (!list->view)
-	goto next;
+      BeginFrame (subcompositor);
 
-      if (IsViewUnmapped (list->view))
-	{
-	  list = list->view->inferior;
-	  goto next;
-	}
+      /* Update ancillary regions.  */
+      SubcompositorUpdateAncillary (subcompositor);
 
-      if (IsSkipped (list->view))
-	{
-	  /* We must skip this view, as it represents (for
-	     instance) a subsurface that has been added, but not
-	     committed.  */
-	  SetPartiallyMapped (subcompositor);
-	  goto next;
-	}
+      /* The subcompositor is garbaged.  Simply draw everything.  */
+      SubcompositorRedraw (subcompositor);
 
-      if (!list->view->buffer)
-	goto next;
+      EndFrame (subcompositor);
 
-      /* If the first mapped view contains everything, draw it with
-	 PictOpSrc.  */
-      if (!view && ViewContainsExtents (list->view, &extents))
-	op = OperationSource;
-      else
-	{
-	  /* Otherwise, fill the region with transparency for the
-	     first update, and then use PictOpOver.  */
+      /* Clear the garbaged flag.  */
+      subcompositor->state &= ~SubcompositorIsGarbaged;
 
-	  if (!view)
-	    FillBoxesWithTransparency (subcompositor,
-				       &extents, 1);
-
-	  op = OperationOver;
-	}
-
-      view = list->view;
-
-      /* Now, get the intersection of the rectangle with the view
-	 bounds.  */
-      pixman_region32_init_rect (&temp, x, y, width, height);
-      pixman_region32_intersect_rect (&temp, &temp, view->abs_x,
-				      view->abs_y, ViewWidth (view),
-				      ViewHeight (view));
-
-      /* Composite the contents according to OP.  */
-      buffer = XLRenderBufferFromBuffer (view->buffer);
-      boxes = pixman_region32_rectangles (&temp, &nboxes);
-
-      /* Compute the transform.  */
-      ViewComputeTransform (view, &draw_params, False);
-
-      /* Update the attached buffer from any damage.  */
-      RenderUpdateBufferForDamage (buffer, &list->view->damage,
-				   &draw_params);
-
-      /* If a fractional offset is set, recompute the transform again,
-	 this time for drawing.  */
-      if (list->view->fract_x != 0.0
-	  || list->view->fract_y != 0.0)
-	ViewComputeTransform (view, &draw_params, True);
-
-      for (i = 0; i < nboxes; ++i)
-	RenderComposite (buffer, subcompositor->target, op,
-			 /* src-x.  */
-			 BoxStartX (boxes[i]) - view->abs_x,
-			 /* src-y.  */
-			 BoxStartY (boxes[i]) - view->abs_y,
-			 /* dst-x.  */
-			 BoxStartX (boxes[i]) - min_x + tx,
-			 /* dst-y.  */
-			 BoxStartY (boxes[i]) - min_y + ty,
-			 /* width, height.  */
-			 BoxWidth (boxes[i]), BoxHeight (boxes[i]),
-			 /* draw-params.  */
-			 &draw_params);
-
-      /* Free the scratch region used to compute the intersection.  */
-      pixman_region32_fini (&temp);
-
-    next:
-      /* Move onto the next view.  */
-      list = list->next;
+      return;
     }
-  while (list != subcompositor->inferiors);
 
-  /* Swap changes to display.  */
-  RenderFinishRender (subcompositor->target, NULL);
+  /* Perform an update.  If ancillary regions are dirty, update
+     them.  */
+
+  BeginFrame (subcompositor);
+
+  /* Now try to composite.  */
+  could_composite = SubcompositorComposite (subcompositor);
+
+  if (!could_composite)
+    SubcompositorRedraw (subcompositor);
+
+  if (IsInputDirty (subcompositor) || IsOpaqueDirty (subcompositor))
+    SubcompositorUpdateAncillary (subcompositor);
+
+  EndFrame (subcompositor);
+}
+
+void
+SubcompositorExpose (Subcompositor *subcompositor, XEvent *event)
+{
+  pixman_region32_t damage;
+
+  if (event->type == Expose)
+    pixman_region32_init_rect (&damage, event->xexpose.x,
+			       event->xexpose.y,
+			       event->xexpose.width,
+			       event->xexpose.height);
+  else
+    pixman_region32_init_rect (&damage, event->xgraphicsexpose.x,
+			       event->xgraphicsexpose.y,
+			       event->xgraphicsexpose.width,
+			       event->xgraphicsexpose.height);
+  SubcompositorComposite1 (subcompositor, &damage, False);
+  pixman_region32_fini (&damage);
 }
 
 void
@@ -3088,6 +2949,10 @@ SubcompositorFree (Subcompositor *subcompositor)
   /* Remove the presentation key.  */
   if (subcompositor->present_key)
     RenderCancelPresentationCallback (subcompositor->present_key);
+
+  /* And the render completion key.  */
+  if (subcompositor->render_key)
+    RenderCancelCompletionCallback (subcompositor->render_key);
 
   XLFree (subcompositor);
 }
@@ -3134,8 +2999,8 @@ SubcompositorLookupView (Subcompositor *subcompositor, int x, int y,
 	 view.  This test is the equivalent to intersecting the view's
 	 input region with the bounds of the view.  */
       if (temp_x < 0 || temp_y < 0
-	  || temp_x >= ViewWidth (list->view)
-	  || temp_y >= ViewHeight (list->view))
+	  || temp_x >= list->view->width
+	  || temp_y >= list->view->height)
 	continue;
 
       /* Now see if the input region contains the given
@@ -3208,18 +3073,6 @@ int
 SubcompositorHeight (Subcompositor *subcompositor)
 {
   return subcompositor->max_y - subcompositor->min_y + 1;
-}
-
-void
-SubcompositorFreeze (Subcompositor *subcompositor)
-{
-  SetFrozen (subcompositor);
-}
-
-void
-SubcompositorUnfreeze (Subcompositor *subcompositor)
-{
-  subcompositor->state &= ~SubcompositorIsFrozen;
 }
 
 #endif

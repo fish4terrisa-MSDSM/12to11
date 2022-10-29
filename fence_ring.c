@@ -28,27 +28,18 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <xcb/dri3.h>
 
-#define FenceFree	(1U << 31)
-
 struct _Fence
 {
-  /* The next and last fences on this list.  */
-  Fence *next;
-
   /* The xshmfence.  */
   struct xshmfence *fence;
 
-  /* The sync fence.  High bit is a flag meaning that the fence is on
-     the free list.  */
+  /* The sync fence.  */
   XSyncFence fence_id;
 
   /* The number of references to this fence.  Incremented by
-     FenceRetain, decremented by FenceAwait.  */
+     FenceRetain, decremented by FenceRelease.  */
   int refcount;
 };
-
-/* Chain of all free fences.  */
-static Fence *all_fences;
 
 Fence *
 GetFence (void)
@@ -59,22 +50,7 @@ GetFence (void)
 
   drawable = DefaultRootWindow (compositor.display);
 
-  /* Get one free fence.  */
-
-  for (fence = all_fences; fence; fence = fence->next)
-    {
-      /* Unlink this fence.  */
-      all_fences = fence->next;
-      fence->next = NULL;
-
-      /* Mark the fence as used.  */
-      fence->fence_id &= ~FenceFree;
-
-      /* Return it.  */
-      return fence;
-    }
-
-  /* Otherwise, allocate a new fence.  */
+  /* Allocate a new fence.  */
   fence = XLCalloc (1, sizeof *fence);
   fd = xshmfence_alloc_shm ();
 
@@ -103,6 +79,9 @@ GetFence (void)
   xcb_dri3_fence_from_fd (compositor.conn, drawable,
 			  fence->fence_id, 0, fd);
 
+  /* Retain the fence.  */
+  FenceRetain (fence);
+
   /* Return the fence.  */
   return fence;
 }
@@ -110,26 +89,27 @@ GetFence (void)
 void
 FenceAwait (Fence *fence)
 {
-  XLAssert (fence->refcount);
-  fence->refcount -= 1;
+  /* Wait for the fence to be triggered.  */
+  xshmfence_await (fence->fence);
 
-  if (!(fence->fence_id & FenceFree))
-    {
-      /* Wait for the fence to be triggered.  */
-      xshmfence_await (fence->fence);
+  /* Reset the fence.  */
+  xshmfence_reset (fence->fence);
+}
 
-      /* Reset the fence.  */
-      xshmfence_reset (fence->fence);
-      fence->fence_id |= FenceFree;
-    }
-
-  if (fence->refcount)
+void
+FenceRelease (Fence *fence)
+{
+  if (--fence->refcount)
     return;
 
-  /* Now that the fence is no longer referenced, it can be put back on
-     the list of free fences.  */
-  fence->next = all_fences;
-  all_fences = fence;
+  /* Unmap the fence.  */
+  xshmfence_unmap_shm (fence->fence);
+
+  /* Destroy the fence.  */
+  XSyncDestroyFence (compositor.display, fence->fence_id);
+
+  /* Free the fence.  */
+  XLFree (fence);
 }
 
 void
@@ -141,5 +121,5 @@ FenceRetain (Fence *fence)
 XSyncFence
 FenceToXFence (Fence *fence)
 {
-  return fence->fence_id & ~FenceFree;
+  return fence->fence_id;
 }

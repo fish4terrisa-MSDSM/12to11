@@ -145,11 +145,20 @@ RenderComposite (RenderBuffer source, RenderTarget target, Operation op,
 			  width, height, draw_params);
 }
 
-void
-RenderFinishRender (RenderTarget target, pixman_region32_t *damage)
+RenderCompletionKey
+RenderFinishRender (RenderTarget target, pixman_region32_t *damage,
+		    RenderCompletionFunc function, void *data)
 {
   if (render_funcs.finish_render)
-    render_funcs.finish_render (target, damage);
+    return render_funcs.finish_render (target, damage, function, data);
+
+  return NULL;
+}
+
+void
+RenderCancelCompletionCallback (RenderCompletionKey key)
+{
+  return render_funcs.cancel_completion_callback (key);
 }
 
 int
@@ -204,15 +213,6 @@ RenderCancelPresentationCallback (PresentCompletionKey key)
     return;
 
   render_funcs.cancel_presentation_callback (key);
-}
-
-void
-RenderCancelPresentation (RenderTarget target)
-{
-  if (!render_funcs.cancel_presentation)
-    return;
-
-  render_funcs.cancel_presentation (target);
 }
 
 DrmFormat *
@@ -342,6 +342,12 @@ RenderSetNeedWaitForIdle (RenderTarget target)
     return;
 
   buffer_funcs.set_need_wait_for_idle (target);
+}
+
+Bool
+RenderIsBufferOpaque (RenderBuffer buffer)
+{
+  return buffer_funcs.is_buffer_opaque (buffer);
 }
 
 void

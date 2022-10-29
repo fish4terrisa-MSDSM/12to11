@@ -3648,6 +3648,8 @@ InterpolateAxes (Surface *surface, DeviceInfo *info,
       /* Multiply the deltas by 15 if no device was found.  */
       *x_out = movement_x * 15;
       *y_out = movement_y * 15;
+
+      return;
     }
 
   /* Multiply these deltas by the scrolling pixel distance to obtain

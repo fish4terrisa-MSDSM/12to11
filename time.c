@@ -303,16 +303,16 @@ InitTime (void)
     supported = XSyncInitialize (compositor.display,
 				 &xsync_major, &xsync_minor);
 
-  if (xsync_major < 3 || (xsync_major == 3 && xsync_minor < 1))
-    {
-      fprintf (stderr, "Sync fences are not supported by this X server\n");
-      exit (1);
-    }
-
   if (!supported)
     {
       fprintf (stderr, "A compatible version of the synchronization"
 	       " extension was not found\n");
+      exit (1);
+    }
+
+  if (xsync_major < 3 || (xsync_major == 3 && xsync_minor < 1))
+    {
+      fprintf (stderr, "Sync fences are not supported by this X server\n");
       exit (1);
     }
 

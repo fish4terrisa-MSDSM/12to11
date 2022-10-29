@@ -40,6 +40,8 @@ typedef struct _DrmFormatInfo DrmFormatInfo;
 typedef struct _DmaBufRecord DmaBufRecord;
 typedef struct _DrmModifierName DrmModifierName;
 
+typedef struct _BackBuffer BackBuffer;
+
 typedef struct _PictureBuffer PictureBuffer;
 typedef struct _PictureTarget PictureTarget;
 typedef struct _PresentRecord PresentRecord;
@@ -92,9 +94,6 @@ struct _BufferActivityRecord
   /* The counter ID.  */
   uint64_t id;
 
-  /* The sync fence.  */
-  Fence *fence;
-
   /* The forward links to the three lists.  */
   BufferActivityRecord *buffer_next, *target_next, *global_next;
 
@@ -125,6 +124,7 @@ struct _IdleCallback
 enum
   {
     CanPresent = 1,
+    IsOpaque   = (1 << 1),
   };
 
 struct _PictureBuffer
@@ -155,14 +155,12 @@ struct _PictureBuffer
 
   /* Ongoing buffer activity.  */
   BufferActivityRecord activity;
-
-  int compositable;
 };
 
 enum
   {
-    PresentationWindowMapped = 1,
-    NoPresentation	     = 2,
+    JustPresented  = 1,
+    NoPresentation = 2,
   };
 
 /* Structure describing presentation callback.  The callback is run
@@ -172,16 +170,6 @@ struct _PresentCompletionCallback
 {
   /* The next and last presentation callbacks.  */
   PresentCompletionCallback *next, *last;
-
-  /* The next and last presentation completion callbacks on the
-     target.  */
-  PresentCompletionCallback *target_next, *target_last;
-
-  /* The picture target.  */
-  PictureTarget *target;
-
-  /* The callback itself.  */
-  PresentCompletionFunc callback;
 
   /* Data the callback will be called with.  */
   void *data;
@@ -193,20 +181,52 @@ struct _PresentCompletionCallback
   uint32_t id;
 };
 
+struct _BackBuffer
+{
+  /* The picture of this back buffer.  High bit means the back buffer
+     is busy.  */
+  Picture picture;
+
+  /* The pixmap of this back buffer.  */
+  Pixmap pixmap;
+
+  /* The idle fence of this back buffer.  */
+  Fence *idle_fence;
+
+  /* The serial of the last presentation, or 0.  */
+  uint32_t present_serial;
+
+  /* The age of this back buffer.  0 means it is fresh.  */
+  unsigned int age;
+};
+
+enum
+  {
+    /* The buffer is currently busy.  */
+    BufferBusy = (1U << 31),
+    /* The idle notification has (or will) arrive, but the fence has
+       not yet been waited upon.  If this is set on the pixmap as well
+       as the picture, then calling XFlush is not necessary.  */
+    BufferSync = (1U << 30),
+  };
+
+#define IsBufferBusy(buffer)	((buffer)->picture & BufferBusy)
+#define SetBufferBusy(buffer)	((buffer)->picture |= BufferBusy)
+#define ClearBufferBusy(buffer)	((buffer)->picture &= ~BufferBusy)
+
 struct _PictureTarget
 {
-  /* The last media stamp counter for the presentation window.  */
-  uint64_t last_msc;
-
   /* The XID of the picture.  */
   Picture picture;
 
   /* The backing window.  */
   Window window;
 
-  /* The presentation window.  This is a window used to present
-     pixmaps to the source.  */
-  Window presentation_window;
+  /* The GC used to swap back buffers  */
+  GC gc;
+
+  /* Two back buffers.  */
+  BackBuffer *back_buffers[2];
 
   /* Presentation event context.  */
   XID presentation_event_context;
@@ -219,6 +239,9 @@ struct _PictureTarget
 
   /* Flags.  */
   int flags;
+
+  /* The index of the current back buffer.  */
+  int current_back_buffer;
 
   /* List of release records.  */
   PresentRecord pending;
@@ -423,9 +446,6 @@ static PresentCompletionCallback all_completion_callbacks;
 /* Whether or not direct presentation should be used.  */
 static Bool use_direct_presentation;
 
-/* Whether or not to use sync fences.  Currently never set.  */
-static Bool use_sync_fences;
-
 /* XRender, DRI3 and XPresent-based renderer.  A RenderTarget is just
    a Picture.  Here is a rough explanation of how the buffer release
    machinery works.
@@ -527,7 +547,7 @@ FindBufferActivityRecord (PictureBuffer *buffer, PictureTarget *target)
 
 static void
 RecordBufferActivity (PictureBuffer *buffer, PictureTarget *target,
-		      uint64_t roundtrip_id, Fence *fence)
+		      uint64_t roundtrip_id)
 {
   BufferActivityRecord *record;
 
@@ -536,7 +556,7 @@ RecordBufferActivity (PictureBuffer *buffer, PictureTarget *target,
 
   if (!record)
     {
-      record = XLCalloc (1, sizeof *record);
+      record = XLMalloc (sizeof *record);
 
       /* Buffer activity is actually linked on 3 different lists:
 
@@ -568,23 +588,7 @@ RecordBufferActivity (PictureBuffer *buffer, PictureTarget *target,
       record->target = target;
     }
 
-  /* If there is already a fence, wait for it to complete.  */
-  if (record->fence)
-    {
-      /* Flush any trigger fence request that might have been
-	 made.  */
-      XFlush (compositor.display);
-
-      /* Start waiting.  */
-      FenceAwait (record->fence);
-    }
-
-  if (fence)
-    /* Retain the fence.  */
-    FenceRetain (fence);
-
   record->id = roundtrip_id;
-  record->fence = fence;
 }
 
 static void
@@ -653,13 +657,6 @@ MaybeRunIdleCallbacks (PictureBuffer *buffer, PictureTarget *target)
 static void
 UnlinkActivityRecord (BufferActivityRecord *record)
 {
-  /* Wait for the sync fence.  */
-
-  if (record->fence)
-    FenceAwait (record->fence);
-
-  record->fence = NULL;
-
   record->buffer_last->buffer_next = record->buffer_next;
   record->buffer_next->buffer_last = record->buffer_last;
   record->target_last->target_next = record->target_next;
@@ -697,6 +694,270 @@ HandleActivityEvent (uint64_t counter)
 	  XLFree (last);
 	}
     }
+}
+
+
+
+static void
+FreeBackBuffer (BackBuffer *buffer)
+{
+  XRenderFreePicture (compositor.display, (buffer->picture
+					   & ~BufferSync
+					   & ~BufferBusy));
+  XFreePixmap (compositor.display, (buffer->pixmap
+				    & ~BufferSync));
+  FenceRelease (buffer->idle_fence);
+  XLFree (buffer);
+}
+
+static void
+FreeBackBuffers (PictureTarget *target)
+{
+  int i;
+
+  for (i = 0; i < ArrayElements (target->back_buffers); ++i)
+    {
+      if (target->back_buffers[i])
+	FreeBackBuffer (target->back_buffers[i]);
+    }
+
+  /* Also clear target->picture if it is a window target.  */
+  if (target->window)
+    target->picture = None;
+
+  target->back_buffers[0] = NULL;
+  target->back_buffers[1] = NULL;
+  target->current_back_buffer = -1;
+}
+
+static BackBuffer *
+CreateBackBuffer (PictureTarget *target)
+{
+  BackBuffer *buffer;
+  XRenderPictureAttributes attrs;
+  Window root_window;
+
+  /* Create a single back buffer.  */
+  root_window = DefaultRootWindow (compositor.display);
+  buffer = XLMalloc (sizeof *buffer);
+
+  buffer->pixmap
+    = XCreatePixmap (compositor.display, root_window,
+		     target->width, target->height,
+		     compositor.n_planes);
+  buffer->picture
+    = XRenderCreatePicture (compositor.display, buffer->pixmap,
+			    compositor.argb_format, 0, &attrs);
+  buffer->idle_fence = GetFence ();
+
+  /* The target is no longer freshly presented.  */
+  target->flags &= ~JustPresented;
+
+  return buffer;
+}
+
+/* Forward declaration.  */
+static XserverRegion ServerRegionFromRegion (pixman_region32_t *);
+
+static PresentCompletionCallback *
+MakePresentationCallback (void)
+{
+  PresentCompletionCallback *callback_rec;
+
+  callback_rec = XLMalloc (sizeof *callback_rec);
+  callback_rec->id = present_serial;
+  callback_rec->next = all_completion_callbacks.next;
+  callback_rec->last = &all_completion_callbacks;
+  all_completion_callbacks.next->last = callback_rec;
+  all_completion_callbacks.next = callback_rec;
+
+  return callback_rec;
+}
+
+static PresentCompletionCallback *
+SwapBackBuffers (PictureTarget *target, pixman_region32_t *damage)
+{
+  XserverRegion region;
+  XSyncFence fence;
+  BackBuffer *back_buffer;
+  int other;
+  PresentCompletionCallback *callback;
+
+  /* Swap back buffers according to the damage in region using the
+     Present extension.  Return a present completion callback.  */
+
+  if (damage)
+    region = ServerRegionFromRegion (damage);
+  else
+    region = None;
+
+  /* Find the current back buffer.  */
+  back_buffer = target->back_buffers[target->current_back_buffer];
+
+  /* Get the idle fence.  */
+  fence = FenceToXFence (back_buffer->idle_fence);
+
+  /* Present the current pixmap.  */
+  present_serial++;
+
+  /* 0 is not a valid serial here, so don't let it reach that.  */
+  if (!present_serial)
+    present_serial++;
+
+  /* TODO: handle completion correctly.  */
+  XPresentPixmap (compositor.display, target->window,
+		  back_buffer->pixmap, present_serial,
+		  None, region, 0, 0, None, None, fence,
+		  PresentOptionAsync, 0, 0, 0, NULL, 0);
+
+  /* Mark the back buffer as busy, and the other back buffer as having
+     been released.  */
+  SetBufferBusy (back_buffer);
+  back_buffer->present_serial = present_serial;
+
+  /* Set the current back buffer's age to 1, meaning that it reflects
+     the contents of the buffer 1 swap ago.  */
+  back_buffer->age = 1;
+
+  /* Find the other back buffer and clear its busy flag if set.  */
+  other = (target->current_back_buffer ? 0 : 1);
+
+  if (target->back_buffers[other])
+    {
+      target->back_buffers[other]->picture |= BufferSync;
+      ClearBufferBusy (target->back_buffers[other]);
+
+      /* Age the other buffer as well, given that it is not currently
+	 garbaged.  */
+      if (target->back_buffers[other]->age)
+	target->back_buffers[other]->age++;
+    }
+
+  if (region)
+    XFixesDestroyRegion (compositor.display, region);
+
+  target->current_back_buffer = -1;
+  target->picture = None;
+
+  callback = MakePresentationCallback ();
+  callback->id = present_serial;
+
+  return callback;
+}
+
+static void
+SwapBackBuffersWithCopy (PictureTarget *target, pixman_region32_t *damage)
+{
+  pixman_box32_t *boxes;
+  int nboxes, i, other;
+  BackBuffer *back_buffer;
+
+  boxes = pixman_region32_rectangles (damage, &nboxes);
+
+  if (nboxes > 20)
+    /* Damage is too large; simplify it by using the extents
+       instead.  */
+    boxes = &damage->extents, nboxes = 1;
+
+  /* Find the current back buffer.  */
+  back_buffer = target->back_buffers[target->current_back_buffer];
+
+  for (i = 0; i < nboxes; ++i)
+    XCopyArea (compositor.display,
+	       back_buffer->pixmap,
+	       target->window, target->gc,
+	       boxes[i].x1, boxes[i].y1,
+	       boxes[i].x2 - boxes[i].x1,
+	       boxes[i].y1 - boxes[i].y2,
+	       boxes[i].x1, boxes[i].y1);
+
+  /* Age and the other back buffer.  N.B. that presenting and then
+     copying is not handled at all, so be sure to only call one or the
+     other for any given target.  */
+
+  other = (target->current_back_buffer ? 0 : 1);
+  back_buffer->age = 1;
+
+  if (target->back_buffers[other])
+    target->back_buffers[other]++;
+}
+
+static void
+MaybeAwaitBuffer (BackBuffer *buffer)
+{
+  if (!(buffer->picture & BufferSync))
+    return;
+
+  /* Flush any pending presentation requests.  */
+  if (!(buffer->pixmap & BufferSync))
+    XFlush (compositor.display);
+
+  /* Start waiting on the buffer's idle fence.  */
+  FenceAwait (buffer->idle_fence);
+  buffer->picture &= ~BufferSync;
+  buffer->pixmap &= ~BufferSync;
+
+  /* Set the present serial to 0 so BufferSync is not set again
+     afterwards.  */
+  buffer->present_serial = 0;
+}
+
+static BackBuffer *
+GetNextBackBuffer (PictureTarget *target)
+{
+  /* Return the next back buffer that will be used, but do not create
+     any if none exists.  */
+
+  if (target->back_buffers[0]
+      && !IsBufferBusy (target->back_buffers[0]))
+    return target->back_buffers[0];
+
+  return target->back_buffers[1];
+}
+
+static void
+EnsurePicture (PictureTarget *target)
+{
+  BackBuffer *buffer;
+
+  if (target->picture)
+    return;
+
+  /* Find a back buffer that isn't busy.  */
+  if (!target->back_buffers[0]
+      || !IsBufferBusy (target->back_buffers[0]))
+    {
+      buffer = target->back_buffers[0];
+      target->current_back_buffer = 0;
+
+      if (!buffer)
+	{
+	  /* Create the first back buffer.  */
+	  buffer = CreateBackBuffer (target);
+	  target->back_buffers[0] = buffer;
+	}
+    }
+  else
+    {
+      buffer = target->back_buffers[1];
+      target->current_back_buffer = 1;
+
+      if (!buffer)
+	{
+	  /* Create the second back buffer.  */
+	  buffer = CreateBackBuffer (target);
+	  target->back_buffers[1] = buffer;
+	}
+    }
+
+  /* The selected buffer must not be busy.  */
+  XLAssert (!IsBufferBusy (buffer));
+
+  /* If the fence will be triggered, wait on it now.  */
+  MaybeAwaitBuffer (buffer);
+
+  /* Set target->picture.  */
+  target->picture = buffer->picture;
 }
 
 
@@ -928,16 +1189,30 @@ TargetFromDrawable (Drawable drawable, Window window,
 {
   XRenderPictureAttributes picture_attrs;
   PictureTarget *target;
+  XGCValues gcvalues;
 
   /* This is just to pacify GCC; picture_attrs is not used as mask is
      0.  */
   memset (&picture_attrs, 0, sizeof picture_attrs);
   target = XLCalloc (1, sizeof *target);
   target->window = window;
-  target->picture = XRenderCreatePicture (compositor.display,
-					  drawable,
-					  compositor.argb_format,
-					  0, &picture_attrs);
+
+  if (window != None)
+    /* Start selecting for presentation events from the given
+       window.  */
+    target->presentation_event_context
+      = XPresentSelectInput (compositor.display, window,
+			     PresentIdleNotifyMask
+			     | PresentCompleteNotifyMask);
+  else
+    /* Create the picture corresponding to this drawable.  */
+    target->picture = XRenderCreatePicture (compositor.display,
+					    drawable,
+					    compositor.argb_format,
+					    0, &picture_attrs);
+
+  /* Initialize the current back buffer.  */
+  target->current_back_buffer = -1;
 
   /* Initialize the list of release records.  */
   target->pending.target_next = &target->pending;
@@ -954,9 +1229,15 @@ TargetFromDrawable (Drawable drawable, Window window,
   /* And the event mask.  */
   target->standard_event_mask = standard_event_mask;
 
-  /* Initialize the list of present completion callbacks.  */
-  target->completion_callbacks.target_next = &target->completion_callbacks;
-  target->completion_callbacks.target_last = &target->completion_callbacks;
+  if (window)
+    {
+      /* Add the window to the assoc table.  */
+      XLMakeAssoc (xid_table, window, target);
+
+      /* Create the GC used to swap back buffers.  */
+      target->gc = XCreateGC (compositor.display,
+			      window, 0, &gcvalues);
+    }
 
   return (RenderTarget) (void *) target;
 }
@@ -989,59 +1270,16 @@ static void
 NoteTargetSize (RenderTarget target, int width, int height)
 {
   PictureTarget *pict_target;
-  XSetWindowAttributes attrs;
 
   pict_target = target.pointer;
 
-  if (pict_target->presentation_window != None)
-    {
-      /* The presentation window already exists; resize it if the size
-	 changed.  */
-
-      if (pict_target->width != width
-	  || pict_target->height != height)
-	{
-	  XResizeWindow (compositor.display,
-			 pict_target->presentation_window,
-			 width, height);
-	  pict_target->width = width;
-	  pict_target->height = height;
-	}
-
-      return;
-    }
+  if (width != pict_target->width
+      || height != pict_target->height)
+    /* Recreate all the back buffers for the new target size.  */
+    FreeBackBuffers (pict_target);
 
   pict_target->width = width;
   pict_target->height = height;
-
-  if (pict_target->window == None)
-    /* This is a pixmap target.  */
-    return;
-
-  /* Create a window that will be used to present pixmaps to the
-     screen.  */
-  pict_target->presentation_window
-    = XCreateWindow (compositor.display, pict_target->window,
-		     0, 0, width, height, 0, CopyFromParent,
-		     InputOutput, CopyFromParent, 0, &attrs);
-
-  /* Empty the input shape.  */
-  XShapeCombineRectangles (compositor.display,
-			   pict_target->presentation_window,
-			   ShapeInput, 0, 0, NULL, 0, ShapeSet,
-			   Unsorted);
-
-  /* Start selecting for presentation events from the given
-     window.  */
-  pict_target->presentation_event_context
-    = XPresentSelectInput (compositor.display,
-			   pict_target->presentation_window,
-			   PresentIdleNotifyMask
-			   | PresentCompleteNotifyMask);
-
-  /* Add the window to the hash table.  */
-  XLMakeAssoc (xid_table, pict_target->presentation_window,
-	       pict_target);
 }
 
 static Picture
@@ -1077,7 +1315,6 @@ DestroyRenderTarget (RenderTarget target)
   PresentRecord *record, *last;
   BufferActivityRecord *activity_record, *activity_last;
   IdleCallback *idle, *idle_last;
-  PresentCompletionCallback *callback, *callback_last;
 
   pict_target = target.pointer;
 
@@ -1085,25 +1322,27 @@ DestroyRenderTarget (RenderTarget target)
      list.  */
   XLAssert (pict_target->buffers_used == NULL);
 
-  if (pict_target->presentation_window)
+  /* Destroy all back buffers.  */
+  FreeBackBuffers (pict_target);
+
+  if (pict_target->window)
     {
-      XPresentFreeInput (compositor.display,
-			 pict_target->presentation_window,
-			 pict_target->presentation_event_context);
-      XDestroyWindow (compositor.display,
-		      pict_target->presentation_window);
-      XLDeleteAssoc (xid_table, pict_target->presentation_window);
+      /* Delete the window from the assoc table.  */
+      XLDeleteAssoc (xid_table, pict_target->window);
 
-      /* Free attached presentation records.  */
-      record = pict_target->pending.target_next;
-      while (record != &pict_target->pending)
-	{
-	  last = record;
-	  record = record->target_next;
+      /* Free the GC.  */
+      XFreeGC (compositor.display, pict_target->gc);
+    }
 
-	  /* Free the record.  */
-	  RemovePresentRecord (last);
-	}
+  /* Free attached presentation records.  */
+  record = pict_target->pending.target_next;
+  while (record != &pict_target->pending)
+    {
+      last = record;
+      record = record->target_next;
+
+      /* Free the record.  */
+      RemovePresentRecord (last);
     }
 
   /* Free all activity associated with this target.  */
@@ -1112,11 +1351,6 @@ DestroyRenderTarget (RenderTarget target)
     {
       activity_last = activity_record;
       activity_record = activity_record->target_next;
-
-      if (activity_last->fence)
-	/* The TriggerFence request might not have been flushed.  So
-	   flush it now to avoid hangs.  */
-	XFlush (compositor.display);
 
       UnlinkActivityRecord (activity_last);
       XLFree (activity_last);
@@ -1133,22 +1367,10 @@ DestroyRenderTarget (RenderTarget target)
       XLFree (idle_last);
     }
 
-  /* Detach the target from each present completion callback.  */
-  callback = pict_target->completion_callbacks.target_next;
-  while (callback != &pict_target->completion_callbacks)
-    {
-      callback_last = callback;
-      callback = callback->target_next;
+  if (pict_target->picture)
+    XRenderFreePicture (compositor.display,
+			pict_target->picture);
 
-      /* Clear callback->target and the target_next/target_last
-	 fields.  */
-      callback_last->target = NULL;
-      callback_last->target_next = NULL;
-      callback_last->target_last = NULL;
-    }
-
-  XRenderFreePicture (compositor.display,
-		      pict_target->picture);
   XFree (pict_target);
 }
 
@@ -1162,6 +1384,9 @@ FillBoxesWithTransparency (RenderTarget target, pixman_box32_t *boxes,
   PictureTarget *pict_target;
 
   pict_target = target.pointer;
+
+  /* Ensure a back buffer is created or used.  */
+  EnsurePicture (pict_target);
 
   if (nboxes < 256)
     rects = alloca (sizeof *rects * nboxes);
@@ -1369,6 +1594,9 @@ Composite (RenderBuffer buffer, RenderTarget target,
   picture_buffer = buffer.pointer;
   picture_target = target.pointer;
 
+  /* Ensure a back buffer is created.  */
+  EnsurePicture (picture_target);
+
   /* Maybe set the transform if the parameters changed.  (draw_params
      specifies a transform to apply to the buffer, not to the
      target.)  */
@@ -1385,9 +1613,7 @@ Composite (RenderBuffer buffer, RenderTarget target,
 
   for (tem = picture_target->buffers_used; tem; tem = tem->next)
     {
-      /* Return if the buffer is already in the buffers_used list.
-	 Otherwise, FinishRender will try to wait for a fence that has
-	 not yet been triggered.  */
+      /* Return if the buffer is already in the buffers_used list.  */
 
       if (tem->data == picture_buffer)
 	return;
@@ -1400,19 +1626,20 @@ Composite (RenderBuffer buffer, RenderTarget target,
     = XLListPrepend (picture_target->buffers_used, picture_buffer);
 }
 
-static void
-FinishRender (RenderTarget target, pixman_region32_t *damage)
+static RenderCompletionKey
+FinishRender (RenderTarget target, pixman_region32_t *damage,
+	      RenderCompletionFunc function, void *data)
 {
   XLList *tem, *last;
   PictureTarget *pict_target;
   uint64_t roundtrip_id;
-  Fence *fence;
+  PresentCompletionCallback *callback_rec;
 
   pict_target = target.pointer;
 
   if (!pict_target->buffers_used)
     /* No buffers were used.  */
-    return;
+    return NULL;
 
   /* Finish rendering.  This function then sends a single roundtrip
      message and records buffer activity for each buffer involved in
@@ -1421,26 +1648,14 @@ FinishRender (RenderTarget target, pixman_region32_t *damage)
   roundtrip_id = SendRoundtripMessage ();
   tem = pict_target->buffers_used;
 
-  if (use_sync_fences)
-    {
-      /* Get a sync fence, then trigger it.  */
-      fence = GetFence ();
-
-      /* Trigger the fence.  */
-      XSyncTriggerFence (compositor.display, FenceToXFence (fence));
-    }
-  else
-    fence = NULL;
-
   while (tem)
     {
       last = tem;
       tem = tem->next;
 
-      /* Record buffer activity on this one buffer.  A reference to
-	 the fence will be held.  */
+      /* Record buffer activity on this one buffer.  */
       RecordBufferActivity (last->data, pict_target,
-			    roundtrip_id, fence);
+			    roundtrip_id);
 
       /* Free the list element.  */
       XLFree (last);
@@ -1448,12 +1663,64 @@ FinishRender (RenderTarget target, pixman_region32_t *damage)
 
   /* Clear buffers_used.  */
   pict_target->buffers_used = NULL;
+
+  /* Swap the back buffer to the screen if it was used.  */
+
+  if (pict_target->current_back_buffer != -1)
+    {
+      /* If a callback was specified, then use the Present extension,
+	 and return a completion callback.  */
+
+      if (function)
+	{
+	  callback_rec = SwapBackBuffers (pict_target, damage);
+	  callback_rec->function = function;
+	  callback_rec->data = data;
+
+	  return (RenderCompletionKey) callback_rec;
+	}
+
+      /* Otherwise, swap buffers using XCopyArea.  */
+      SwapBackBuffersWithCopy (pict_target, damage);
+      return NULL;
+    }
+
+  /* Otherwise, there is nothing to do.  */
+  return NULL;
+}
+
+static void
+CancelCompletionCallback (RenderCompletionKey key)
+{
+  PresentCompletionCallback *callback;
+
+  callback = key;
+  callback->next->last = callback->last;
+  callback->last->next = callback->next;
+
+  XLFree (callback);
 }
 
 static int
 TargetAge (RenderTarget target)
 {
-  return 0;
+  BackBuffer *buffer;
+  PictureTarget *pict_target;
+
+  pict_target = target.pointer;
+
+  if (pict_target->flags & JustPresented)
+    return -2;
+
+  buffer = GetNextBackBuffer (pict_target);
+
+  if (!buffer)
+    return -1;
+
+  if (buffer->age > INT_MAX)
+    return -1;
+
+  return (int) buffer->age - 1;
 }
 
 /* At first glance, it seems like this should be easy to support using
@@ -1541,7 +1808,6 @@ PresentToWindow (RenderTarget target, RenderBuffer source,
   XserverRegion region;
   PresentRecord *record;
   PresentCompletionCallback *callback_rec;
-  uint64_t target_msc;
 
   /* Present SOURCE onto TARGET.  Return False if the presentation is
      not supported.  */
@@ -1558,16 +1824,8 @@ PresentToWindow (RenderTarget target, RenderBuffer source,
   if (!(buffer->flags & CanPresent))
     return NULL;
 
-  if (pict_target->presentation_window == None)
-    return NULL;
-
-  /* Map the presentation window if necessary.  */
-
-  if (!(pict_target->flags & PresentationWindowMapped))
-    XMapWindow (compositor.display,
-		pict_target->presentation_window);
-
-  pict_target->flags |= PresentationWindowMapped;
+  /* Since presentation has happened, free all the back buffers.  */
+  FreeBackBuffers (pict_target);
 
   /* Build the damage region.  */
   if (damage)
@@ -1577,25 +1835,19 @@ PresentToWindow (RenderTarget target, RenderBuffer source,
 
   if (use_direct_presentation)
     {
-      /* Determine the target msc.  Force the next frame after this
-	 one by increasing last_msc.  */
-      target_msc = (pict_target->last_msc ? ++pict_target->last_msc : 0);
-
       /* Present the pixmap now from the damage; it will complete upon
 	 the next vblank if direct presentation is enabled, or
 	 immediately if it is not.  */
-      XPresentPixmap (compositor.display, pict_target->presentation_window,
-		      buffer->pixmap, ++present_serial, None, region, 0, 0,
-		      None, None, None, PresentOptionNone, target_msc, 1, 0,
-		      NULL, 0);
+      XPresentPixmap (compositor.display, pict_target->window, buffer->pixmap,
+		      ++present_serial, None, region, 0, 0, None, None, None,
+		      PresentOptionNone, 0, 1, 0, NULL, 0);
     }
   else
     /* Direct presentation is off; present the pixmap asynchronously
        at an msc of 0.  */
-    XPresentPixmap (compositor.display, pict_target->presentation_window,
-		    buffer->pixmap, ++present_serial, None, region, 0, 0,
-		    None, None, None, PresentOptionAsync, 0, 0, 0, NULL,
-		    0);
+    XPresentPixmap (compositor.display, pict_target->window, buffer->pixmap,
+		    ++present_serial, None, region, 0, 0,  None, None, None,
+		    PresentOptionAsync, 0, 0, 0, NULL, 0);
 
   if (region)
     XFixesDestroyRegion (compositor.display, region);
@@ -1615,20 +1867,14 @@ PresentToWindow (RenderTarget target, RenderBuffer source,
     }
 
   /* Allocate a presentation completion callback.  */
-  callback_rec = XLMalloc (sizeof *callback_rec);
-  callback_rec->id = present_serial;
-  callback_rec->next = all_completion_callbacks.next;
-  callback_rec->last = &all_completion_callbacks;
-  all_completion_callbacks.next->last = callback_rec;
-  all_completion_callbacks.next = callback_rec;
+  callback_rec = MakePresentationCallback ();
   callback_rec->function = callback;
   callback_rec->data = data;
   callback_rec->id = present_serial;
-  callback_rec->target_next = pict_target->completion_callbacks.target_next;
-  callback_rec->target_last = &pict_target->completion_callbacks;
-  pict_target->completion_callbacks.target_next->target_last = callback_rec;
-  pict_target->completion_callbacks.target_next = callback_rec;
-  callback_rec->target = pict_target;
+
+  /* Mark the target as just having been presented.  The flag is
+     cleared the next time a back buffer is created.  */
+  pict_target->flags |= JustPresented;
 
   return callback_rec;
 }
@@ -1644,53 +1890,7 @@ CancelPresentationCallback (PresentCompletionKey key)
   callback->next->last = callback->last;
   callback->last->next = callback->next;
 
-  if (callback->target_last)
-    {
-      callback->target_last->target_next = callback->target_next;
-      callback->target_next->target_last = callback->target_last;
-    }
-
   XLFree (callback);
-}
-
-static void
-CancelPresentation (RenderTarget target)
-{
-  PictureTarget *pict_target;
-  PictureBuffer *last_buffer;
-  PresentRecord *record, *last;
-
-  pict_target = target.pointer;
-
-  if (pict_target->flags & PresentationWindowMapped)
-    {
-      /* Temporarily suppress exposures on the parent.  */
-      XSelectInput (compositor.display, pict_target->window,
-		    pict_target->standard_event_mask &~ ExposureMask);
-
-      XUnmapWindow (compositor.display,
-		    pict_target->presentation_window);
-
-      /* Allow exposures again.  */
-      XSelectInput (compositor.display, pict_target->window,
-		    pict_target->standard_event_mask);
-    }
-
-  pict_target->flags &= ~PresentationWindowMapped;
-
-  /* Release every buffer presented up to this point.  */
-  record = pict_target->pending.target_next;
-  while (record != &pict_target->pending)
-    {
-      last = record;
-      record = record->target_next;
-
-      last_buffer = last->buffer;
-      RemovePresentRecord (last);
-
-      /* Run idle callbacks if this is now idle.  */
-      MaybeRunIdleCallbacks (last_buffer, pict_target);
-    }
 }
 
 static RenderFuncs picture_render_funcs =
@@ -1707,6 +1907,7 @@ static RenderFuncs picture_render_funcs =
     .clear_rectangle = ClearRectangle,
     .composite = Composite,
     .finish_render = FinishRender,
+    .cancel_completion_callback = CancelCompletionCallback,
     .target_age = TargetAge,
     .import_fd_fence = ImportFdFence,
     .wait_fence = WaitFence,
@@ -1714,8 +1915,6 @@ static RenderFuncs picture_render_funcs =
     .get_finish_fence = GetFinishFence,
     .present_to_window = PresentToWindow,
     .cancel_presentation_callback = CancelPresentationCallback,
-    .cancel_presentation = CancelPresentation,
-    .flags = NeverAges,
   };
 
 static void
@@ -2186,6 +2385,10 @@ BufferFromDmaBuf (DmaBufAttributes *attributes, Bool *error)
   if (PictFormatIsPresentable (format))
     buffer->flags |= CanPresent;
 
+  /* And mark it as opaque if it is.  */
+  if (!format->direct.alphaMask)
+    buffer->flags |= IsOpaque;
+
   return (RenderBuffer) (void *) buffer;
 
  error:
@@ -2262,6 +2465,10 @@ FinishDmaBufRecord (DmaBufRecord *pending, Bool success)
       /* If the format is presentable, mark the buffer as presentable.  */
       if (PictFormatIsPresentable (pending->format))
 	buffer->flags |= CanPresent;
+
+      /* And mark it as opaque if it is.  */
+      if (!pending->format->direct.alphaMask)
+	buffer->flags |= IsOpaque;
 
       /* Call the creation success function with the new picture.  */
       pending->success_func ((RenderBuffer) (void *) buffer,
@@ -2478,6 +2685,10 @@ BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
   if (PictFormatIsPresentable (pict_format))
     buffer->flags |= CanPresent;
 
+  /* And mark it as opaque if it is.  */
+  if (!pict_format->direct.alphaMask)
+    buffer->flags |= IsOpaque;
+
   /* Return the picture.  */
   return (RenderBuffer) (void *) buffer;
 }
@@ -2622,11 +2833,6 @@ FreeAnyBuffer (RenderBuffer buffer)
     {
       activity_last = activity_record;
       activity_record = activity_record->buffer_next;
-
-      if (activity_last->fence)
-	/* The TriggerFence request might not have been flushed.  So
-	   flush it now to avoid hangs.  */
-	XFlush (compositor.display);
 
       UnlinkActivityRecord (activity_last);
       XLFree (activity_last);
@@ -2916,6 +3122,21 @@ SetNeedWaitForIdle (RenderTarget target)
   pict_target->flags |= NoPresentation;
 }
 
+static Bool
+IsBufferOpaque (RenderBuffer buffer)
+{
+  PictureBuffer *pict_buffer;
+
+  /* Return whether or not the buffer format is opaque, which lets us
+     optimize some things out.  */
+  pict_buffer = buffer.pointer;
+
+  if (pict_buffer->flags & IsOpaque)
+    return True;
+
+  return False;
+}
+
 static BufferFuncs picture_buffer_funcs =
   {
     .get_drm_formats = GetDrmFormats,
@@ -2935,6 +3156,7 @@ static BufferFuncs picture_buffer_funcs =
     .is_buffer_idle = IsBufferIdle,
     .wait_for_idle = WaitForIdle,
     .set_need_wait_for_idle = SetNeedWaitForIdle,
+    .is_buffer_opaque = IsBufferOpaque,
     .init_buffer_funcs = InitBufferFuncs,
   };
 
@@ -2977,8 +3199,11 @@ HandlePresentCompleteNotify (XPresentCompleteNotifyEvent *complete)
 #ifdef DEBUG_PRESENT_TIME
   static uint64_t last_ust;
 #endif
+  Bool rc;
 
   callback = all_completion_callbacks.next;
+  rc = False;
+
   while (callback != &all_completion_callbacks)
     {
       last = callback;
@@ -2992,17 +3217,6 @@ HandlePresentCompleteNotify (XPresentCompleteNotifyEvent *complete)
 	  last->next->last = last->last;
 	  last->last->next = last->next;
 
-	  if (last->target && last->target->last_msc < complete->msc)
-	    /* Set the last known msc of the target.  */
-	    last->target->last_msc = complete->msc;
-
-	  if (last->target_next)
-	    {
-	      /* Unlink the callback from the target as well.  */
-	      last->target_next->target_last = last->target_last;
-	      last->target_last->target_next = last->target_next;
-	    }
-
 #ifdef DEBUG_PRESENT_TIME
 	  fprintf (stderr, "Time taken: %lu us (%g ms) (= 1/%g s)\n",
 		   complete->ust - last_ust,
@@ -3012,12 +3226,11 @@ HandlePresentCompleteNotify (XPresentCompleteNotifyEvent *complete)
 #endif
 
 	  XLFree (last);
-
-	  return True;
+	  rc = True;
 	}
     }
 
-  return False;
+  return rc;
 }
 
 static Bool
@@ -3026,6 +3239,7 @@ HandlePresentIdleNotify (XPresentIdleNotifyEvent *idle)
   PresentRecord *record;
   PictureTarget *target;
   PictureBuffer *buffer;
+  int i;
 
   /* Handle a single idle notify event.  Find the target corresponding
      to idle->window.  */
@@ -3033,6 +3247,25 @@ HandlePresentIdleNotify (XPresentIdleNotifyEvent *idle)
 
   if (target)
     {
+      /* See if the idle record corresponds to any of target's back
+	 buffers, and set the BufferSync flag if that is the case.  */
+      for (i = 0; i < ArrayElements (target->back_buffers); ++i)
+	{
+	  if (target->back_buffers[i]
+	      && (target->back_buffers[i]->present_serial
+		  == idle->serial_number))
+	    {
+	      /* Now say that the target idle fence must be waited
+		 for.  */
+	      target->back_buffers[i]->present_serial = 0;
+	      target->back_buffers[i]->picture |= BufferSync;
+	      target->back_buffers[i]->pixmap |= BufferSync;
+	      ClearBufferBusy (target->back_buffers[i]);
+
+	      return True;
+	    }
+	}
+
       /* Now, look for a corresponding presentation record.  */
       record = target->pending.target_next;
 

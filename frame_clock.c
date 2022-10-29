@@ -476,7 +476,12 @@ EndFrame (FrameClock *clock)
   /* Signal to the compositor that the frame is now complete.  When
      the compositor finishes drawing the frame, a callback will be
      received.  */
-  clock->next_frame_id += 1;
+
+  if (clock->next_frame_id % 4 == 3)
+    clock->next_frame_id += 1;
+  else
+    clock->next_frame_id += 3;
+
   clock->finished_frame_id = clock->next_frame_id;
 
   /* The frame has ended.  Freeze the frame clock if there is a
@@ -488,8 +493,7 @@ EndFrame (FrameClock *clock)
   if (!frame_sync_supported)
     return;
 
-  SetSyncCounter (clock->secondary_counter,
-		  clock->next_frame_id);
+  SetSyncCounter (clock->secondary_counter, clock->next_frame_id);
 }
 
 static void
