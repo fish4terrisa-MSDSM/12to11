@@ -1553,8 +1553,7 @@ MaybeApplyTransform (PictureBuffer *buffer, DrawParams *params)
 
       if (params->flags & TransformSet)
 	ApplyInverseTransform (buffer->width, buffer->height,
-			       &ftransform, params->transform,
-			       False);
+			       &ftransform, params->transform);
 
       /* Note that these must be applied in the right order.  First,
 	 the scale is applied.  Then, the offset, and finally the
