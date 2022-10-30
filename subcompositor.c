@@ -1113,7 +1113,7 @@ ViewUnparent (View *child)
   attached = (ViewVisibilityState (child, &mapped)
 	      && mapped);
 
-  if (attached)
+  if (attached && child->subcompositor)
     {
       /* Init the damage region.  */
       pixman_region32_init (&damage);
@@ -1178,7 +1178,7 @@ ViewUnparent (View *child)
 #endif
     }
 
-  if (attached)
+  if (attached && child->subcompositor)
     /* Finalize the damage region.  */
     pixman_region32_fini (&damage);
 }
