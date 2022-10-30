@@ -1549,6 +1549,8 @@ MaybeApplyTransform (PictureBuffer *buffer, DrawParams *params)
     {
       MatrixIdentity (&ftransform);
 
+      /* The buffer transform must always be applied first.  */
+
       if (params->flags & TransformSet)
 	ApplyInverseTransform (buffer->width, buffer->height,
 			       &ftransform, params->transform,
@@ -1557,6 +1559,7 @@ MaybeApplyTransform (PictureBuffer *buffer, DrawParams *params)
       /* Note that these must be applied in the right order.  First,
 	 the scale is applied.  Then, the offset, and finally the
 	 stretch.  */
+
       if (params->flags & ScaleSet)
 	MatrixScale (&ftransform, 1.0 / GetScale (params),
 		     1.0 / GetScale (params));

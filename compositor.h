@@ -1711,7 +1711,7 @@ extern void MatrixRotate (Matrix *, float, float, float);
 extern void MatrixMirrorHorizontal (Matrix *, float);
 
 extern void ApplyInverseTransform (int, int, Matrix *,
-				   BufferTransform, Bool);
+				   BufferTransform);
 extern void TransformBox (pixman_box32_t *, BufferTransform, int, int);
 extern BufferTransform InvertTransform (BufferTransform);
 

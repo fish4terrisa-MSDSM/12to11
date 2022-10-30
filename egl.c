@@ -35,9 +35,6 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include "linux-dmabuf-unstable-v1.h"
 
-/* TODO: implement buffer transforms.  This renderer is currently
-   broken.  */
-
 /* These are flags for the DrmFormats.  */
 
 enum
@@ -1365,6 +1362,24 @@ ComputeTransformMatrix (EglBuffer *buffer, DrawParams *params)
 	= (float) (1.0 / params->scale);
     }
 
+  /* Set the rotation.  */
+  if (params->flags & TransformSet)
+    {
+      /* Apply the inverse transform.  */
+
+      ApplyInverseTransform (1, 1, &buffer->matrix,
+			     params->transform);
+
+      /* Since the rotation happened inside the texture coordinate
+	 system, scale u and v correctly if dimensions changed.  */
+
+      if (RotatesDimensions (params->transform))
+	MatrixScale (&buffer->matrix, ((float) buffer->width
+				       / (float) buffer->height),
+		     ((float) buffer->height
+		      / (float) buffer->width));
+    }
+
   /* Set the offsets.  */
   if (params->flags & OffsetSet)
     MatrixTranslate (&buffer->matrix,
@@ -1378,6 +1393,10 @@ ComputeTransformMatrix (EglBuffer *buffer, DrawParams *params)
 		 (float) (params->crop_width / params->stretch_width),
 		 (float) (params->crop_height / params->stretch_height));
 }
+
+/* Forward declaration.  */
+
+static void EnsureTexture (EglBuffer *);
 
 static void
 Composite (RenderBuffer buffer, RenderTarget target,
@@ -1396,9 +1415,10 @@ Composite (RenderBuffer buffer, RenderTarget target,
 
   if (egl_buffer->u.type != SinglePixelBuffer)
     {
-      /* Assert that a texture was generated, since UpdateBuffer should
-	 be called before the buffer is ever used.  */
-      XLAssert (egl_buffer->flags & IsTextureGenerated);
+      /* If no texture was generated, upload the buffer contents
+	 now.  */
+      if (!(egl_buffer->flags & IsTextureGenerated))
+	EnsureTexture (egl_buffer);
 
       /* Get the texturing target.  */
       tex_target = GetTextureTarget (egl_buffer);
@@ -1504,8 +1524,9 @@ Composite (RenderBuffer buffer, RenderTarget target,
     glBindTexture (tex_target, 0);
 }
 
-static void
-FinishRender (RenderTarget target, pixman_region32_t *damage)
+static RenderCompletionKey
+FinishRender (RenderTarget target, pixman_region32_t *damage,
+	      RenderCompletionFunc callback, void *data)
 {
   EglTarget *egl_target;
   EGLint *rects;
@@ -1538,6 +1559,8 @@ FinishRender (RenderTarget target, pixman_region32_t *damage)
       ISwapBuffersWithDamage (egl_display, egl_target->surface,
 			      rects, nboxes);
     }
+
+  return NULL;
 }
 
 static int
@@ -1965,7 +1988,8 @@ BufferFromSinglePixel (uint32_t red, uint32_t green, uint32_t blue,
   buffer->u.single_pixel.a = alpha / (float) 0xffffffff;
 
   /* An alpha channel is present.  */
-  buffer->flags |= HasAlpha;
+  if (buffer->u.single_pixel.a < 1)
+    buffer->flags |= HasAlpha;
 
   /* Return the buffer.  */
   return (RenderBuffer) (void *) buffer;
@@ -2465,7 +2489,7 @@ UpdateBuffer (RenderBuffer buffer, pixman_region32_t *damage,
     /* No texture has been generated, so just create one and maybe
        upload the contents.  */
     EnsureTexture (egl_buffer);
-  else if (!damage)
+  else if (!damage || params->flags & TransformSet)
     /* Upload all the contents to the buffer's texture if the buffer
        type requires manual updates.  Buffers backed by EGLImages do
        not appear to need updates, since updates to the EGLImage are
@@ -2522,6 +2546,17 @@ CanReleaseNow (RenderBuffer buffer)
   return rc;
 }
 
+static Bool
+IsBufferOpaque (RenderBuffer buffer)
+{
+  EglBuffer *egl_buffer;
+
+  egl_buffer = buffer.pointer;
+
+  /* Return whether or not the buffer has no alpha channel.  */
+  return !(egl_buffer->flags & HasAlpha);
+}
+
 static BufferFuncs egl_buffer_funcs =
   {
     .get_drm_formats = GetDrmFormats,
@@ -2537,6 +2572,7 @@ static BufferFuncs egl_buffer_funcs =
     .free_single_pixel_buffer = FreeSinglePixelBuffer,
     .update_buffer_for_damage = UpdateBufferForDamage,
     .can_release_now = CanReleaseNow,
+    .is_buffer_opaque = IsBufferOpaque,
     .init_buffer_funcs = InitBufferFuncs,
   };
 

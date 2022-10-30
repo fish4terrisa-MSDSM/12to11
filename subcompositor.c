@@ -1775,8 +1775,10 @@ ViewFree (View *view)
   XLFree (view);
 }
 
-/* Forward declaration.  */
+/* Forward declarations.  */
+
 static void ApplyBufferDamage (View *, pixman_region32_t *);
+static void ApplyUntransformedDamage (View *, pixman_region32_t *);
 
 void
 ViewDamage (View *view, pixman_region32_t *damage)
@@ -1823,10 +1825,6 @@ TransformBufferDamage (pixman_region32_t *damage,
 		       View *view)
 {
   int width, height;
-  BufferTransform inverse;
-
-  /* Invert the transform.  */
-  inverse = InvertTransform (view->transform);
 
   /* Calculate the width and height of the buffer after the
      transform.  */
@@ -1834,7 +1832,8 @@ TransformBufferDamage (pixman_region32_t *damage,
   height = XLBufferHeight (view->buffer);
 
   /* Transform the damage.  */
-  XLTransformRegion (damage, source, inverse, width, height);
+  XLTransformRegion (damage, source, view->transform,
+		     width, height);
 }
 
 void
@@ -1905,8 +1904,11 @@ ViewDamageBuffer (View *view, pixman_region32_t *damage)
 	}
 
       /* Damage the view.  */
-      ViewDamage (view, &temp);
+      pixman_region32_union (&view->damage, &view->damage, &temp);
       pixman_region32_fini (&temp);
+
+      /* Apply the untransformed damage directly.  */
+      ApplyUntransformedDamage (view, damage);
     }
 }
 
@@ -2143,6 +2145,19 @@ ApplyBufferDamage (View *view, pixman_region32_t *damage)
 
   /* Upload the buffer contents.  */
   RenderUpdateBufferForDamage (buffer, damage, &params);
+}
+
+static void
+ApplyUntransformedDamage (View *view, pixman_region32_t *buffer_damage)
+{
+  RenderBuffer buffer;
+  DrawParams params;
+
+  buffer = XLRenderBufferFromBuffer (view->buffer);
+  params.flags = 0;
+
+  /* Upload the buffer contents.  */
+  RenderUpdateBufferForDamage (buffer, buffer_damage, &params);
 }
 
 void

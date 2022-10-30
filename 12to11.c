@@ -185,6 +185,9 @@ XLMain (int argc, char **argv)
       exit (1);
     }
 
+  /* Initialize Xlib threads.  */
+  XInitThreads ();
+
   /* Call XGetDefault with some dummy values to have the resource
      database set up.  */
   XrmInitialize ();

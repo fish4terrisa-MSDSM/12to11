@@ -153,8 +153,8 @@ MatrixRotate (Matrix *transform, float theta, float x, float y)
   memcpy (copy, transform, sizeof copy);
 
   Index (temp, 0, 0) = cosf (theta);
-  Index (temp, 0, 1) = sinf (theta);
-  Index (temp, 1, 0) = -sinf (theta);
+  Index (temp, 0, 1) = -sinf (theta);
+  Index (temp, 1, 0) = sinf (theta);
   Index (temp, 1, 1) = cosf (theta);
 
   MatrixMultiply (copy, temp, transform);
@@ -232,15 +232,18 @@ MatrixExport (Matrix *transform, XTransform *xtransform)
 
 void
 ApplyInverseTransform (int buffer_width, int buffer_height, Matrix *matrix,
-		       BufferTransform transform, Bool cartesian)
+		       BufferTransform transform)
 {
   float width, height;
 
-  /* Note that the transform is applied in reverse, meaning that a
-     counterclockwise rotation is done clockwise, etc, as TRANSFORM
-     transforms destination coordinates to source ones.  CARTESIAN
-     specifies whether or not an actual cartesian coordinate system is
-     being used.  */
+  /* Wayland buffer transforms are somewhat confusing.  They are
+     actually applied in reverse, so a counterclockwise rotation would
+     actually be applied clockwise, and so on.
+
+     The fact that matrix maps from destination coordinates to buffer
+     coordinates makes things easier: as the inverse of the inverse of
+     a transform is itself, transforms are just applied in that
+     order.  */
 
   width = buffer_width;
   height = buffer_height;
@@ -251,89 +254,57 @@ ApplyInverseTransform (int buffer_width, int buffer_height, Matrix *matrix,
       break;
 
     case CounterClockwise90:
-
-      if (!cartesian)
-	{
-	  /* Apply clockwise 270 degree rotation around the
-	     origin.  */
-	  MatrixRotate (matrix, M_PI * 1.5, 0, 0);
-
-	  /* Translate y by the width.  */
-	  MatrixTranslate (matrix, 0, -width);
-	}
-      else
-	{
-	  /* Apply clockwise 270 degree rotation around the
-	     origin.  */
-	  MatrixRotate (matrix, M_PI * 0.5, 0, 1);
-
-	  /* Translate by the width.  */
-	  MatrixTranslate (matrix, 0, width);
-	}
-
+      /* CounterClockwise90.  Rotate the buffer contents 90 degrees
+	 clockwise.  IOW, rotate the destination by 90 degrees
+	 counterclockwise, which is 270 degrees clockwise.  */
+      MatrixRotate (matrix, M_PI * 1.5, 0, 0);
+      MatrixTranslate (matrix, -height, 0);
       break;
 
     case CounterClockwise180:
-      /* Apply clockwise 180 degree rotation around the center.  */
+      /* CounterClockwise180.  It's 180 degrees.  Apply clockwise 180
+	 degree rotation around the center.  */
       MatrixRotate (matrix, M_PI, width / 2.0f, height / 2.0f);
       break;
 
     case CounterClockwise270:
-
-      if (!cartesian)
-	{
-	  /* Apply clockwise 90 degree rotation around the origin.  */
-	  MatrixRotate (matrix, M_PI * 0.5, 0, 0);
-
-	  /* Translate by the height.  */
-	  MatrixTranslate (matrix, -height, 0);
-	}
-      else
-	{
-	  /* Apply clockwise 90 degree rotation around the origin.  */
-	  MatrixRotate (matrix, M_PI * 1.5, 0, 1);
-
-	  /* Translate by the height.  */
-	  MatrixTranslate (matrix, -height, 0);
-	}
-
+      /* CounterClockwise270.  Rotate the buffer contents 270 degrees
+	 clockwise.  IOW, rotate the destination by 270 degrees
+	 counterclockwise, which is 90 degrees clockwise.  */
+      MatrixRotate (matrix, M_PI * 0.5, 0, 0);
+      MatrixTranslate (matrix, 0, -width);
       break;
 
     case Flipped:
-      /* Apply horizontal flip.  */
+      /* Flipped.  Apply horizontal flip.  */
       MatrixMirrorHorizontal (matrix, width);
       break;
 
     case Flipped90:
-      /* Apply horizontal flip.  */
-      MatrixMirrorHorizontal (matrix, width);
-
-      /* Apply clockwise 90 degree rotation around the origin.  */
-      MatrixRotate (matrix, M_PI * 0.5, 0, 0);
-
-      /* Translate by the height.  */
+      /* Flipped90.  Apply a flip but otherwise treat this the same as
+	 CounterClockwise90.  */
+      MatrixRotate (matrix, M_PI * 1.5, 0, 0);
       MatrixTranslate (matrix, -height, 0);
+      MatrixMirrorHorizontal (matrix, height);
       break;
 
     case Flipped180:
-      /* Apply horizontal flip.  */
-      MatrixMirrorHorizontal (matrix, width);
-
-      /* Apply clockwise 180 degree rotation around the center.  */
+      /* Flipped180.  Apply a flip and treat this the same as
+	 CounterClockwise180.  */
       MatrixRotate (matrix, M_PI, width / 2.0f, height / 2.0f);
+      MatrixMirrorHorizontal (matrix, width);
       break;
 
     case Flipped270:
-      /* Apply horizontal flip.  */
-      MatrixMirrorHorizontal (matrix, width);
-
-      /* Apply clockwise 270 degree rotation around the origin.  */
-      MatrixRotate (matrix, M_PI * 1.5, 0, 0);
-
-      /* Translate y by the width.  */
+      /* Flipped270.  Apply a flip and treat this the same as
+	 CounterClockwise270.  */
+      MatrixRotate (matrix, M_PI * 0.5, 0, 0);
       MatrixTranslate (matrix, 0, -width);
+      MatrixMirrorHorizontal (matrix, height);
       break;
     }
+
+  return;
 }
 
 void
