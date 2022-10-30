@@ -44,16 +44,17 @@ typedef enum _DecorationMode DecorationMode;
 
 enum
   {
-    StateIsMapped		 = 1,
-    StatePendingMaxSize		 = (1 << 1),
-    StatePendingMinSize		 = (1 << 2),
-    StatePendingAckMovement	 = (1 << 3),
-    StatePendingResize		 = (1 << 4),
-    StatePendingConfigureSize	 = (1 << 5),
-    StatePendingConfigureStates	 = (1 << 6),
-    StateDecorationModeDirty	 = (1 << 7),
-    StateEverMapped		 = (1 << 8),
-    StateNeedDecorationConfigure = (1 << 9),
+    StateIsMapped		    = 1,
+    StatePendingMaxSize		    = (1 << 1),
+    StatePendingMinSize		    = (1 << 2),
+    StatePendingAckMovement	    = (1 << 3),
+    StatePendingResize		    = (1 << 4),
+    StatePendingConfigureSize	    = (1 << 5),
+    StatePendingConfigureStates	    = (1 << 6),
+    StateDecorationModeDirty	    = (1 << 7),
+    StateEverMapped		    = (1 << 8),
+    StateNeedDecorationConfigure    = (1 << 9),
+    StateWaitingForInitialConfigure = (1 << 10),
   };
 
 enum
@@ -1164,7 +1165,7 @@ Unmap (XdgToplevel *toplevel)
 
   /* Clear all the state.  */
 
-  toplevel->state = 0;
+  toplevel->state = StateWaitingForInitialConfigure;
   toplevel->conf_reply = False;
   toplevel->conf_serial = 0;
   toplevel->states.size = 0;
@@ -1204,6 +1205,7 @@ Map (XdgToplevel *toplevel)
   SubcompositorGarbage (XLSubcompositorFromXdgRole (toplevel->role));
 
   toplevel->state |= StateIsMapped | StateEverMapped;
+  toplevel->state &= ~StateWaitingForInitialConfigure;
 
   /* Update the width and height from the xdg_surface bounds.  */
   toplevel->width = XLXdgRoleGetWidth (toplevel->role);
@@ -1268,8 +1270,16 @@ Commit (Role *role, Surface *surface, XdgRoleImplementation *impl)
       toplevel->state &= ~StatePendingMinSize;
     }
 
-  if (!surface->current_state.buffer)
+  if (!surface->current_state.buffer
+      /* Whenever any commit happens without the toplevel being
+	 mapped, send the initial configure event.  This is because
+	 some clients attach an initial 1x1 buffer and expect the
+	 compositor to do its thing.  */
+      || (toplevel->state & StateWaitingForInitialConfigure))
     {
+      /* Stop waiting for initial configure.  */
+      toplevel->state &= ~StateWaitingForInitialConfigure;
+
       /* No buffer was attached, unmap the window and send an empty
 	 configure event.  */
       if (toplevel->state & StateIsMapped)
@@ -2281,6 +2291,10 @@ XLGetXdgToplevel (struct wl_client *client, struct wl_resource *resource,
 
       return;
     }
+
+  /* Set this flag for some buggy clients.  See the comment above the
+     part of Commit that checks this flag for more details.  */
+  toplevel->state |= StateWaitingForInitialConfigure;
 
   toplevel->impl.funcs.attach = Attach;
   toplevel->impl.funcs.commit = Commit;

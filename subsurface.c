@@ -600,6 +600,13 @@ AfterParentCommit (Surface *surface, void *data)
       MoveFractional (subsurface);
     }
 
+  /* Mark the subsurface as unskipped.  (IOW, make it visible).  This
+     must come before XLCommitSurface, as doing so will apply the
+     pending state, which will fail to update the subcompositor bounds
+     if the subsurface is skipped.  */
+  ViewUnskip (subsurface->role.surface->view);
+  ViewUnskip (subsurface->role.surface->under);
+
   /* And any cached surface state too.  */
   if (subsurface->pending_commit)
     {
@@ -609,10 +616,6 @@ AfterParentCommit (Surface *surface, void *data)
 	 the scanout area of.  */
       MaybeUpdateOutputs (subsurface);
     }
-
-  /* Mark the subsurface as unskipped.  (IOW, make it visible).  */
-  ViewUnskip (subsurface->role.surface->view);
-  ViewUnskip (subsurface->role.surface->under);
 
   subsurface->pending_commit = False;
   subsurface->pending_substate.flags = 0;

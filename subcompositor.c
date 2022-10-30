@@ -1472,12 +1472,14 @@ ViewAttachBuffer (View *view, ExtBuffer *buffer)
   if (!view->buffer && old && view->subcompositor)
     /* The view needs a size update, as it is now 0 by 0.  */
     ViewAfterSizeUpdate (view);
-  else if (((buffer && !old)
+  else if ((buffer && !old)
 	    || (old && !buffer)
 	    || (buffer && old
 		&& (XLBufferWidth (buffer) != XLBufferWidth (old)
-		    || XLBufferHeight (buffer) != XLBufferHeight (old))))
-	   && !IsViewported (view))
+		    || XLBufferHeight (buffer) != XLBufferHeight (old))
+		/* Buffer width and height changes don't matter if the
+		   view has a viewport.  */
+		&& !IsViewported (view)))
     /* Recompute view and subcompositor bounds.  */
     ViewAfterSizeUpdate (view);
 
