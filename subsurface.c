@@ -378,7 +378,7 @@ PlaceBelow (struct wl_client *client, struct wl_resource *resource,
   other = wl_resource_get_user_data (surface_resource);
 
   if (other != subsurface->parent
-      || !CheckSiblingRelationship (subsurface, other))
+      && !CheckSiblingRelationship (subsurface, other))
     {
       wl_resource_post_error (resource, WL_SUBSURFACE_ERROR_BAD_SURFACE,
 			      "surface is not a sibling or the parent");
