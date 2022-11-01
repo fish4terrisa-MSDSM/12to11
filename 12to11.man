@@ -293,6 +293,15 @@ Protocol	Version
 wp_drm_lease_device_v1	1
 .TE
 .PP
+When the X server supports version 2.4 or later of the X Input
+Extension, the following Wayland protocol is also supported:
+.TS H
+lb lb
+lb n .
+Protocol	Version
+zwp_pointer_gestures_v1	3
+.TE
+.PP
 However, Wayland clients are allowed to continue to access data from
 the \fBCLIPBOARD\fP and \fBPRIMARY\fP selections even when they do not
 have the keyboard focus, against the restrictions put out in the

@@ -79,6 +79,11 @@ supported:
 
   'wp_drm_lease_device_v1',                     version: 1
 
+When the X server supports version 2.4 or later of the X Input
+Extension, the following Wayland protocol is also supported:
+
+  'zwp_pointer_gestures_v1',                    version: 3
+
 With the main caveat being that zwp_linux_dmabuf_v1 has no real
 support for multiple-provider setups (help wanted).
 

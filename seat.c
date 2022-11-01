@@ -41,6 +41,7 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <linux/input-event-codes.h>
 
 #include "xdg-shell.h"
+#include "pointer-gestures-unstable-v1.h"
 
 /* X11 event opcode, event base, and error base for the input
    extension.  */
@@ -49,7 +50,7 @@ int xi2_opcode, xi_first_event, xi_first_error;
 
 /* The version of the input extension in use.  */
 
-static int xi2_major, xi2_minor;
+int xi2_major, xi2_minor;
 
 /* The current keymap file descriptor.  */
 
@@ -91,6 +92,8 @@ enum
     IsPointerLocked	  = (1 << 6),
     IsSurfaceCoordSet	  = (1 << 7),
     IsExternalGrabApplied = (1 << 8),
+    IsInPinchGesture	  = (1 << 9),
+    IsInSwipeGesture	  = (1 << 10),
   };
 
 enum
@@ -323,6 +326,39 @@ struct _RelativePointer
   RelativePointer *next, *last;
 };
 
+struct _SwipeGesture
+{
+  /* The seat this swipe gesture refers to.  */
+  Seat *seat;
+
+  /* The struct wl_resource associated with this swipe gesture.  */
+  struct wl_resource *resource;
+
+  /* The seat client info associated with this swipe gesture
+     resource.  */
+  SeatClientInfo *info;
+
+  /* The next and last swipe gestures attached to the seat client
+     info.  */
+  SwipeGesture *next, *last;
+};
+
+struct _PinchGesture
+{
+  /* The seat this pinch gesture refers to.  */
+  Seat *seat;
+
+  /* The struct wl_resource associated with this pinch gesture.  */
+  struct wl_resource *resource;
+
+  /* The seat client info associated with this pinch gesture.  */
+  SeatClientInfo *info;
+
+  /* The next and last pinch gestures attached to the seat client
+     info.  */
+  PinchGesture *next, *last;
+};
+
 struct _SeatClientInfo
 {
   /* The next and last structures in the client info chain.  */
@@ -345,6 +381,12 @@ struct _SeatClientInfo
 
   /* List of relative pointers on this seat for this client.  */
   RelativePointer relative_pointers;
+
+  /* List of swipe gestures on this seat for this client.  */
+  SwipeGesture swipe_gestures;
+
+  /* List of pinch gestures on this seat for this client.  */
+  PinchGesture pinch_gestures;
 };
 
 struct _ModifierChangeCallback
@@ -685,6 +727,10 @@ CreateSeatClientInfo (Seat *seat, struct wl_client *client)
       info->keyboards.last = &info->keyboards;
       info->relative_pointers.next = &info->relative_pointers;
       info->relative_pointers.last = &info->relative_pointers;
+      info->swipe_gestures.next = &info->swipe_gestures;
+      info->swipe_gestures.last = &info->swipe_gestures;
+      info->pinch_gestures.next = &info->pinch_gestures;
+      info->pinch_gestures.last = &info->pinch_gestures;
     }
 
   /* Increase the reference count of info.  */
@@ -3357,10 +3403,17 @@ UndefineCursorOn (Seat *seat, Surface *surface)
   XUndefineCursor (compositor.display, window);
 }
 
+/* Forward declaration.  */
+
+static void SendGesturePinchEnd (Seat *, Surface *, Time, int);
+static void SendGestureSwipeEnd (Seat *, Surface *, Time, int);
+
 static void
 EnteredSurface (Seat *seat, Surface *surface, Time time,
 		double x, double y, Bool preserve_cursor)
 {
+  Time gesture_time;
+
   if (seat->grab_held && surface != seat->last_seen_surface)
     {
       /* If the seat is grabbed, delay this for later.  */
@@ -3370,6 +3423,41 @@ EnteredSurface (Seat *seat, Surface *surface, Time time,
 
   if (seat->last_seen_surface == surface)
     return;
+
+  /* The surface currently entered changed (or will change).  Cancel
+     any ongoing gestures.  */
+
+  if (seat->flags & IsInPinchGesture
+      /* Not sure if this can actually be NULL here.  */
+      && seat->last_seen_surface)
+    {
+      /* If time is 0 (CurrentTime), then just use the last user
+	 time.  */
+      gesture_time = time ? time : seat->last_user_time.milliseconds;
+
+      /* Send the gesture end event.  */
+      SendGesturePinchEnd (seat, seat->last_seen_surface,
+			   gesture_time, 1);
+
+      /* And clear the flag so further updates are not sent.  */
+      seat->flags &= ~IsInPinchGesture;
+    }
+
+  if (seat->flags & IsInSwipeGesture
+      /* Not sure if this can actually be NULL here.  */
+      && seat->last_seen_surface)
+    {
+      /* If time is 0 (CurrentTime), then just use the last user
+	 time.  */
+      gesture_time = time ? time : seat->last_user_time.milliseconds;
+
+      /* Send the gesture end event.  */
+      SendGestureSwipeEnd (seat, seat->last_seen_surface,
+			   gesture_time, 1);
+
+      /* And clear the flag so further updates are not sent.  */
+      seat->flags &= ~IsInSwipeGesture;
+    }
 
   if (seat->last_seen_surface)
     {
@@ -4297,6 +4385,343 @@ DispatchBarrierHit (XIBarrierEvent *barrier)
 }
 
 static void
+SendGesturePinchBegin (Seat *seat, Surface *dispatch, Time time,
+		       int detail)
+{
+  PinchGesture *gesture;
+  uint32_t serial;
+  SeatClientInfo *info;
+
+  serial = wl_display_next_serial (compositor.wl_display);
+  info = ClientInfoForResource (seat, dispatch->resource);
+
+  if (!info)
+    return;
+
+  gesture = info->pinch_gestures.next;
+
+  for (; gesture != &info->pinch_gestures; gesture = gesture->next)
+    zwp_pointer_gesture_pinch_v1_send_begin (gesture->resource,
+					     serial, time,
+					     dispatch->resource,
+					     detail);
+}
+
+static void
+SendGesturePinchUpdate (Seat *seat, Surface *dispatch, Time time,
+			double dx, double dy, double scale, double rotation)
+{
+  PinchGesture *gesture;
+  SeatClientInfo *info;
+
+  info = ClientInfoForResource (seat, dispatch->resource);
+
+  if (!info)
+    return;
+
+  gesture = info->pinch_gestures.next;
+
+  for (; gesture != &info->pinch_gestures; gesture = gesture->next)
+    zwp_pointer_gesture_pinch_v1_send_update (gesture->resource,
+					      time,
+					      wl_fixed_from_double (dx),
+					      wl_fixed_from_double (dy),
+					      wl_fixed_from_double (scale),
+					      wl_fixed_from_double (rotation));
+}
+
+static void
+SendGesturePinchEnd (Seat *seat, Surface *dispatch, Time time, int cancelled)
+{
+  PinchGesture *gesture;
+  SeatClientInfo *info;
+  uint32_t serial;
+
+  info = ClientInfoForResource (seat, dispatch->resource);
+
+  if (!info)
+    return;
+
+  gesture = info->pinch_gestures.next;
+  serial = wl_display_next_serial (compositor.wl_display);
+
+  for (; gesture != &info->pinch_gestures; gesture = gesture->next)
+    zwp_pointer_gesture_pinch_v1_send_end (gesture->resource,
+					   serial, time, cancelled);
+}
+
+static void
+DispatchGesturePinch (Subcompositor *subcompositor, XIGesturePinchEvent *pinch)
+{
+  Seat *seat;
+  Surface *dispatch, *actual_dispatch;
+  double x, y, event_x, event_y;
+
+  seat = XLLookUpAssoc (seats, pinch->deviceid);
+
+  if (!seat)
+    return;
+
+  /* Move the icon surface.  */
+  if (seat->icon_surface)
+    XLMoveIconSurface (seat->icon_surface, pinch->root_x,
+		       pinch->root_y);
+
+  /* Update information used for resize tracking.  */
+  seat->its_root_x = pinch->root_x;
+  seat->its_root_y = pinch->root_y;
+  seat->its_press_time = pinch->time;
+
+  /* Update the last user time.  */
+  seat->last_user_time = TimestampFromServerTime (pinch->time);
+
+  /* Now find the dispatch surface so we can enter it if required.
+     Most of this code is copied from DispatchMotion; it should
+     probably be moved to a separate function.  */
+  actual_dispatch = FindSurfaceUnder (subcompositor, pinch->event_x,
+				      pinch->event_y);
+
+  if (seat->grab_held)
+    {
+      /* If the grab is held, make the surface underneath the pointer
+	 the pending unlock surface.  */
+      SwapUnlockSurface (seat, actual_dispatch);
+      dispatch = seat->last_seen_surface;
+    }
+  else
+    dispatch = actual_dispatch;
+
+  event_x = pinch->event_y;
+  event_y = pinch->event_y;
+
+  if (!dispatch)
+    {
+      if (seat->grab_surface)
+	{
+	  /* If the grab surface is set, translate the coordinates to
+	     it and use it instead.  */
+	  TranslateGrabPosition (seat, pinch->event,
+				 &event_x, &event_y);
+	  dispatch = seat->grab_surface;
+
+	  goto after_dispatch_set;
+	}
+
+      EnteredSurface (seat, dispatch, pinch->time, 0, 0, False);
+      return;
+    }
+
+ after_dispatch_set:
+  TransformToSurface (dispatch, event_x, event_y, &x, &y);
+  EnteredSurface (seat, dispatch, pinch->time, x, y, False);
+
+  /* Now do the actual event dispatch.  */
+  switch (pinch->evtype)
+    {
+    case XI_GesturePinchBegin:
+      /* Send a motion event, in case the position changed.  */
+      SendMotion (seat, dispatch, x, y, pinch->time);
+
+      /* Send a begin event.  */
+      SendGesturePinchBegin (seat, dispatch, pinch->time, pinch->detail);
+
+      /* Say that the seat is in the middle of a pinch gesture, so it
+	 can be cancelled should the pointer move out of this
+	 surface.  */
+      seat->flags |= IsInPinchGesture;
+      break;
+
+    case XI_GesturePinchUpdate:
+      /* The gesture sequence was cancelled for some other reason.  */
+      if (!(seat->flags & IsInPinchGesture))
+	return;
+
+      /* Send an update event.  */
+      SendGesturePinchUpdate (seat, dispatch, pinch->time,
+			      pinch->delta_x, pinch->delta_y,
+			      pinch->scale, pinch->delta_angle);
+      break;
+
+    case XI_GesturePinchEnd:
+      /* The gesture sequence was cancelled for some other reason.  */
+      if (!(seat->flags & IsInPinchGesture))
+	return;
+
+      /* Send an end event.  */
+      SendGesturePinchEnd (seat, dispatch, pinch->time,
+			   pinch->flags & XIGesturePinchEventCancelled);
+      break;
+    }
+}
+
+static void
+SendGestureSwipeBegin (Seat *seat, Surface *dispatch, Time time,
+		       int detail)
+{
+  SwipeGesture *gesture;
+  uint32_t serial;
+  SeatClientInfo *info;
+
+  serial = wl_display_next_serial (compositor.wl_display);
+  info = ClientInfoForResource (seat, dispatch->resource);
+
+  if (!info)
+    return;
+
+  gesture = info->swipe_gestures.next;
+
+  for (; gesture != &info->swipe_gestures; gesture = gesture->next)
+    zwp_pointer_gesture_swipe_v1_send_begin (gesture->resource,
+					     serial, time,
+					     dispatch->resource,
+					     detail);
+}
+
+static void
+SendGestureSwipeUpdate (Seat *seat, Surface *dispatch, Time time,
+			double dx, double dy)
+{
+  SwipeGesture *gesture;
+  SeatClientInfo *info;
+
+  info = ClientInfoForResource (seat, dispatch->resource);
+
+  if (!info)
+    return;
+
+  gesture = info->swipe_gestures.next;
+
+  for (; gesture != &info->swipe_gestures; gesture = gesture->next)
+    zwp_pointer_gesture_swipe_v1_send_update (gesture->resource,
+					      time,
+					      wl_fixed_from_double (dx),
+					      wl_fixed_from_double (dy));
+}
+
+static void
+SendGestureSwipeEnd (Seat *seat, Surface *dispatch, Time time, int cancelled)
+{
+  SwipeGesture *gesture;
+  SeatClientInfo *info;
+  uint32_t serial;
+
+  info = ClientInfoForResource (seat, dispatch->resource);
+
+  if (!info)
+    return;
+
+  gesture = info->swipe_gestures.next;
+  serial = wl_display_next_serial (compositor.wl_display);
+
+  for (; gesture != &info->swipe_gestures; gesture = gesture->next)
+    zwp_pointer_gesture_swipe_v1_send_end (gesture->resource,
+					   serial, time, cancelled);
+}
+
+static void
+DispatchGestureSwipe (Subcompositor *subcompositor, XIGestureSwipeEvent *swipe)
+{
+  Seat *seat;
+  Surface *dispatch, *actual_dispatch;
+  double x, y, event_x, event_y;
+
+  seat = XLLookUpAssoc (seats, swipe->deviceid);
+
+  if (!seat)
+    return;
+
+  /* Move the icon surface.  */
+  if (seat->icon_surface)
+    XLMoveIconSurface (seat->icon_surface, swipe->root_x,
+		       swipe->root_y);
+
+  /* Update information used for resize tracking.  */
+  seat->its_root_x = swipe->root_x;
+  seat->its_root_y = swipe->root_y;
+  seat->its_press_time = swipe->time;
+
+  /* Update the last user time.  */
+  seat->last_user_time = TimestampFromServerTime (swipe->time);
+
+  /* Now find the dispatch surface so we can enter it if required.
+     Most of this code is copied from DispatchMotion; it should
+     probably be moved to a separate function.  */
+  actual_dispatch = FindSurfaceUnder (subcompositor, swipe->event_x,
+				      swipe->event_y);
+
+  if (seat->grab_held)
+    {
+      /* If the grab is held, make the surface underneath the pointer
+	 the pending unlock surface.  */
+      SwapUnlockSurface (seat, actual_dispatch);
+      dispatch = seat->last_seen_surface;
+    }
+  else
+    dispatch = actual_dispatch;
+
+  event_x = swipe->event_y;
+  event_y = swipe->event_y;
+
+  if (!dispatch)
+    {
+      if (seat->grab_surface)
+	{
+	  /* If the grab surface is set, translate the coordinates to
+	     it and use it instead.  */
+	  TranslateGrabPosition (seat, swipe->event,
+				 &event_x, &event_y);
+	  dispatch = seat->grab_surface;
+
+	  goto after_dispatch_set;
+	}
+
+      EnteredSurface (seat, dispatch, swipe->time, 0, 0, False);
+      return;
+    }
+
+ after_dispatch_set:
+  TransformToSurface (dispatch, event_x, event_y, &x, &y);
+  EnteredSurface (seat, dispatch, swipe->time, x, y, False);
+
+  /* Now do the actual event dispatch.  */
+  switch (swipe->evtype)
+    {
+    case XI_GestureSwipeBegin:
+      /* Send a motion event, in case the position changed.  */
+      SendMotion (seat, dispatch, x, y, swipe->time);
+
+      /* Send a begin event.  */
+      SendGestureSwipeBegin (seat, dispatch, swipe->time, swipe->detail);
+
+      /* Say that the seat is in the middle of a swipe gesture, so it
+	 can be cancelled should the pointer move out of this
+	 surface.  */
+      seat->flags |= IsInSwipeGesture;
+      break;
+
+    case XI_GestureSwipeUpdate:
+      /* The gesture sequence was cancelled for some other reason.  */
+      if (!(seat->flags & IsInSwipeGesture))
+	return;
+
+      /* Send an update event.  */
+      SendGestureSwipeUpdate (seat, dispatch, swipe->time,
+			      swipe->delta_x, swipe->delta_y);
+      break;
+
+    case XI_GestureSwipeEnd:
+      /* The gesture sequence was cancelled for some other reason.  */
+      if (!(seat->flags & IsInSwipeGesture))
+	return;
+
+      /* Send an end event.  */
+      SendGestureSwipeEnd (seat, dispatch, swipe->time,
+			   swipe->flags & XIGestureSwipeEventCancelled);
+      break;
+    }
+}
+
+static void
 WriteKeymap (void)
 {
   FILE *file;
@@ -4773,6 +5198,8 @@ XLGetGEWindowForSeats (XEvent *event)
   XIEnterEvent *enter;
   XIDeviceEvent *xev;
   XIBarrierEvent *barrier;
+  XIGesturePinchEvent *pinch;
+  XIGestureSwipeEvent *swipe;
 
   if (event->type == GenericEvent
       && event->xgeneric.extension == xi2_opcode)
@@ -4800,6 +5227,18 @@ XLGetGEWindowForSeats (XEvent *event)
 	case XI_BarrierHit:
 	  barrier = event->xcookie.data;
 	  return barrier->event;
+
+	case XI_GesturePinchBegin:
+	case XI_GesturePinchEnd:
+	case XI_GesturePinchUpdate:
+	  pinch = event->xcookie.data;
+	  return pinch->event;
+
+	case XI_GestureSwipeBegin:
+	case XI_GestureSwipeEnd:
+	case XI_GestureSwipeUpdate:
+	  swipe = event->xcookie.data;
+	  return swipe->event;
 	}
     }
 
@@ -4830,6 +5269,18 @@ XLSelectStandardEvents (Window window)
   XISetMask (mask.mask, XI_KeyRelease);
   XISetMask (mask.mask, XI_BarrierHit);
 
+  if (xi2_major > 2 || xi2_minor >= 4)
+    {
+      /* Select for gesture events whenever supported.  */
+
+      XISetMask (mask.mask, XI_GesturePinchBegin);
+      XISetMask (mask.mask, XI_GesturePinchUpdate);
+      XISetMask (mask.mask, XI_GesturePinchEnd);
+      XISetMask (mask.mask, XI_GestureSwipeBegin);
+      XISetMask (mask.mask, XI_GestureSwipeUpdate);
+      XISetMask (mask.mask, XI_GestureSwipeEnd);
+    }
+
   XISelectEvents (compositor.display, window, &mask, 1);
 }
 
@@ -4854,6 +5305,14 @@ XLDispatchGEForSeats (XEvent *event, Surface *surface,
     DispatchKey (event->xcookie.data);
   else if (event->xgeneric.evtype == XI_BarrierHit)
     DispatchBarrierHit (event->xcookie.data);
+  else if (event->xgeneric.evtype == XI_GesturePinchBegin
+	   || event->xgeneric.evtype == XI_GesturePinchUpdate
+	   || event->xgeneric.evtype == XI_GesturePinchEnd)
+    DispatchGesturePinch (subcompositor, event->xcookie.data);
+  else if (event->xgeneric.evtype == XI_GestureSwipeBegin
+	   || event->xgeneric.evtype == XI_GestureSwipeUpdate
+	   || event->xgeneric.evtype == XI_GestureSwipeEnd)
+    DispatchGestureSwipe (subcompositor, event->xcookie.data);
 }
 
 Cursor
@@ -5555,7 +6014,7 @@ XLInitSeats (void)
 
   /* This is the version of the input extension that we want.  */
   xi2_major = 2;
-  xi2_minor = 3;
+  xi2_minor = 4;
 
   if (XQueryExtension (compositor.display, "XInputExtension",
 		       &xi2_opcode, &xi_first_event, &xi_first_error))
@@ -5802,6 +6261,84 @@ XLSeatDestroyRelativePointer (RelativePointer *relative_pointer)
   ReleaseSeat (relative_pointer->seat);
 
   XLFree (relative_pointer);
+}
+
+SwipeGesture *
+XLSeatGetSwipeGesture (Seat *seat, struct wl_resource *resource)
+{
+  SwipeGesture *swipe_gesture;
+  SeatClientInfo *info;
+
+  /* Create a swipe gesture object for the resource RESOURCE.  */
+  swipe_gesture = XLCalloc (1, sizeof *swipe_gesture);
+
+  /* Obtain or create the seat client info.  */
+  info = CreateSeatClientInfo (seat, wl_resource_get_client (resource));
+
+  /* Link the gesture onto it.  */
+  swipe_gesture->next = info->swipe_gestures.next;
+  swipe_gesture->last = &info->swipe_gestures;
+  info->swipe_gestures.next->last = swipe_gesture;
+  info->swipe_gestures.next = swipe_gesture;
+  swipe_gesture->info = info;
+
+  /* Set the seat and resource.  */
+  swipe_gesture->seat = seat;
+  swipe_gesture->resource = resource;
+  RetainSeat (seat);
+
+  return swipe_gesture;
+}
+
+PinchGesture *
+XLSeatGetPinchGesture (Seat *seat, struct wl_resource *resource)
+{
+  PinchGesture *pinch_gesture;
+  SeatClientInfo *info;
+
+  /* Create a pinch gesture object for the resource RESOURCE.  */
+  pinch_gesture = XLCalloc (1, sizeof *pinch_gesture);
+
+  /* Obtain or create the seat client info.  */
+  info = CreateSeatClientInfo (seat, wl_resource_get_client (resource));
+
+  /* Link the gesture onto it.  */
+  pinch_gesture->next = info->pinch_gestures.next;
+  pinch_gesture->last = &info->pinch_gestures;
+  info->pinch_gestures.next->last = pinch_gesture;
+  info->pinch_gestures.next = pinch_gesture;
+  pinch_gesture->info = info;
+
+  /* Set the seat and resource.  */
+  pinch_gesture->seat = seat;
+  pinch_gesture->resource = resource;
+  RetainSeat (seat);
+
+  return pinch_gesture;
+}
+
+void
+XLSeatDestroySwipeGesture (SwipeGesture *swipe_gesture)
+{
+  swipe_gesture->last->next = swipe_gesture->next;
+  swipe_gesture->next->last = swipe_gesture->last;
+
+  ReleaseSeatClientInfo (swipe_gesture->info);
+  ReleaseSeat (swipe_gesture->seat);
+
+  XLFree (swipe_gesture);
+}
+
+void
+XLSeatDestroyPinchGesture (PinchGesture *pinch_gesture)
+{
+  pinch_gesture->last->next = pinch_gesture->next;
+  pinch_gesture->next->last = pinch_gesture->last;
+
+  ReleaseSeatClientInfo (pinch_gesture->info);
+  ReleaseSeat (pinch_gesture->seat);
+
+  XLFree (pinch_gesture);
 }
 
 Bool

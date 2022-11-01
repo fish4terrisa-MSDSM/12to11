@@ -94,6 +94,8 @@ struct _Compositor
 typedef struct _Seat Seat;
 typedef struct _Pointer Pointer;
 typedef struct _RelativePointer RelativePointer;
+typedef struct _SwipeGesture SwipeGesture;
+typedef struct _PinchGesture PinchGesture;
 
 /* Forward declarations from primary_selection.c.  */
 
@@ -1522,6 +1524,8 @@ extern void XLInitTextInput (void);
 extern int xi2_opcode;
 extern int xi_first_event;
 extern int xi_first_error;
+extern int xi2_major;
+extern int xi2_minor;
 
 extern XLList *live_seats;
 
@@ -1570,6 +1574,10 @@ extern RelativePointer *XLSeatGetRelativePointer (Seat *, struct wl_resource *);
 extern void XLSeatDestroyRelativePointer (RelativePointer *);
 extern Bool XLSeatApplyExternalGrab (Seat *, Surface *);
 extern void XLSeatCancelExternalGrab (Seat *);
+extern SwipeGesture *XLSeatGetSwipeGesture (Seat *, struct wl_resource *);
+extern PinchGesture *XLSeatGetPinchGesture (Seat *, struct wl_resource *);
+extern void XLSeatDestroySwipeGesture (SwipeGesture *);
+extern void XLSeatDestroyPinchGesture (PinchGesture *);
 
 extern Cursor InitDefaultCursor (void);
 
@@ -1782,6 +1790,10 @@ extern void FenceRetain (Fence *);
 extern void FenceAwait (Fence *);
 extern void FenceRelease (Fence *);
 extern XSyncFence FenceToXFence (Fence *);
+
+/* Defined in pointer_gestures.c.  */
+
+extern void XLInitPointerGestures (void);
 
 /* Utility functions that don't belong in a specific file.  */
 
