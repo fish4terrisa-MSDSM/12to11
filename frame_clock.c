@@ -109,6 +109,11 @@ struct _FrameClock
   /* The delay between the start of vblank and the redraw point.  */
   uint32_t frame_delay;
 
+  /* The number of configure events received affecting freeze, and the
+     number of configure events that should be received after a freeze
+     is put in place.  */
+  uint32_t got_configure_count, pending_configure_count;
+
   /* Whether or not configury is in progress, and whether or not this
      is frozen, and whether or not the frame shouldn't actually be
      unfrozen until EndFrame.  */
@@ -239,17 +244,30 @@ HandleEndFrame (Timer *timer, void *data, struct timespec time)
     EndFrame (clock);
 }
 
-/* Forward declaration.  */
+/* Forward declarations.  */
+
 static void RunFrameCallbacks (FrameClock *);
+static Bool StartFrame (FrameClock *, Bool, Bool);
 
 static void
 FreezeForValue (FrameClock *clock, uint64_t counter_value)
 {
+  Bool need_empty_frame;
+
   /* If it took too long (1 second at 60fps) to obtain the counter
      value, and said value is now out of date, don't do anything.  */
 
   if (clock->next_frame_id > counter_value)
     return;
+
+  need_empty_frame = False;
+
+  /* If ending a frame waits for PresentCompleteNotify, then the
+     configure event after this freeze may have been put into effect
+     by the time the freeze itself.  Start a new frame to bring up to
+     date contents to the display.  */
+  if (clock->pending_configure_count <= clock->got_configure_count)
+    need_empty_frame = True;
 
   /* The frame clock is now frozen, and we will have to wait for a
      client to ack_configure and then commit something.  */
@@ -278,7 +296,20 @@ FreezeForValue (FrameClock *clock, uint64_t counter_value)
   clock->in_frame = False;
   clock->need_configure = True;
   clock->configure_id = counter_value;
-  clock->frozen = True;
+
+  if (need_empty_frame)
+    {
+      /* Request a new frame and don't allow starting frames until it
+	 finishes.  See above for why.  clock->in_frame is False for
+	 now to really force the frame to happen.  */
+
+      StartFrame (clock, True, False);
+      EndFrame (clock);
+    }
+  else
+    clock->frozen = True;
+
+  return;
 }
 
 static void
@@ -408,6 +439,10 @@ StartFrame (FrameClock *clock, Bool urgent, Bool predict)
     {
       clock->next_frame_id = clock->configure_id;
       clock->finished_frame_id = 0;
+
+      /* Don't start the end frame timer if this frame is being drawn
+	 in response to configury.  */
+      predict = True;
     }
 
   clock->in_frame = True;
@@ -700,6 +735,11 @@ XLFrameClockHandleFrameEvent (FrameClock *clock, XEvent *event)
       if (value % 2)
 	value += 1;
 
+      /* Set the number of configure events that should be received by
+	 the time the freeze is put into effect.  */
+      clock->pending_configure_count
+	= clock->got_configure_count + 1;
+
       /* If a frame is in progress, postpone this frame
 	 synchronization message.  */
       if (clock->in_frame && !clock->end_frame_called)
@@ -859,6 +899,13 @@ XLFrameClockGetFrameTime (FrameClock *clock)
     return 0;
 
   return clock->last_frame_time;
+}
+
+void
+XLFrameClockNoteConfigure (FrameClock *clock)
+{
+  /* This value is to track resize event validity.  */
+  clock->got_configure_count += 1;
 }
 
 

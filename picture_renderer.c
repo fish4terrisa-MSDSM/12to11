@@ -804,7 +804,6 @@ SwapBackBuffers (PictureTarget *target, pixman_region32_t *damage)
   if (!present_serial)
     present_serial++;
 
-  /* TODO: handle completion correctly.  */
   XPresentPixmap (compositor.display, target->window,
 		  back_buffer->pixmap, present_serial,
 		  None, region, 0, 0, None, None, fence,

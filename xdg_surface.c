@@ -1064,6 +1064,11 @@ NoteConfigure (XdgRole *role, XEvent *event)
 					  event->xconfigure.y);
     }
 
+  /* Tell the frame clock how many WM-generated configure events have
+     arrived.  */
+  XLFrameClockNoteConfigure (role->clock);
+
+  /* Run reconstrain callbacks.  */
   RunReconstrainCallbacksForXEvent (role, event);
 }
 
@@ -1956,6 +1961,10 @@ XLXdgRoleReconstrain (Role *role, XEvent *event)
 
   xdg_role = XdgRoleFromRole (role);
   RunReconstrainCallbacksForXEvent (xdg_role, event);
+
+  /* If event is a configure event, tell the frame clock about it.  */
+  if (event->type == ConfigureNotify)
+    XLFrameClockNoteConfigure (xdg_role->clock);
 }
 
 void

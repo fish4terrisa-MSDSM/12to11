@@ -1660,6 +1660,8 @@ NoteWindowResized (Role *role, XdgRoleImplementation *impl,
 
       if (event.xconfigure.send_event)
 	XLXdgRoleNoteConfigure (toplevel->role, &event);
+      else
+	XLXdgRoleReconstrain (toplevel->role, &event);
 
       RecordStateSize (toplevel);
     }

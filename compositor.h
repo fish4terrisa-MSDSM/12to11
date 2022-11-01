@@ -1288,6 +1288,7 @@ extern void XLFrameClockDisablePredictRefresh (FrameClock *);
 extern void XLFrameClockSetFreezeCallback (FrameClock *, void (*) (void *),
 					   void *);
 extern uint64_t XLFrameClockGetFrameTime (FrameClock *);
+extern void XLFrameClockNoteConfigure (FrameClock *);
 extern void *XLAddCursorClockCallback (void (*) (void *, struct timespec),
 				       void *);
 extern void XLStopCursorClockCallback (void *);
