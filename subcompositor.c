@@ -184,15 +184,18 @@ enum
   {
     /* This means that the view and all its inferiors should be
        skipped in bounds computation, input tracking, et cetera.  */
-    ViewIsUnmapped   = 1,
+    ViewIsUnmapped		= 1,
     /* This means that the view itself (not including its inferiors)
        should be skipped for bounds computation and input
        tracking, etc.  */
-    ViewIsSkipped    = 1 << 2,
+    ViewIsSkipped		= 1 << 2,
     /* This means that the view has a viewport specifying its size,
        effectively decoupling its relation to the buffer width	and
        height.  */
-    ViewIsViewported = 1 << 3,
+    ViewIsViewported		= 1 << 3,
+    /* Whether or not damage can be trusted.  When set, non-buffer
+       damage cannot be trusted, as the view transform changed.  */
+    ViewIsPreviouslyTransformed = 1 << 4,
   };
 
 #define IsViewUnmapped(view)			\
@@ -214,7 +217,14 @@ enum
 #define SetViewported(view)			\
   ((view)->flags |= ViewIsViewported)
 #define ClearViewported(view)			\
-  ((view)->flags &= ~ViewIsViewported)
+  ((view)->flags &= ~ViewIsViewported)		\
+
+#define IsPreviouslyTransformed(view)			\
+  ((view)->flags & ViewIsPreviouslyTransformed)
+#define SetPreviouslyTransformed(view)			\
+  ((view)->flags |= ViewIsPreviouslyTransformed)
+#define ClearPreviouslyTransformed(view)		\
+  ((view)->flags &= ~ViewIsPreviouslyTransformed)
 
 #endif
 
@@ -2021,6 +2031,9 @@ ViewSetTransform (View *view, BufferTransform transform)
   old_transform = view->transform;
   view->transform = transform;
 
+  /* Make subsequently applied damage untrusted.  */
+  SetPreviouslyTransformed (view);
+
   if (RotatesDimensions (transform)
       != RotatesDimensions (old_transform))
     /* Subcompositor bounds may have changed.  */
@@ -2141,9 +2154,22 @@ ApplyBufferDamage (View *view, pixman_region32_t *damage)
   DrawParams params;
   RenderBuffer buffer;
 
+  buffer = XLRenderBufferFromBuffer (view->buffer);
+
+  /* If the view previously had a transform, then the damage cannot be
+     trusted.  */
+  if (IsPreviouslyTransformed (view))
+    {
+      ClearPreviouslyTransformed (view);
+
+      /* Upload the entire buffer.  */
+      params.flags = 0;
+      RenderUpdateBufferForDamage (buffer, NULL, &params);
+      return;
+    }
+
   /* Compute the transform.  */
   ViewComputeTransform (view, &params, False);
-  buffer = XLRenderBufferFromBuffer (view->buffer);
 
   /* Upload the buffer contents.  */
   RenderUpdateBufferForDamage (buffer, damage, &params);
@@ -2157,6 +2183,17 @@ ApplyUntransformedDamage (View *view, pixman_region32_t *buffer_damage)
 
   buffer = XLRenderBufferFromBuffer (view->buffer);
   params.flags = 0;
+
+  /* If the view previously had a transform, then the damage cannot be
+     trusted.  */
+  if (IsPreviouslyTransformed (view))
+    {
+      ClearPreviouslyTransformed (view);
+
+      /* Upload the entire buffer.  */
+      RenderUpdateBufferForDamage (buffer, NULL, &params);
+      return;
+    }
 
   /* Upload the buffer contents.  */
   RenderUpdateBufferForDamage (buffer, buffer_damage, &params);

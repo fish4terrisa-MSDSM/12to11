@@ -2507,8 +2507,7 @@ UpdateBuffer (RenderBuffer buffer, pixman_region32_t *damage,
 	case ShmBuffer:
 	  /* Update the shared memory buffer incrementally, taking
 	     into account the damaged area and transform.  */
-	  UpdateShmBufferIncrementally (egl_buffer, damage,
-					params);
+	  UpdateShmBufferIncrementally (egl_buffer, damage, params);
 	  break;
 
 	case DmaBufBuffer:
