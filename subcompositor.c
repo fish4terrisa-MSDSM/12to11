@@ -383,6 +383,9 @@ struct _Subcompositor
      to compute the actual size of the subcompositor.  */
   int max_x, max_y;
 
+  /* Those positions at the time of the last subcompositor update.  */
+  int last_update_max_x, last_update_max_y;
+
   /* An additional offset to apply when drawing to the target.  */
   int tx, ty;
 #endif
@@ -403,6 +406,117 @@ enum
   };
 
 #endif
+
+/* "Four corners" damage simplification algorithm.  If the number of
+   rectangles in the damage exceeds some preset number, then the
+   damage is considered too complicated to draw efficiently.
+
+   Overcomplicated damage is simplified by splitting the surface into
+   quadrants, and using the extents of its intersection with each of
+   those quadrants instead, which ensures that at most four rectangles
+   are drawn.  Some investigation is needed to determine whether or
+   not sextants are more optimal for damage appearing in the middle of
+   a surface.  */
+
+#define IsDamageComplicated(damage)		\
+  (pixman_region32_n_rects (damage) > 10)
+
+static void
+SimplifyDamage (pixman_region32_t *damage, int min_x, int min_y,
+		int max_x, int max_y)
+{
+  Rectangle quadrant_a, quadrant_b, quadrant_c, quadrant_d;
+  pixman_box32_t extents_a, extents_b, extents_c, extents_d;
+  pixman_region32_t temp;
+  int width, height;
+
+  width = max_x - min_x;
+  height = max_y - min_y;
+
+  /* Split the surface or subcompositor into quadrants:
+
+              +-------------+-------------+
+	      |             |             |
+	      |  Quadrant   |  Quadrant   |
+	      |     A       |     B       |
+	      |             |             |
+	      +-------------+-------------|
+	      |             |             |
+	      |  Quadrant   |  Quadrant   |
+	      |     C       |     D       |
+	      |             |             |
+	      +---------------------------+  */
+
+  quadrant_a.x = min_x;
+  quadrant_a.y = min_y;
+  quadrant_a.width = width / 2;
+  quadrant_a.height = height / 2;
+
+  quadrant_b.x = quadrant_a.x + quadrant_a.width;
+  quadrant_b.y = min_y;
+  quadrant_b.width = width - quadrant_a.width;
+  quadrant_b.height = height / 2;
+
+  quadrant_c.x = min_x;
+  quadrant_c.y = quadrant_a.y + quadrant_a.height;
+  quadrant_c.width = width / 2;
+  quadrant_c.height = height - quadrant_a.height;
+
+  quadrant_d.x = quadrant_a.x + quadrant_a.width;
+  quadrant_d.y = quadrant_a.y + quadrant_a.height;
+  quadrant_d.width = width - quadrant_a.width;
+  quadrant_d.height = height - quadrant_a.height;
+
+  /* Now, compute the intersection of the damage with each of the
+     rectangles.  */
+  pixman_region32_init (&temp);
+
+  /* A.  */
+  pixman_region32_intersect_rect (&temp, damage, quadrant_a.x,
+				  quadrant_a.y, quadrant_a.width,
+				  quadrant_a.height);
+  extents_a = temp.extents;
+
+  /* B.  */
+  pixman_region32_intersect_rect (&temp, damage, quadrant_b.x,
+				  quadrant_b.y, quadrant_b.width,
+				  quadrant_b.height);
+  extents_b = temp.extents;
+
+  /* C.  */
+  pixman_region32_intersect_rect (&temp, damage, quadrant_c.x,
+				  quadrant_c.y, quadrant_c.width,
+				  quadrant_c.height);
+  extents_c = temp.extents;
+
+  /* D.  */
+  pixman_region32_intersect_rect (&temp, damage, quadrant_d.x,
+				  quadrant_d.y, quadrant_d.width,
+				  quadrant_d.height);
+  extents_d = temp.extents;
+  pixman_region32_fini (&temp);
+
+  /* Finally, clear the damage.  */
+  pixman_region32_clear (damage);
+
+  /* Union the damage with each of the extents.  */
+  pixman_region32_union_rect (damage, damage,
+			      extents_a.x1, extents_a.y1,
+			      extents_a.x2 - extents_a.x1,
+			      extents_a.y2 - extents_a.y1);
+  pixman_region32_union_rect (damage, damage,
+			      extents_b.x1, extents_b.y1,
+			      extents_b.x2 - extents_b.x1,
+			      extents_b.y2 - extents_b.y1);
+  pixman_region32_union_rect (damage, damage,
+			      extents_c.x1, extents_c.y1,
+			      extents_c.x2 - extents_c.x1,
+			      extents_c.y2 - extents_c.y1);
+  pixman_region32_union_rect (damage, damage,
+			      extents_d.x1, extents_d.y1,
+			      extents_d.x2 - extents_d.x1,
+			      extents_d.y2 - extents_d.y1);
+}
 
 
 /* Circular doubly linked list of views.  These lists work unusually:
@@ -558,7 +672,7 @@ SubcompositorUpdateBounds (Subcompositor *subcompositor, int doflags)
 {
   List *list;
   int min_x, min_y, max_x, max_y;
-  int old_min_x, old_min_y, old_max_x, old_max_y;
+  int old_min_x, old_min_y;
 
   /* Updates were optimized out.  */
   if (!doflags)
@@ -568,8 +682,6 @@ SubcompositorUpdateBounds (Subcompositor *subcompositor, int doflags)
   min_x = max_x = min_y = max_y = 0;
   old_min_x = subcompositor->min_x;
   old_min_y = subcompositor->min_y;
-  old_max_x = subcompositor->max_x;
-  old_max_y = subcompositor->max_y;
 
   while (list != subcompositor->inferiors)
     {
@@ -604,22 +716,33 @@ SubcompositorUpdateBounds (Subcompositor *subcompositor, int doflags)
     }
 
   if (doflags & DoMinX)
-    subcompositor->min_x = min_x;
+    {
+      if (old_min_x != min_x)
+	SetGarbaged (subcompositor);
+
+      subcompositor->min_x = min_x;
+    }
 
   if (doflags & DoMinY)
-    subcompositor->min_y = min_y;
+    {
+      if (old_min_y != min_y)
+	SetGarbaged (subcompositor);
+
+      subcompositor->min_y = min_y;
+    }
+
+  /* Note that SetGarbaged is not called here if only the max_x or
+     max_y changed.  Instead, max_x and max_y are compared with their
+     values at the time of the last update inside SubcompositorUpdate.
+     The reason is that some clients first move a view and then unmap
+     it, so the subcompositor bounds are not actually changed by the
+     call to SubcompositorUpdate.  */
 
   if (doflags & DoMaxX)
     subcompositor->max_x = max_x;
 
   if (doflags & DoMaxY)
     subcompositor->max_y = max_y;
-
-  if (subcompositor->min_x != old_min_x
-      || subcompositor->min_y != old_min_y
-      || subcompositor->max_x != old_max_x
-      || subcompositor->max_y != old_max_y)
-    SetGarbaged (subcompositor);
 }
 
 static void
@@ -642,7 +765,7 @@ SubcompositorUpdateBoundsForInsert (Subcompositor *subcompositor,
       SetGarbaged (subcompositor);
     }
 
-  if (view->abs_x < view->subcompositor->min_y)
+  if (view->abs_y < view->subcompositor->min_y)
     {
       subcompositor->min_y = view->abs_y;
 
@@ -651,20 +774,10 @@ SubcompositorUpdateBoundsForInsert (Subcompositor *subcompositor,
     }
 
   if (view->subcompositor->max_x < ViewMaxX (view))
-    {
-      subcompositor->max_x = ViewMaxX (view);
-
-      /* Garbage the subcompositor for this change.  */
-      SetGarbaged (subcompositor);
-    }
+    subcompositor->max_x = ViewMaxX (view);
 
   if (view->subcompositor->max_y < ViewMaxY (view))
-    {
-      subcompositor->max_y = ViewMaxY (view);
-
-      /* Garbage the subcompositor for this change.  */
-      SetGarbaged (subcompositor);
-    }
+    subcompositor->max_y = ViewMaxY (view);
 }
 
 #endif
@@ -1442,7 +1555,6 @@ ViewAfterSizeUpdate (View *view)
   if (view->subcompositor->max_x < ViewMaxX (view))
     {
       view->subcompositor->max_x = ViewMaxX (view);
-      SetGarbaged (view->subcompositor);
 
       /* We don't have to update max_x anymore.  */
       doflags &= ~DoMaxX;
@@ -1451,7 +1563,6 @@ ViewAfterSizeUpdate (View *view)
   if (view->subcompositor->max_y < ViewMaxY (view))
     {
       view->subcompositor->max_y = ViewMaxY (view);
-      SetGarbaged (view->subcompositor);
 
       /* We don't have to update max_x anymore.  */
       doflags &= ~DoMaxY;
@@ -1504,8 +1615,12 @@ ViewAttachBuffer (View *view, ExtBuffer *buffer)
 	  /* Recompute subcompositor bounds.  */
 	  SubcompositorUpdateBounds (view->subcompositor, DoAll);
 
-	  /* Garbage the subcompositor.  */
-	  SetGarbaged (view->subcompositor);
+	  /* Should the subcompositor not be garbaged, calculate the
+	     union of its inferiors and make it the additional
+	     damage.  */
+	  if (!IsGarbaged (view->subcompositor))
+	    ViewUnionInferiorBounds (view,
+				     &view->subcompositor->additional_damage);
 	}
     }
 
@@ -1592,24 +1707,16 @@ ViewMove (View *view, int x, int y)
 		 recompute it later.  If a child is bigger, then
 		 ViewRecomputeChildren will handle it as well.  */
 	      doflags &= ~DoMaxX;
-
-	      /* Also garbage the subcompositor since the bounds
-		 changed.  */
-	      SetGarbaged (view->subcompositor);
 	    }
 
-	  if (view->subcompositor->max_y < ViewMaxX (view))
+	  if (view->subcompositor->max_y < ViewMaxY (view))
 	    {
-	      view->subcompositor->max_y = ViewMaxX (view);
+	      view->subcompositor->max_y = ViewMaxY (view);
 
 	      /* max_y has been updated so there is no need to
 		 recompute it later.  If a child is bigger, then
 		 ViewRecomputeChildren will handle it as well.  */
 	      doflags &= ~DoMaxY;
-
-	      /* Also garbage the subcompositor since the bounds
-		 changed.  */
-	      SetGarbaged (view->subcompositor);
 	    }
 	}
 
@@ -3054,6 +3161,14 @@ SubcompositorComposite (Subcompositor *subcompositor)
     pixman_region32_union (&damage, &damage,
 			   subcompositor->before_damage);
 
+  /* If the damage is too complicated, simplify it.  */
+  if (IsDamageComplicated (&damage))
+    SimplifyDamage (&damage,
+		    subcompositor->min_x,
+		    subcompositor->min_y,
+		    subcompositor->max_x,
+		    subcompositor->max_y);
+
   /* Add this damage onto the damage ring.  */
   StorePreviousDamage (subcompositor, &temp);
   pixman_region32_fini (&temp);
@@ -3139,6 +3254,17 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 				subcompositor->min_y,
 				subcompositor->max_x,
 				subcompositor->max_y);
+
+  /* If max_x and max_y changed, garbage the subcompositor.  */
+
+  if (subcompositor->last_update_max_x != subcompositor->max_x
+      || subcompositor->last_update_max_y != subcompositor->max_y)
+    SetGarbaged (subcompositor);
+
+  /* Record the values for future reference.  */
+
+  subcompositor->last_update_max_x = subcompositor->max_x;
+  subcompositor->last_update_max_y = subcompositor->max_y;
 
   RenderNoteTargetSize (subcompositor->target,
 			SubcompositorWidth (subcompositor),

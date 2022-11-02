@@ -1838,3 +1838,16 @@ extern void XLInitPointerGestures (void);
 
 /* This is a macro in order to be more static analyzer friendly.  */
 #define XLAssert(cond) (!(cond) ? abort () : ((void) 0))
+
+/* Utility structs.  */
+
+typedef struct _Rectangle Rectangle;
+
+struct _Rectangle
+{
+  /* The X and Y.  */
+  int x, y;
+
+  /* The width and height.  */
+  int width, height;
+};
