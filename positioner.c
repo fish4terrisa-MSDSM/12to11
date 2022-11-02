@@ -24,6 +24,27 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include "compositor.h"
 
+#ifdef DEBUG_POSITIONER
+#define DebugPrint(format, args...)				\
+  fprintf (stderr, "%s: " format "\n", __FUNCTION__, ## args)
+
+static const char *anchor_gravity_names[] =
+  {
+    "AnchorGravityNone",
+    "AnchorGravityTop",
+    "AnchorGravityBottom",
+    "AnchorGravityLeft",
+    "AnchorGravityRight",
+    "AnchorGravityTopLeft",
+    "AnchorGravityBottomLeft",
+    "AnchorGravityTopRight",
+    "AnchorGravityBottomRight",
+  };
+
+#else
+#define DebugPrint(fmt, ...) ((void) 0)
+#endif
+
 typedef enum _AnchorGravity Anchor;
 typedef enum _AnchorGravity Gravity;
 
@@ -234,8 +255,16 @@ CalculatePosition (Positioner *positioner, int *x_out, int *y_out)
 {
   int x, y, anchor_x, anchor_y, anchor_width, anchor_height;
 
-  /* Code mostly copied from weston.  I cannot understand
-     xdg_positioner due to the terrible documentation.  */
+  DebugPrint ("anchor: %s, gravity: %s",
+	      anchor_gravity_names[positioner->anchor],
+	      anchor_gravity_names[positioner->gravity]);
+
+  /* This function calculates an offset from the origin of the parent
+     window geometry (in the X coordinate system where the value of
+     the Y axis increases as the position grows downwards.)  The
+     offset is derived by first computing an anchor point, and then
+     placing the surface at that anchor in accordance with the
+     gravity.  */
 
   x = positioner->offset_x;
   y = positioner->offset_y;
@@ -244,6 +273,9 @@ CalculatePosition (Positioner *positioner, int *x_out, int *y_out)
   anchor_y = positioner->anchor_y;
   anchor_width = positioner->anchor_width;
   anchor_height = positioner->anchor_height;
+
+  /* First, compute the point at which the surface will be
+     anchored.  */
 
   switch (positioner->anchor)
     {
@@ -281,6 +313,26 @@ CalculatePosition (Positioner *positioner, int *x_out, int *y_out)
       x += anchor_x + anchor_width / 2;
     }
 
+  /* Next, compute where the surface should be.  positioner->gravity
+     specifies the corner opposite to the one that should be touching
+     the anchor.  For example:
+
+         (anchor)
+            + ------>
+            |
+            |
+	    v
+
+     would be the directions in which the surface rectangle would
+     extend if the gravity were to be AnchorGravityBottomRight.  And:
+
+           ^
+           |
+           |
+     <-----+ (anchor)
+
+    would be the those directions were it AnchorGravityTopLeft.  */
+
   switch (positioner->gravity)
     {
     case AnchorGravityTop:
@@ -310,6 +362,7 @@ CalculatePosition (Positioner *positioner, int *x_out, int *y_out)
     case AnchorGravityRight:
     case AnchorGravityTopRight:
     case AnchorGravityBottomRight:
+      x = x;
       break;
 
     default:
@@ -331,6 +384,10 @@ TrySlideX (Positioner *positioner, int x, int width, int cx, int cwidth)
 
   cx1 = cx + cwidth - 1;
   x1 = x + width - 1;
+
+  DebugPrint ("trying to slide X %d (width %d) according to"
+	      " constraint X %d and constraint width %d", x,
+	      width, cx, cwidth);
 
   /* See if the rect is unconstrained on the X axis.  */
 
@@ -360,6 +417,9 @@ TrySlideX (Positioner *positioner, int x, int width, int cx, int cwidth)
     case AnchorGravityRight:
     case AnchorGravityTopRight:
     case AnchorGravityBottomRight:
+      /* There is no X axis gravity.  Choose some arbitrary
+	 default.  */
+    default:
       if (x1 > cx1)
 	/* If x1 extends past cx1, move it back.  */
 	new_x = x - (x1 - cx1);
@@ -368,6 +428,8 @@ TrySlideX (Positioner *positioner, int x, int width, int cx, int cwidth)
 	new_x = cx;
       break;
     }
+
+  DebugPrint ("new X: %d", new_x);
 
   return new_x;
 }
@@ -409,6 +471,9 @@ TrySlideY (Positioner *positioner, int y, int height, int cy, int cheight)
     case AnchorGravityBottom:
     case AnchorGravityBottomLeft:
     case AnchorGravityBottomRight:
+      /* When there is no Y axis gravity, choose some arbitrary
+	 default.  */
+    default:
       if (y1 > cy1)
 	/* If y1 eytends past cy1, move it back.  */
 	new_y = y - (y1 - cy1);
@@ -437,6 +502,10 @@ TryFlipX (Positioner *positioner, int x, int width, int cx, int cwidth,
   if (x >= cx && x1 <= cx1)
     return x;
 
+  DebugPrint ("x %d width %d found to be constrained by "
+	      "constraint x %d constraint width %d", x, width,
+	      cx, cwidth);
+
   /* Otherwise, create a copy of the positioner, but with the X
      gravity and X anchor flipped.  */
   new = *positioner;
@@ -464,7 +533,7 @@ TryFlipX (Positioner *positioner, int x, int width, int cx, int cwidth,
       break;
 
     case AnchorGravityBottomRight:
-      new.gravity = AnchorGravityBottomRight;
+      new.gravity = AnchorGravityBottomLeft;
       break;
     }
 
@@ -491,7 +560,7 @@ TryFlipX (Positioner *positioner, int x, int width, int cx, int cwidth,
       break;
 
     case AnchorGravityBottomRight:
-      new.anchor = AnchorGravityBottomRight;
+      new.anchor = AnchorGravityBottomLeft;
       break;
     }
 
@@ -502,16 +571,27 @@ TryFlipX (Positioner *positioner, int x, int width, int cx, int cwidth,
       && positioner->anchor == new.anchor)
     return x;
 
+  DebugPrint ("new anchor: %s, anchor point: %d, %d; gravity: %s",
+	      anchor_gravity_names[new.anchor],
+	      positioner->anchor_x, positioner->anchor_y,
+	      anchor_gravity_names[new.gravity]);
+
   /* Otherwise, compute a new position using the new positioner.  */
   CalculatePosition (&new, &new_x, NULL);
 
   /* Scale that position.  */
   new_x *= scale_adjustment_factor;
 
+  DebugPrint ("new x position is %d", new_x + offset);
+
   /* If new_x is still constrained, use the previous position.  */
   if (new_x + offset < cx
       || new_x + offset + width - 1 > cx1)
-    return x;
+    {
+      DebugPrint ("position (%d) is still constrained",
+		  new_x + offset);
+      return x;
+    }
 
   /* Return the new X.  */
   return new_x + offset;
@@ -715,15 +795,37 @@ ApplyConstraintAdjustment (Positioner *positioner, Role *parent, int x,
     /* There is no output in which to constrain this popup.  */
     goto finish;
 
+#ifdef DEBUG_POSITIONER
+
+  fputs ("ApplyConstraintAdjustments: constraint adjustments are: ", stderr);
+
   if (positioner->constraint_adjustment
       & XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X)
-    x = TrySlideX (positioner, x + off_x, width,
-		   cx, cwidth) - off_x;
+    fputs ("SLIDE_X ", stderr);
 
   if (positioner->constraint_adjustment
       & XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_Y)
-    y = TrySlideY (positioner, y + off_y, height,
-		   cy, cheight) - off_y;
+    fputs ("SLIDE_Y ", stderr);
+
+  if (positioner->constraint_adjustment
+      & XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_X)
+    fputs ("FLIP_X ", stderr);
+
+  if (positioner->constraint_adjustment
+      & XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y)
+    fputs ("FLIP_Y ", stderr);
+
+  if (positioner->constraint_adjustment
+      & XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_RESIZE_X)
+    fputs ("RESIZE_X ", stderr);
+
+  if (positioner->constraint_adjustment
+      & XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_RESIZE_Y)
+    fputs ("RESIZE_X ", stderr);
+
+  fprintf (stderr, "\n");
+
+#endif
 
   if (positioner->constraint_adjustment
       & XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_X)
@@ -734,6 +836,16 @@ ApplyConstraintAdjustment (Positioner *positioner, Role *parent, int x,
       & XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y)
     y = TryFlipY (positioner, y + off_y, height,
 		  cy, cheight, off_y) - off_y;
+
+  if (positioner->constraint_adjustment
+      & XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X)
+    x = TrySlideX (positioner, x + off_x, width,
+		   cx, cwidth) - off_x;
+
+  if (positioner->constraint_adjustment
+      & XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_Y)
+    y = TrySlideY (positioner, y + off_y, height,
+		   cy, cheight) - off_y;
 
   if (positioner->constraint_adjustment
       & XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_RESIZE_X)
