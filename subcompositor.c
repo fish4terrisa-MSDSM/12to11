@@ -1647,6 +1647,13 @@ ViewMove (View *view, int x, int y)
       view->x = x;
       view->y = y;
 
+      /* If the subcompositor is not garbaged, then damage the union
+	 of the previous view bounds and the current view bounds.
+	 This part calculates the previous view bounds.  */
+
+      if (view->subcompositor && !IsGarbaged (view->subcompositor))
+	ViewUnionInferiorBounds (view, &damage);
+
       if (view->parent)
 	{
 	  view->abs_x = view->parent->abs_x + x;
@@ -1720,13 +1727,8 @@ ViewMove (View *view, int x, int y)
 	    }
 	}
 
-      /* If the subcompositor is not garbaged, then damage the union
-	 of the previous view bounds and the current view bounds.  */
       if (view->subcompositor)
 	{
-	  if (!IsGarbaged (view->subcompositor))
-	    ViewUnionInferiorBounds (view, &damage);
-
 	  /* Update the subcompositor bounds.  */
 	  SubcompositorUpdateBounds (view->subcompositor, doflags);
 
