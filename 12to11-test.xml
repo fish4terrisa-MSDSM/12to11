@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="test">
+  <copyright>
+    Copyright (C) 2022 various contributors.
+
+    This file is part of 12to11.
+
+    12to11 is free software: you can redistribute it and/or modify it
+    under the terms of the GNU General Public License as published by the
+    Free Software Foundation, either version 3 of the License, or (at your
+    option) any later version.
+
+    12to11 is distributed in the hope that it will be useful, but WITHOUT
+    ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+    FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+    for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with 12to11.  If not, see https://www.gnu.org/licenses/.
+  </copyright>
+
+  <interface name="test_manager" version="1">
+    <description summary="test interface">
+      This protocol is used by the 12to11 protocol translator to
+      support various tests.  The test_manager global allows creating
+      a surface whose bounds and contents can be inspected, and
+      connecting to the X server used by the compositor.
+
+      Upon binding to the test_manager, a display_string event is sent
+      containing the name of the X display.
+    </description>
+
+    <enum name="error">
+      <entry name="role_present" value="1"
+	     summary="given wl_surface has/had another role"/>
+    </enum>
+
+    <request name="get_test_surface">
+      <description summary="obtain test surface role">
+	Get a test_surface object for a particular surface.  If a role
+	was already attached to this surface, or a role of a different
+	type was previously attached, a role_present error is issued.
+
+	The window is created immediately after get_test_surface is
+	called.  It is mapped once a commit request with a non-nil
+	buffer is made.
+
+	Once the window associated with the test_surface object is
+	mapped, a mapped event is sent.
+      </description>
+      <arg name="id" type="new_id" interface="test_surface"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <event name="display_string">
+      <description summary="X server name">
+	The display_string event sends the name of the X display to
+	clients.  It is sent immediately after binding to the
+	test_manager object.
+      </description>
+      <arg name="name" type="string"/>
+    </event>
+  </interface>
+
+  <interface name="test_surface" version="1">
+    <description summary="test surface">
+      This role provides a test surface.  Various buffers and
+      subsurfaces can be attached, and the resulting display contents
+      validated.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy role">
+	This request destroys the test_surface role.  Subsequently,
+	get_test_surface can be called again with its surface.
+      </description>
+    </request>
+
+    <event name="mapped">
+      <description summary="role initialized">
+	The map event is sent once the window is mapped and its
+	contents can be retrieved.  The two arguments are the XID of
+	the window and the name of the display it is on.
+
+	If the surface is mapped, then unmapped (by having a nil
+	buffer attached) and then mapped again, without waiting for
+	the first mapped event, the delivery of subsequent mapped
+	events becomes undefined.
+      </description>
+      <arg name="xid" type="uint"/>
+      <arg name="display_string" type="string"/>
+    </event>
+  </interface>
+</protocol>
