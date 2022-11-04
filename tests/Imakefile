@@ -25,7 +25,9 @@ ScannerTarget(12to11-test)
           OBJS1 = $(COMMONOBJS) simple_test.o
           SRCS2 = $(COMMONSRCS) damage_test.c
           OBJS2 = $(COMMONOBJS) damage_test.o
-       PROGRAMS = simple_test damage_test
+          SRCS3 = $(COMMONSRCS) transform_test.c
+          OBJS3 = $(COMMONSRCS) transform_test.o
+       PROGRAMS = simple_test damage_test transform_test
 
 /* Make all objects depend on HEADER.  */
 $(OBJS1): $(HEADER)
@@ -35,6 +37,7 @@ depend:: $(HEADER) $(SRCS1)
 
 NormalProgramTarget(simple_test,$(OBJS1),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
 NormalProgramTarget(damage_test,$(OBJS2),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
-DependTarget3($(SRCS1),$(SRCS2),NullParameter)
+NormalProgramTarget(transform_test,$(OBJS3),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
+DependTarget3($(SRCS1),$(SRCS2),$(SRCS3))
 
 all:: $(PROGRAMS)

@@ -3,5 +3,6 @@
 vgcore*
 simple_test
 damage_test
+transform_test
 Makefile
 Makefile.bak

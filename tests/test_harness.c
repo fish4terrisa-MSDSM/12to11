@@ -586,7 +586,7 @@ load_image_data (const char *filename, struct image_data_header *header)
 
   bpp = bytes_per_pixel_for_format (header->format);
 
-  if (!bpp || header->stride < header->height * bpp)
+  if (!bpp || header->stride < header->width * bpp)
     goto error_1;
 
   buffer = malloc (header->stride * header->height);

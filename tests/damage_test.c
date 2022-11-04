@@ -30,7 +30,7 @@ static const char *test_names[] =
   {
     "map_window",
     "basic_test_card_image",
-    "basic_damage"
+    "basic_damage",
   };
 
 #define LAST_TEST	BASIC_DAMAGE_KIND

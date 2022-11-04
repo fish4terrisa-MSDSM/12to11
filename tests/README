@@ -12,5 +12,10 @@ When tests are being run, the tester must be very careful to not
 interfere with the test operation by moving or resizing the test
 window.  A compositing manager should be running along with the test.
 
+These tests are supposed to test the functionality of the protocol
+translator by connecting to a running instance and validating the
+results of various high-level requests.  In modern parlance, they
+would be ``integration tests''.
+
 Most likely, you do not want to run these tests manually, as the
 `run_tests.sh' script does all the setup for you.

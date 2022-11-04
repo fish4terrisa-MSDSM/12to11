@@ -91,3 +91,9 @@ extern void test_init (void);
 extern void test_complete (void) __attribute__ ((noreturn));
 
 #define ARRAYELTS(arr) (sizeof (arr) / sizeof (arr)[0])
+
+#if __GNUC__ >= 7
+#define FALLTHROUGH __attribute__ ((fallthrough))
+#else
+#define FALLTHROUGH ((void) 0)
+#endif
