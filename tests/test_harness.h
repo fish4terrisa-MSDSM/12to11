@@ -65,11 +65,37 @@ struct test_interface
   void *data;
 
   /* Pointer to the interface.  */
-  struct wl_interface *c_interface;
+  const struct wl_interface *c_interface;
 
   /* The wanted version.  */
   uint32_t version;
 };
+
+struct image_data_header
+{
+  /* Currently 1.  High bit is byte order.  */
+  unsigned char version;
+
+  /* The data format.  Currently always 0.  */
+  unsigned char format;
+
+  /* The width and height.  */
+  unsigned short width, height;
+
+  /* Padding.  */
+  unsigned short pad1;
+
+  /* The stride.  */
+  unsigned int stride;
+};
+
+enum image_data_format
+  {
+    /* Little-endian ARGB8888.  */
+    IMAGE_DATA_ARGB8888_LE,
+    /* Little-endian XRGB8888.  */
+    IMAGE_DATA_XRGB8888_LE,
+  };
 
 extern void die (const char *) __attribute__ ((noreturn));
 extern struct test_display *open_test_display (struct test_interface *, int);
@@ -86,6 +112,8 @@ extern void test_log (const char *, ...)
 extern bool make_test_surface (struct test_display *, struct wl_surface **,
 			       struct test_surface **);
 extern struct wl_buffer *load_png_image (struct test_display *, const char *);
+extern unsigned char *load_image_data (const char *,
+				       struct image_data_header *);
 extern void verify_image_data (struct test_display *, Window, const char *);
 extern void test_init (void);
 extern void test_complete (void) __attribute__ ((noreturn));

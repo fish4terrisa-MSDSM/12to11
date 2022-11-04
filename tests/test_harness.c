@@ -35,32 +35,6 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #define BIG_ENDIAN_BYTE_ORDER (1 << 8)
 
-struct image_data_header
-{
-  /* Currently 1.  High bit is byte order.  */
-  unsigned char version;
-
-  /* The data format.  Currently always 0.  */
-  unsigned char format;
-
-  /* The width and height.  */
-  unsigned short width, height;
-
-  /* Padding.  */
-  unsigned short pad1;
-
-  /* The stride.  */
-  unsigned int stride;
-};
-
-enum image_data_format
-  {
-    /* Little-endian ARGB8888.  */
-    IMAGE_DATA_ARGB8888_LE,
-    /* Little-endian XRGB8888.  */
-    IMAGE_DATA_XRGB8888_LE,
-  };
-
 #if PNG_LIBPNG_VER < 10500
 #define PNG_JMPBUF(ptr) ((ptr)->jmpbuf)
 # else
@@ -560,7 +534,7 @@ byte_order_for_format (enum image_data_format format)
 
 /* Load image data from a file.  */
 
-static unsigned char *
+unsigned char *
 load_image_data (const char *filename, struct image_data_header *header)
 {
   int fd;
@@ -614,38 +588,11 @@ load_image_data (const char *filename, struct image_data_header *header)
 }
 
 static void
-compare_single_row (unsigned char *data, int row_no,
-		    struct image_data_header *header, XImage *image)
-{
-  char *xdata;
-  unsigned short bytes_per_pixel;
-
-  bytes_per_pixel = bytes_per_pixel_for_format (header->format);
-  data = data + header->stride * row_no;
-  xdata = image->data + image->bytes_per_line * row_no;
-
-  if (memcmp (data, xdata, bytes_per_pixel * header->width))
-    report_test_failure ("row %d differs", row_no);
-}
-
-static void
-write_image_data (struct test_display *display, Window window,
-		  const char *filename)
+write_image_data_1 (XImage *image, const char *filename)
 {
   struct image_data_header header;
-  XImage *image;
   struct iovec iovecs[2];
   int fd;
-  XWindowAttributes attrs;
-
-  test_log ("writing contents of drawable to reference %s", filename);
-
-  XGetWindowAttributes (display->x_display, window, &attrs);
-  image = XGetImage (display->x_display, window, 0, 0, attrs.width,
-		     attrs.height, ~0, ZPixmap);
-
-  if (!image)
-    report_test_failure ("failed to load from drawable 0x%lx", window);
 
   memset (&header, 0, sizeof header);
   header.version = 1;
@@ -685,6 +632,46 @@ write_image_data (struct test_display *display, Window window,
     report_test_failure ("failed to write to output file %s", filename);
 
   close (fd);
+}
+
+static void
+compare_single_row (unsigned char *data, int row_no,
+		    struct image_data_header *header, XImage *image)
+{
+  char *xdata;
+  unsigned short bytes_per_pixel;
+
+  bytes_per_pixel = bytes_per_pixel_for_format (header->format);
+  data = data + header->stride * row_no;
+  xdata = image->data + image->bytes_per_line * row_no;
+
+  if (memcmp (data, xdata, bytes_per_pixel * header->width))
+    {
+      /* Write the reject to a file.  */
+      test_log ("writing reject to reject.dump");
+      write_image_data_1 (image, "reject.dump");
+
+      report_test_failure ("row %d differs", row_no);
+    }
+}
+
+static void
+write_image_data (struct test_display *display, Window window,
+		  const char *filename)
+{
+  XImage *image;
+  XWindowAttributes attrs;
+
+  test_log ("writing contents of drawable to reference %s", filename);
+
+  XGetWindowAttributes (display->x_display, window, &attrs);
+  image = XGetImage (display->x_display, window, 0, 0, attrs.width,
+		     attrs.height, ~0, ZPixmap);
+
+  if (!image)
+    report_test_failure ("failed to load from drawable 0x%lx", window);
+
+  write_image_data_1 (image, filename);
   XDestroyImage (image);
 
   test_log ("image data written to %s", filename);
@@ -714,6 +701,8 @@ verify_image_data (struct test_display *display, Window window,
   XGetWindowAttributes (display->x_display, window, &attrs);
   image = XGetImage (display->x_display, window, 0, 0, attrs.width,
 		     attrs.height, ~0, ZPixmap);
+
+  test_log ("verifying image data from: %s", filename);
 
   if (!image)
     report_test_failure ("failed to load from drawable 0x%lx", window);

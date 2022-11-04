@@ -19,3 +19,6 @@ would be ``integration tests''.
 
 Most likely, you do not want to run these tests manually, as the
 `run_tests.sh' script does all the setup for you.
+
+Please note that the EGL renderer currently does not pass the
+viewporter test, which is expected behavior.

@@ -20,6 +20,7 @@ name.c: $(12TO11ROOT)/name.xml name.h                         @@\
 	HEADER := $(HEADER) name.h                            @@\
 
 ScannerTarget(12to11-test)
+ScannerTarget(viewporter)
 
           SRCS1 = $(COMMONSRCS) simple_test.c
           OBJS1 = $(COMMONOBJS) simple_test.o
@@ -27,7 +28,12 @@ ScannerTarget(12to11-test)
           OBJS2 = $(COMMONOBJS) damage_test.o
           SRCS3 = $(COMMONSRCS) transform_test.c
           OBJS3 = $(COMMONSRCS) transform_test.o
-       PROGRAMS = simple_test damage_test transform_test
+          SRCS4 = $(COMMONSRCS) viewporter_test.c
+          OBJS4 = $(COMMONSRCS) viewporter_test.o
+          /* Not actually a test.  */
+          SRCS5 = $(COMMONSRCS) imgview.c
+          OBJS5 = $(COMMONSRCS) imgview.o
+       PROGRAMS = simple_test damage_test transform_test viewporter_test imgview
 
 /* Make all objects depend on HEADER.  */
 $(OBJS1): $(HEADER)
@@ -38,6 +44,9 @@ depend:: $(HEADER) $(SRCS1)
 NormalProgramTarget(simple_test,$(OBJS1),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
 NormalProgramTarget(damage_test,$(OBJS2),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
 NormalProgramTarget(transform_test,$(OBJS3),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
+NormalProgramTarget(viewporter_test,$(OBJS4),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
+NormalProgramTarget(imgview,$(OBJS5),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
 DependTarget3($(SRCS1),$(SRCS2),$(SRCS3))
+DependTarget3($(SRCS4),$(SRCS5),NullParameter)
 
 all:: $(PROGRAMS)
