@@ -20,6 +20,7 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <stdint.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include <limits.h>
 
 #include <wayland-client.h>
 
@@ -70,7 +71,7 @@ struct test_interface
   uint32_t version;
 };
 
-extern void die (const char *);
+extern void die (const char *) __attribute__ ((noreturn));
 extern struct test_display *open_test_display (struct test_interface *, int);
 extern int get_shm_file_descriptor (void);
 extern size_t get_image_stride (struct test_display *, int, int);
@@ -87,5 +88,6 @@ extern bool make_test_surface (struct test_display *, struct wl_surface **,
 extern struct wl_buffer *load_png_image (struct test_display *, const char *);
 extern void verify_image_data (struct test_display *, Window, const char *);
 extern void test_init (void);
+extern void test_complete (void) __attribute__ ((noreturn));
 
 #define ARRAYELTS(arr) (sizeof (arr) / sizeof (arr)[0])

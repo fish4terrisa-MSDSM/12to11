@@ -151,6 +151,9 @@ NoteBounds (void *data, int min_x, int min_y, int max_x, int max_y)
       /* Resize the window to fit.  */
       XResizeWindow (compositor.display, test->window,
 		     bounds_width, bounds_height);
+      /* Sync with the X server.  */
+      XSync (compositor.display, False);
+
       test->bounds_width = bounds_width;
       test->bounds_height = bounds_height;
     }
@@ -206,8 +209,13 @@ Commit (Surface *surface, Role *role)
     /* Map the surface now.  */
     MapTestSurface (test);
   else if (!surface->current_state.buffer)
-    /* Unmap the surface now.  */
-    UnmapTestSurface (test);
+    {
+      /* Unmap the surface now.  */
+      UnmapTestSurface (test);
+
+      /* Run frame callbacks if necessary.  */
+      RunFrameCallbacksConditionally (test);
+    }
 
   /* Finally, do a subcompositor update if the surface is now
      mapped.  */
@@ -389,7 +397,9 @@ GetTestSurface (struct wl_client *client, struct wl_resource *resource,
   attrs.border_pixel = border_pixel;
   attrs.event_mask = DefaultEventMask;
   attrs.cursor = InitDefaultCursor ();
-  flags = CWColormap | CWBorderPixel | CWEventMask | CWCursor;
+  attrs.override_redirect = True;
+  flags = (CWColormap | CWBorderPixel | CWEventMask
+	   | CWCursor | CWOverrideRedirect);
 
   test->window = XCreateWindow (compositor.display,
 				DefaultRootWindow (compositor.display),

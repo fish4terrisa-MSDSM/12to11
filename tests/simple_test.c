@@ -25,6 +25,14 @@ enum test_kind
     BASIC_TEST_CARD_IMAGE_KIND,
   };
 
+static const char *test_names[] =
+  {
+    "map_window",
+    "basic_test_card_image",
+  };
+
+#define LAST_TEST	BASIC_TEST_CARD_IMAGE_KIND
+
 /* The display.  */
 static struct test_display *display;
 
@@ -45,19 +53,34 @@ static struct wl_surface *wayland_surface;
 
 /* Forward declarations.  */
 static void submit_frame_callback (struct wl_surface *, enum test_kind);
+static void submit_surface_damage (struct wl_surface *, int, int, int, int);
 
 
 
 static void
 verify_single_step (enum test_kind kind)
 {
-  verify_image_data (display, test_surface_window, "simple_test.dump");
+  switch (kind)
+    {
+    case BASIC_TEST_CARD_IMAGE_KIND:
+      verify_image_data (display, test_surface_window,
+			 "simple_test.dump");
+      break;
+
+    default:
+      break;
+    }
+
+  if (kind == LAST_TEST)
+    test_complete ();
 }
 
 static void
 test_single_step (enum test_kind kind)
 {
   struct wl_buffer *buffer;
+
+  test_log ("running test step: %s", test_names[kind]);
 
   switch (kind)
     {
@@ -68,6 +91,8 @@ test_single_step (enum test_kind kind)
 	report_test_failure ("failed to load blue.png");
 
       wl_surface_attach (wayland_surface, buffer, 0, 0);
+      submit_surface_damage (wayland_surface, 0, 0,
+			     INT_MAX, INT_MAX);
       wl_surface_commit (wayland_surface);
       wl_buffer_destroy (buffer);
       break;
@@ -80,8 +105,20 @@ test_single_step (enum test_kind kind)
 
       wl_surface_attach (wayland_surface, buffer, 0, 0);
       submit_frame_callback (wayland_surface, kind);
+      submit_surface_damage (wayland_surface, 0, 0,
+			     INT_MAX, INT_MAX);
       wl_surface_commit (wayland_surface);
       wl_buffer_destroy (buffer);
+      break;
+    }
+}
+
+static void
+test_next_step (enum test_kind kind)
+{
+  switch (kind)
+    {
+    default:
       break;
     }
 }
@@ -116,9 +153,15 @@ handle_wl_callback_done (void *data, struct wl_callback *callback,
 {
   enum test_kind kind;
 
+  /* kind is not a pointer.  It is an enum test_kind stuffed into a
+     pointer.  */
   kind = (intptr_t) data;
+
   wl_callback_destroy (callback);
   verify_single_step (kind);
+
+  /* Now run the next test in this sequence.  */
+  test_next_step (kind);
 }
 
 static const struct wl_callback_listener wl_callback_listener =
@@ -134,9 +177,18 @@ submit_frame_callback (struct wl_surface *surface, enum test_kind kind)
   struct wl_callback *callback;
 
   callback = wl_surface_frame (surface);
-  wl_callback_set_user_data (callback, (void *) (intptr_t) kind);
   wl_callback_add_listener (callback, &wl_callback_listener,
-			    NULL);
+			    (void *) (intptr_t) kind);
+}
+
+static void
+submit_surface_damage (struct wl_surface *surface, int x, int y, int width,
+		       int height)
+{
+  test_log ("damaging surface by %d, %d, %d, %d", x, y, width,
+	    height);
+
+  wl_surface_damage (surface, x, y, width, height);
 }
 
 static void

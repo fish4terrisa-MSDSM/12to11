@@ -74,7 +74,7 @@ DetermineServerTime (void)
 }
 
 static void
-HandleCmdline (Display *dpy, int argc, char **argv)
+HandleCmdline (Display *dpy, const char *socket, int argc, char **argv)
 {
   int i;
   XrmDatabase rdb, initial_rdb;
@@ -107,7 +107,8 @@ HandleCmdline (Display *dpy, int argc, char **argv)
 	{
 	print_usage:
 	  fprintf (stderr,
-		   "usage: %s [-name name] [-class class] [-xrm resourcestring...]\n",
+		   "usage: %s [-name name] [-class class] [-printsocket]"
+		   " [-xrm resourcestring...]\n",
 		   argv[0]);
 	  exit (!strcmp (argv[i], "-help") ? 0 : 1);
 	}
@@ -144,6 +145,8 @@ HandleCmdline (Display *dpy, int argc, char **argv)
 
 	  XrmPutLineResource (&rdb, argv[++i]);
 	}
+      else if (!strcmp (argv[i], "-printsocket"))
+	puts (socket);
       else
 	{
 	  fprintf (stderr, "%s: bad command line option \"%s\"\n",
@@ -194,7 +197,7 @@ XLMain (int argc, char **argv)
   XGetDefault (dpy, "dummmy", "value");
 
   /* Parse command-line arguments.  */
-  HandleCmdline (dpy, argc, argv);
+  HandleCmdline (dpy, socket, argc, argv);
 
   compositor.display = dpy;
   compositor.conn = XGetXCBConnection (dpy);

@@ -2,4 +2,6 @@
 *-*.c
 vgcore*
 simple_test
+damage_test
 Makefile
+Makefile.bak

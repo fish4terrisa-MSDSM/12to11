@@ -751,3 +751,10 @@ test_init (void)
   write_image_data_instead
     = getenv ("TEST_WRITE_REFERENCE") != NULL;
 }
+
+void __attribute__ ((noreturn))
+test_complete (void)
+{
+  test_log ("test ran successfully");
+  exit (0);
+}

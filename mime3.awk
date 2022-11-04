@@ -1,4 +1,4 @@
-# Wayland compositor running on top of an X serer.
+# Wayland compositor running on top of an X server.
 
 # Copyright (C) 2022 to various contributors.
 

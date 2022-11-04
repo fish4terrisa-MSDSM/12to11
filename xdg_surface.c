@@ -46,6 +46,7 @@ enum
     StateTemporaryBounds	= (1 << 8),
     StateFrameStarted		= (1 << 9),
     StateAllowUnredirection	= (1 << 10),
+    StatePendingBufferRelease   = (1 << 11),
   };
 
 typedef struct _XdgRole XdgRole;
@@ -124,9 +125,8 @@ struct _XdgRole
   /* Various role state.  */
   int state;
 
-  /* Queue of buffers to release later (when the X server is done with
-     them).  */
-  ReleaseLaterRecord *release_records;
+  /* Buffer release helper.  */
+  BufferReleaseHelper *release_helper;
 
   /* The frame clock.  */
   FrameClock *clock;
@@ -166,25 +166,6 @@ struct _XdgRole
   XdgRoleImplementationType type;
 };
 
-struct _ReleaseLaterRecord
-{
-  /* A monotonically (overflow aside) increasing identifier.  */
-  uint64_t id;
-
-  /* The buffer that should be released upon receiving this
-     message.  */
-  ExtBuffer *buffer;
-
-  /* The idle callback.  */
-  IdleCallbackKey key;
-
-  /* The XdgRole.  */
-  XdgRole *role;
-
-  /* The next and last records.  */
-  ReleaseLaterRecord *next, *last;
-};
-
 struct _PingEvent
 {
   /* Function called to reply to this event.  */
@@ -196,61 +177,6 @@ struct _PingEvent
 
 /* Event base of the XShape extension.  */
 int shape_base;
-
-static void
-DeleteRecord (ReleaseLaterRecord *record)
-{
-  /* Removing the sentinel record is invalid.  */
-  XLAssert (record->buffer != NULL);
-
-  /* First, make the rest of the list skip RECORD.  */
-  record->last->next = record->next;
-  record->next->last = record->last;
-
-  /* Finally, free RECORD.  */
-  XLFree (record);
-}
-
-static void
-FreeRecords (ReleaseLaterRecord *records)
-{
-  ReleaseLaterRecord *last, *tem;
-
-  tem = records->next;
-
-  while (tem != records)
-    {
-      last = tem;
-      tem = tem->next;
-
-      /* Cancel the idle callback if it already exists.  */
-      if (last->key)
-	RenderCancelIdleCallback (last->key);
-
-      /* Release the buffer now.  */
-      XLReleaseBuffer (last->buffer);
-
-      /* Before freeing the record itself.  */
-      XLFree (last);
-    }
-
-  XLFree (records);
-}
-
-static ReleaseLaterRecord *
-AddRecordAfter (ReleaseLaterRecord *start)
-{
-  ReleaseLaterRecord *record;
-
-  record = XLMalloc (sizeof *record);
-  record->next = start->next;
-  record->last = start;
-
-  start->next->last = record;
-  start->next = record;
-
-  return record;
-}
 
 static ReconstrainCallback *
 AddCallbackAfter (ReconstrainCallback *start)
@@ -345,8 +271,7 @@ RunFrameCallbacks (Surface *surface, XdgRole *role)
 static void
 RunFrameCallbacksConditionally (XdgRole *role)
 {
-  if (role->release_records->last == role->release_records
-      && role->role.surface)
+  if (!(role->state & StatePendingBufferRelease))
     RunFrameCallbacks (role->role.surface, role);
   else if (role->role.surface)
     /* weston-simple-shm seems to assume that a frame callback can
@@ -355,24 +280,20 @@ RunFrameCallbacksConditionally (XdgRole *role)
 }
 
 static void
-BufferIdleCallback (RenderBuffer buffer, void *data)
+AllBuffersReleased (void *data)
 {
-  ReleaseLaterRecord *record;
   XdgRole *role;
   Surface *surface;
 
-  record = data;
-  role = record->role;
-
-  XLReleaseBuffer (record->buffer);
-  DeleteRecord (record);
-
+  role = data;
   surface = role->role.surface;
 
-  /* Run frame callbacks now, if no more buffers are waiting to be
+  /* Clear the buffer release flag.  */
+  role->state &= ~StatePendingBufferRelease;
+
+  /* Run frame callbacks now, as no more buffers are waiting to be
      released.  */
-  if (surface && role->state & StatePendingFrameCallback
-      && role->release_records->next == role->release_records)
+  if (surface && role->state & StatePendingFrameCallback)
     {
       RunFrameCallbacks (surface, role);
 
@@ -794,9 +715,7 @@ ReleaseBacking (XdgRole *role)
   /* Release all buffers pending release.  The sync is necessary
      because the X server does not perform operations immediately
      after the Xlib function is called.  */
-
-  XSync (compositor.display, False);
-  FreeRecords (role->release_records);
+  FreeBufferReleaseHelper (role->release_helper);
 
   /* Now release the reference to any toplevel implementation that
      might be attached.  */
@@ -858,7 +777,6 @@ static void
 ReleaseBuffer (Surface *surface, Role *role, ExtBuffer *buffer)
 {
   RenderBuffer render_buffer;
-  ReleaseLaterRecord *record;
   XdgRole *xdg_role;
 
   render_buffer = XLRenderBufferFromBuffer (buffer);
@@ -870,13 +788,9 @@ ReleaseBuffer (Surface *surface, Role *role, ExtBuffer *buffer)
   else
     {
       /* Release the buffer once it is destroyed or becomes idle.  */
-      record = AddRecordAfter (xdg_role->release_records);
-      record->buffer = buffer;
-      record->key = RenderAddIdleCallback (render_buffer,
-					   xdg_role->target,
-					   BufferIdleCallback,
-					   record);
-      record->role = xdg_role;
+      ReleaseBufferWithHelper (xdg_role->release_helper,
+			       buffer, xdg_role->target);
+      xdg_role->state |= StatePendingBufferRelease;
     }
 }
 
@@ -1518,24 +1432,12 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
 
   memset (role, 0, sizeof *role);
 
-  role->release_records
-    = XLSafeMalloc (sizeof *role->release_records);
-
-  if (!role->release_records)
-    {
-      XLFree (role);
-      wl_client_post_no_memory (client);
-
-      return;
-    }
-
   role->role.resource = wl_resource_create (client, &xdg_surface_interface,
 					    wl_resource_get_version (resource),
 					    id);
 
   if (!role->role.resource)
     {
-      XLFree (role->release_records);
       XLFree (role);
       wl_client_post_no_memory (client);
 
@@ -1579,17 +1481,14 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
   attrs.cursor = InitDefaultCursor ();
   flags = CWColormap | CWBorderPixel | CWEventMask | CWCursor;
 
-  /* Sentinel node.  */
-  role->release_records->next = role->release_records;
-  role->release_records->last = role->release_records;
-  role->release_records->buffer = NULL;
-
   role->window = XCreateWindow (compositor.display,
 				DefaultRootWindow (compositor.display),
 				0, 0, 20, 20, 0, compositor.n_planes,
 				InputOutput, compositor.visual, flags,
 				&attrs);
   role->target = RenderTargetFromWindow (role->window, DefaultEventMask);
+  role->release_helper = MakeBufferReleaseHelper (AllBuffersReleased,
+						  role);
 
   role->subcompositor = MakeSubcompositor ();
   role->clock = XLMakeFrameClockForWindow (role->window);

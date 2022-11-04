@@ -67,6 +67,9 @@
       This role provides a test surface.  Various buffers and
       subsurfaces can be attached, and the resulting display contents
       validated.
+
+      When a buffer is commited to a test surface, the frame callback
+      is run after any window configuration or resize has completed.
     </description>
 
     <request name="destroy" type="destructor">
