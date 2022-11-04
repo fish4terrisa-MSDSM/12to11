@@ -154,11 +154,6 @@ HandleOneXEvent (XEvent *event)
   if (XLHandleOneXEventForIconSurfaces (event))
     return;
 
-#if 0
-  if (XLHandleOneXEventForDmabuf (event))
-    return;
-#endif
-
   if (XLHandleOneXEventForXData (event))
     return;
 
@@ -169,6 +164,9 @@ HandleOneXEvent (XEvent *event)
     return;
 
   if (HandleOneXEventForTime (event))
+    return;
+
+  if (XLHandleOneXEventForTest (event))
     return;
 }
 

@@ -19,9 +19,6 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include "compositor.h"
 
-/* List of all resources for our compositor global.  */
-static XLList *all_compositors;
-
 /* The compositor global.  */
 static struct wl_global *global_compositor;
 
@@ -39,12 +36,6 @@ CreateRegion (struct wl_client *client,
 	      uint32_t id)
 {
   XLCreateRegion (client, resource, id);
-}
-
-static void
-HandleResourceDestroy (struct wl_resource *resource)
-{
-  all_compositors = XLListRemove (all_compositors, resource);
 }
 
 static const struct wl_compositor_interface wl_compositor_impl =
@@ -69,8 +60,7 @@ HandleBind (struct wl_client *client, void *data,
     }
 
   wl_resource_set_implementation (resource, &wl_compositor_impl,
-				  NULL, HandleResourceDestroy);
-  all_compositors = XLListPrepend (all_compositors, resource);
+				  NULL, NULL);
 }
 
 void

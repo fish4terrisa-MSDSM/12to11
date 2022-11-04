@@ -223,6 +223,10 @@ FreeRecords (ReleaseLaterRecord *records)
       last = tem;
       tem = tem->next;
 
+      /* Cancel the idle callback if it already exists.  */
+      if (last->key)
+	RenderCancelIdleCallback (last->key);
+
       /* Release the buffer now.  */
       XLReleaseBuffer (last->buffer);
 
@@ -359,7 +363,6 @@ BufferIdleCallback (RenderBuffer buffer, void *data)
 
   record = data;
   role = record->role;
-
 
   XLReleaseBuffer (record->buffer);
   DeleteRecord (record);
@@ -1574,8 +1577,7 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
   attrs.border_pixel = border_pixel;
   attrs.event_mask = DefaultEventMask;
   attrs.cursor = InitDefaultCursor ();
-  flags = (CWColormap | CWBorderPixel | CWEventMask
-	   | CWCursor);
+  flags = CWColormap | CWBorderPixel | CWEventMask | CWCursor;
 
   /* Sentinel node.  */
   role->release_records->next = role->release_records;

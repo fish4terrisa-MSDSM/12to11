@@ -4,47 +4,30 @@
 #error "Posix threads are required"
 #endif
 
-SYS_LIBRARIES = MathLibrary ThreadsLibraries
-DEPLIBS = $(DEPXLIB) $(DEPEXTENSIONLIB) $(DEPXRANDRLIB) $(DEPXRENDERLIB) \
-  $(DEPXFIXESLIB) $(DEPXILIB) $(DEPXKBFILELIB)
+    SYS_LIBRARIES = MathLibrary ThreadsLibraries
+          DEPLIBS = $(DEPXLIB) $(DEPEXTENSIONLIB) $(DEPXRANDRLIB) $(DEPXRENDERLIB) $(DEPXFIXESLIB) $(DEPXILIB) $(DEPXKBFILELIB)
+  LOCAL_LIBRARIES = $(XLIB) $(EXTENSIONLIB) $(XCBLIB) $(XCB) $(XCB_SHM) $(XRANDRLIB) $(PIXMAN) $(XRENDERLIB) $(XILIB) $(XKBFILELIB) $(XFIXESLIB) $(XCB_DRI3) $(XCB_SHAPE) $(WAYLAND_SERVER) $(XCB_RANDR) $(DRM) $(XPRESENTLIB) $(XSHMFENCELIB)
+        INCLUDES := $(DRMINCLUDES) $(PIXMANINCLUDES)
 
-LOCAL_LIBRARIES = $(XLIB) $(EXTENSIONLIB) $(XCBLIB) $(XCB) $(XCB_SHM)      \
-  $(XRANDRLIB) $(PIXMAN) $(XRENDERLIB) $(XILIB) $(XKBFILELIB) $(XFIXESLIB) \
-  $(XCB_DRI3) $(XCB_SHAPE) $(WAYLAND_SERVER) $(XCB_RANDR) $(DRM)           \
-  $(XPRESENTLIB) $(XSHMFENCELIB)
+#ifdef BuildTests
+# define IHaveSubdirs
+# define PassCDebugFlags 'CDEBUGFLAGS=$(CDEBUGFLAGS)'
+          SUBDIRS = tests
 
-INCLUDES := $(DRMINCLUDES) $(PIXMANINCLUDES)
+MakeSubdirs($(SUBDIRS))
+DependSubdirs($(SUBDIRS))
+#endif
 
-SRCS = 12to11.c run.c alloc.c fns.c output.c compositor.c       \
-  surface.c region.c shm.c atoms.c subcompositor.c positioner.c \
-  xdg_wm.c xdg_surface.c xdg_toplevel.c frame_clock.c xerror.c  \
-  ewmh.c timer.c subsurface.c seat.c data_device.c xdg_popup.c  \
-  dmabuf.c buffer.c select.c xdata.c xsettings.c dnd.c          \
-  icon_surface.c primary_selection.c renderer.c                 \
-  picture_renderer.c explicit_synchronization.c transform.c     \
-  wp_viewporter.c decoration.c text_input.c                     \
-  single_pixel_buffer.c drm_lease.c pointer_constraints.c       \
-  time.c relative_pointer.c keyboard_shortcuts_inhibit.c        \
-  idle_inhibit.c process.c fence_ring.c pointer_gestures.c
-
-OBJS = 12to11.o run.o alloc.o fns.o output.o compositor.o       \
-  surface.o region.o shm.o atoms.o subcompositor.o positioner.o \
-  xdg_wm.o xdg_surface.o xdg_toplevel.o frame_clock.o xerror.o  \
-  ewmh.o timer.o subsurface.o seat.o data_device.o xdg_popup.o  \
-  dmabuf.o buffer.o select.o xdata.o xsettings.o dnd.o          \
-  icon_surface.o primary_selection.o renderer.o                 \
-  picture_renderer.o explicit_synchronization.o transform.o     \
-  wp_viewporter.o decoration.o text_input.o                     \
-  single_pixel_buffer.o drm_lease.o pointer_constraints.o       \
-  time.o relative_pointer.o keyboard_shortcuts_inhibit.o        \
-  idle_inhibit.o process.o fence_ring.o pointer_gestures.o
-
-GENHEADERS = transfer_atoms.h drm_modifiers.h
+             SRCS = 12to11.c run.c alloc.c fns.c output.c compositor.c surface.c region.c shm.c atoms.c subcompositor.c positioner.c xdg_wm.c xdg_surface.c xdg_toplevel.c frame_clock.c xerror.c ewmh.c timer.c subsurface.c seat.c data_device.c xdg_popup.c dmabuf.c buffer.c select.c xdata.c xsettings.c dnd.c icon_surface.c primary_selection.c renderer.c picture_renderer.c explicit_synchronization.c transform.c wp_viewporter.c decoration.c text_input.c single_pixel_buffer.c drm_lease.c pointer_constraints.c time.c relative_pointer.c keyboard_shortcuts_inhibit.c idle_inhibit.c process.c fence_ring.c pointer_gestures.c test.c buffer_release.c
+             OBJS = 12to11.o run.o alloc.o fns.o output.o compositor.o surface.o region.o shm.o atoms.o subcompositor.o positioner.o xdg_wm.o xdg_surface.o xdg_toplevel.o frame_clock.o xerror.o ewmh.o timer.o subsurface.o seat.o data_device.o xdg_popup.o dmabuf.o buffer.o select.o xdata.o xsettings.o dnd.o icon_surface.o primary_selection.o renderer.o picture_renderer.o explicit_synchronization.o transform.o wp_viewporter.o decoration.o text_input.o single_pixel_buffer.o drm_lease.o pointer_constraints.o time.o relative_pointer.o keyboard_shortcuts_inhibit.o idle_inhibit.o process.o fence_ring.o pointer_gestures.o test.o buffer_release.o
+       GENHEADERS = transfer_atoms.h drm_modifiers.h
+           HEADER = $(GENHEADERS) compositor.h
+   EXTRA_DEFINES := -D_GNU_SOURCE -U_BSD_SOURCE -U_SVID_SOURCE
 
 #ifdef HaveEglSupport
 
-       EGL_SRCS   = egl.c
-       EGL_OBJS   = egl.o
+         EGL_SRCS = egl.c
+         EGL_OBJS = egl.o
 LOCAL_LIBRARIES ::= $(LOCAL_LIBRARIES) $(EGL) $(GLES)
            SRCS ::= $(SRCS) $(EGL_SRCS)
            OBJS ::= $(OBJS) $(EGL_OBJS)
@@ -62,27 +45,9 @@ cleandir::
 
 #endif
 
-OPTIMIZE = -O0
-ANALYZE  = -fanalyzer
-
-CDEBUGFLAGS := -fno-common -Wall -Warith-conversion -Wdate-time \
-  -Wdisabled-optimization -Wdouble-promotion -Wduplicated-cond  \
-  -Wextra -Wformat-signedness -Winit-self -Winvalid-pch         \
-  -Wlogical-op -Wmissing-declarations -Wmissing-include-dirs    \
-  -Wmissing-prototypes -Wnested-externs -Wnull-dereference      \
-  -Wold-style-definition -Wopenmp-simd -Wpacked -Wpointer-arith \
-  -Wstrict-prototypes -Wsuggest-attribute=format                \
-  -Wsuggest-attribute=noreturn -Wsuggest-final-methods          \
-  -Wsuggest-final-types -Wuninitialized -Wunknown-pragmas       \
-  -Wunused-macros -Wvariadic-macros                             \
-  -Wvector-operation-performance -Wwrite-strings                \
-  -Warray-bounds=2 -Wattribute-alias=2 -Wformat=2               \
-  -Wformat-truncation=2 -Wimplicit-fallthrough=5                \
-  -Wshift-overflow=2 -Wuse-after-free=3 -Wvla-larger-than=4031  \
-  -Wredundant-decls -Wno-missing-field-initializers             \
-  -Wno-override-init -Wno-sign-compare -Wno-type-limits         \
-  -Wno-unused-parameter -Wno-format-nonliteral -g3 $(OPTIMIZE)  \
-  $(ANALYZE)
+         OPTIMIZE = -O0
+         ANALYZE  = -fanalyzer
+     CDEBUGFLAGS := -fno-common -Wall -Warith-conversion -Wdate-time -Wdisabled-optimization -Wdouble-promotion -Wduplicated-cond -Wextra -Wformat-signedness -Winit-self -Winvalid-pch -Wlogical-op -Wmissing-declarations -Wmissing-include-dirs -Wmissing-prototypes -Wnested-externs -Wnull-dereference -Wold-style-definition -Wopenmp-simd -Wpacked -Wpointer-arith -Wstrict-prototypes -Wsuggest-attribute=format -Wsuggest-attribute=noreturn -Wsuggest-final-methods -Wsuggest-final-types -Wuninitialized -Wunknown-pragmas -Wunused-macros -Wvariadic-macros -Wvector-operation-performance -Wwrite-strings -Warray-bounds=2 -Wattribute-alias=2 -Wformat=2 -Wformat-truncation=2 -Wimplicit-fallthrough=5 -Wshift-overflow=2 -Wuse-after-free=3 -Wvla-larger-than=4031 -Wredundant-decls -Wno-missing-field-initializers -Wno-override-init -Wno-sign-compare -Wno-type-limits -Wno-unused-parameter -Wno-format-nonliteral -g3 $(OPTIMIZE) $(ANALYZE)
 
 short_types.txt: media_types.txt
 XCOMM	Remove all data types starting with application/vnd.
@@ -129,6 +94,7 @@ ScannerTarget(relative-pointer-unstable-v1)
 ScannerTarget(keyboard-shortcuts-inhibit-unstable-v1)
 ScannerTarget(idle-inhibit-unstable-v1)
 ScannerTarget(pointer-gestures-unstable-v1)
+ScannerTarget(12to11-test)
 
 /* Make OBJS depend on scanner headers, and depend on both them and SRCS.  */
 $(OBJS): $(GENHEADERS)
@@ -140,18 +106,12 @@ depend:: $(GENHEADERS) $(SRCS)
 cleandir::
 	$(RM) $(GENHEADERS) $(GENSRCS) short_types.txt 12to11.tar.gz
 
-/* Undefine _BSD_SOURCE and _SVID_SOURCE, since both are deprecated
-   and are also superseeded by _GNU_SOURCE.  */
-
-EXTRA_DEFINES := -D_GNU_SOURCE -U_BSD_SOURCE -U_SVID_SOURCE
-
 ComplexProgramTarget(12to11)
 
 .PHONY: dist
 dist: 12to11.tar.gz
 
-DIST_FILES = Imakefile $(SRCS) media_types.txt shaders.txt *.awk *.xml \
-  12to11.man README libraries.def *.h
+DIST_FILES = Imakefile $(SRCS) media_types.txt shaders.txt *.awk *.xml 12to11.man README libraries.def *.h
 
 /* Include files generated by wayland-scanner, so the target does not
    need to have it installed.  */

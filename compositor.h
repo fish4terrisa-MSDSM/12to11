@@ -875,6 +875,7 @@ enum _RoleType
     XdgType,
     CursorType,
     DndIconType,
+    TestSurfaceType,
   };
 
 #define RotatesDimensions(transform)		\
@@ -1794,6 +1795,22 @@ extern XSyncFence FenceToXFence (Fence *);
 /* Defined in pointer_gestures.c.  */
 
 extern void XLInitPointerGestures (void);
+
+/* Defined in test.c.  */
+
+extern void XLInitTest (void);
+extern Bool XLHandleOneXEventForTest (XEvent *);
+
+/* Defined in buffer_release.c.  */
+
+typedef void (*AllReleasedCallback) (void *);
+typedef struct _BufferReleaseHelper BufferReleaseHelper;
+
+extern BufferReleaseHelper *MakeBufferReleaseHelper (AllReleasedCallback,
+						     void *);
+extern void FreeBufferReleaseHelper (BufferReleaseHelper *);
+extern void ReleaseBufferWithHelper (BufferReleaseHelper *, ExtBuffer *,
+				     RenderTarget);
 
 /* Utility functions that don't belong in a specific file.  */
 
