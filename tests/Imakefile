@@ -1,0 +1,37 @@
+#include "../12to11.conf"
+
+     12TO11ROOT = ..
+        DEPLIBS = $(DEPXLIB)
+LOCAL_LIBRARIES = $(WAYLAND_CLIENT) $(XLIB) $(PNG)
+     COMMONOBJS = test_harness.o
+     COMMONSRCS = test_harness.c
+         HEADER = test_harness.h
+ EXTRA_DEFINES := -D_GNU_SOURCE -U_BSD_SOURCE -U_SVID_SOURCE
+
+#define ScannerTarget(name)                                   @@\
+name.h: $(12TO11ROOT)/name.xml                                @@\
+	$(WAYLAND_SCANNER) client-header $< $@                @@\
+                                                              @@\
+name.c: $(12TO11ROOT)/name.xml name.h                         @@\
+	$(WAYLAND_SCANNER) private-code $< $@                 @@\
+                                                              @@\
+    COMMONOBJS := $(COMMONOBJS) name.o                        @@\
+    COMMONSRCS := $(COMMONSRCS) name.c                        @@\
+	HEADER := $(HEADER) name.h                            @@\
+
+ScannerTarget(12to11-test)
+
+          SRCS1 = $(COMMONSRCS) simple_test.c
+          OBJS1 = $(COMMONOBJS) simple_test.o
+       PROGRAMS = simple_test
+
+/* Make all objects depend on HEADER.  */
+$(OBJS1): $(HEADER)
+
+/* And depend on all sources and headers.  */
+depend:: $(HEADER) $(SRCS1)
+
+NormalProgramTarget(simple_test,$(OBJS1),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
+DependTarget3($(SRCS1),NullParameter,NullParameter)
+
+all:: $(PROGRAMS)

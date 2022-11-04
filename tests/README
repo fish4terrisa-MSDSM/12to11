@@ -1,0 +1,6 @@
+This directory holds some work-in-progress code for testing the
+protocol translator.  At present, there is only a simple smoke test of
+limited utility.
+
+Each test must be individually run on a system with an a8r8g8b8
+visual, GLOBAL_SCALE and OUTPUT_SCALE set to 1.
