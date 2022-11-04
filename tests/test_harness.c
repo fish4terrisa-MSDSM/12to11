@@ -46,6 +46,9 @@ struct image_data_header
   /* The width and height.  */
   unsigned short width, height;
 
+  /* Padding.  */
+  unsigned short pad1;
+
   /* The stride.  */
   unsigned int stride;
 };
