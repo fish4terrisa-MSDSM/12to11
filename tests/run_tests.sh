@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Tests for the Wayland compositor running on top of an X serer.
 
 # Copyright (C) 2022 to various contributors.

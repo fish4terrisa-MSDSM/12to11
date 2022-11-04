@@ -31,6 +31,9 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
      wp_viewporter.set_source (50, 50, 200, 200)
      wp_viewporter.set_destination (500, 500)
 
+     wp_viewporter.set_source (50, 50, 200, 200)
+     wp_viewporter.set_destination (50, 75)
+
    Each test is run in order, with both damage_buffer and damage being
    used to compute buffer damage.  */
 
@@ -40,6 +43,7 @@ enum test_kind
     VIEWPORT_DEST_200_150_KIND,
     VIEWPORT_SRC_50_50_200_200_KIND,
     VIEWPORT_SRC_50_50_200_200_DEST_500_500_KIND,
+    VIEWPORT_SRC_50_50_200_200_DEST_50_75_KIND,
   };
 
 static const char *test_names[] =
@@ -48,9 +52,10 @@ static const char *test_names[] =
     "viewport_dest_250_150",
     "viewport_src_50_50_200_200",
     "viewport_src_50_50_200_200_dest_500_500",
+    "viewport_src_50_50_200_200_dest_50_75",
   };
 
-#define LAST_TEST       VIEWPORT_SRC_50_50_200_200_DEST_500_500_KIND
+#define LAST_TEST       VIEWPORT_SRC_50_50_200_200_DEST_50_75_KIND
 
 /* The display.  */
 static struct test_display *display;
@@ -175,6 +180,13 @@ test_single_step (enum test_kind kind)
       do_viewport_damage_test (50, 50, 200, 200, 500, 500,
 			       "viewport_src_50_50_200_200_dest_500_500_1.dump",
 			       "viewport_src_50_50_200_200_dest_500_500_2.dump");
+      test_single_step (VIEWPORT_SRC_50_50_200_200_DEST_50_75_KIND);
+      break;
+
+    case VIEWPORT_SRC_50_50_200_200_DEST_50_75_KIND:
+      do_viewport_damage_test (50, 50, 200, 200, 50, 75,
+			       "viewport_src_50_50_200_200_dest_50_75_1.dump",
+			       "viewport_src_50_50_200_200_dest_50_75_2.dump");
       break;
     }
 
