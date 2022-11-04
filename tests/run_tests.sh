@@ -1,0 +1,47 @@
+# Tests for the Wayland compositor running on top of an X serer.
+
+# Copyright (C) 2022 to various contributors.
+
+# This file is part of 12to11.
+
+# 12to11 is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation, either version 3 of the License, or (at your
+# option) any later version.
+
+# 12to11 is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+# for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with 12to11.  If not, see <https://www.gnu.org/licenses/>.
+
+pushd "$(dirname $0)"
+declare -a standard_tests=( simple_test damage_test )
+
+make -C . "${standard_tests[@]}"
+
+# Run tandard tests, meaning those that should be run with a
+# GLOBAL_SCALE of 1 and an OUTPUT_SCALE of 1.
+
+export GLOBAL_SCALE=1
+export OUTPUT_SCALE=1
+exec 3< <(stdbuf -oL ../12to11 -printsocket)
+read -u 3 WAYLAND_DISPLAY
+export WAYLAND_DISPLAY
+
+echo "Compositor started at ${WAYLAND_DISPLAY}"
+
+for test_executable in "${standard_tests[@]}"
+do
+    echo "Running test ${test_executable}"
+
+    if ./${test_executable}; then
+	echo "${test_executable} completed successfully"
+    else
+	echo "${test_executable} failed; see its output for more details"
+    fi
+done
+
+popd
