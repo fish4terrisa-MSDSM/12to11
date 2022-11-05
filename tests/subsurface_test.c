@@ -31,6 +31,7 @@ enum test_kind
     SUBSURFACE_STACKING_KIND,
     SUBSURFACE_TREE_KIND,
     SUBSURFACE_GROW_SHRINK_KIND,
+    SUBSURFACE_STACKING_1_KIND,
   };
 
 static const char *test_names[] =
@@ -42,6 +43,7 @@ static const char *test_names[] =
     "subsurface_stacking",
     "subsurface_tree",
     "subsurface_grow_shrink",
+    "subsurface_stacking_1",
   };
 
 struct test_subsurface
@@ -53,7 +55,7 @@ struct test_subsurface
   struct wl_surface *surface;
 };
 
-#define LAST_TEST       SUBSURFACE_GROW_SHRINK_KIND
+#define LAST_TEST       SUBSURFACE_STACKING_1_KIND
 
 /* The display.  */
 static struct test_display *display;
@@ -427,7 +429,6 @@ test_single_step (enum test_kind kind)
 	 disappear!  */
       wl_surface_attach (subsurfaces[1]->surface, NULL, 0, 0);
       wl_surface_commit (subsurfaces[1]->surface);
-      wl_surface_commit (subsurfaces[1]->surface);
       wait_frame_callback (wayland_surface);
       sleep_or_verify ();
 
@@ -503,6 +504,53 @@ test_single_step (enum test_kind kind)
       wl_surface_damage (subsurfaces[1]->surface, 0, 0, 150, 150);
       wl_surface_commit (subsurfaces[1]->surface);
       wait_frame_callback (wayland_surface);
+      sleep_or_verify ();
+
+      test_single_step (SUBSURFACE_STACKING_1_KIND);
+      break;
+
+    case SUBSURFACE_STACKING_1_KIND:
+      /* Move the second subsurface above the first.  Then, move the
+	 third subsurface above the fourth, and the fourth below the
+	 second.  */
+      wl_subsurface_place_above (subsurfaces[1]->subsurface,
+				 subsurfaces[0]->surface);
+      wl_subsurface_place_above (subsurfaces[2]->subsurface,
+				 subsurfaces[3]->surface);
+      wl_subsurface_place_below (subsurfaces[3]->subsurface,
+				 subsurfaces[1]->surface);
+
+      /* Next, attach some buffers to the third and fourth
+	 surface.  */
+      wl_surface_attach (subsurfaces[2]->surface, gradient_png, 0, 0);
+      wl_surface_attach (subsurfaces[3]->surface, cow_transparent_png,
+			 0, 0);
+      submit_surface_opaque_region (subsurfaces[2]->surface, 0, 0,
+				    100, 300);
+      wl_surface_commit (subsurfaces[2]->surface);
+      wl_surface_commit (subsurfaces[3]->surface);
+
+      /* Commit the first subsurface.  */
+      wl_surface_commit (subsurfaces[1]->surface);
+      wait_frame_callback (wayland_surface);
+
+      /* The result of the test should be as follows.  Above the first
+	 subsurface lies the fourth subsurface (cow_transparent.png),
+	 above which is the second subsurface (small.png), above which
+	 is the third subsurface (gradient.png).  */
+      sleep_or_verify ();
+
+      /* Next, test moving the third subsurface immediately below the
+	 fourth.  */
+      wl_subsurface_place_below (subsurfaces[2]->subsurface,
+				 subsurfaces[3]->surface);
+      wl_surface_commit (subsurfaces[1]->surface);
+      wait_frame_callback (wayland_surface);
+
+      /* The result of the test should be as follows.  Above the first
+	 subsurface lies the third subsurface (gradient.png), above
+	 which lies the fourth subsurface (cow_transparent.png), and
+	 finally the third (small.png).  */
       sleep_or_verify ();
       break;
     }

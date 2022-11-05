@@ -1793,18 +1793,28 @@ ViewMap (View *view)
   if (view->subcompositor
       && (view->link != view->inferior || view->buffer))
     {
-      /* Garbage the subcompositor and recompute bounds, if something
-	 is attached to the view or it is not empty.  */
-      SetGarbaged (view->subcompositor);
+      /* Recompute bounds, if something is attached to the view or it
+	 is not empty.  */
       SubcompositorUpdateBounds (view->subcompositor, DoAll);
+
+      /* Now, if the subcompositor is still not garbaged, damage each
+	 inferior of the view.  */
+      if (!IsGarbaged (view->subcompositor))
+	DamageIncludingInferiors (view);
     }
 }
 
 void
 ViewUnmap (View *view)
 {
+  pixman_region32_t damage;
+
   if (IsViewUnmapped (view))
     return;
+
+  /* Init the damage region.  */
+  pixman_region32_init (&damage);
+  ViewUnionInferiorBounds (view, &damage);
 
   /* Mark the view as unmapped.  */
   SetUnmapped (view);
@@ -1824,10 +1834,18 @@ ViewUnmap (View *view)
 	  SubcompositorUpdateBounds (view->subcompositor,
 				     DoAll);
 
-	  /* Garbage the view's subcompositor.  */
-	  SetGarbaged (view->subcompositor);
+	  /* If the subcompositor is still not garbaged, then apply
+	     the bounds of view and all its inferiors as extra
+	     damage.  */
+	  if (!IsGarbaged (view->subcompositor))
+	    pixman_region32_union (&view->subcompositor->additional_damage,
+				   &view->subcompositor->additional_damage,
+				   &damage);
 	}
     }
+
+  /* Finalize the damage region.  */
+  pixman_region32_fini (&damage);
 }
 
 void
