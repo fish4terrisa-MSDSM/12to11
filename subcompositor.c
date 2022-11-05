@@ -1116,7 +1116,7 @@ ViewInsert (View *view, View *child)
   ViewRecomputeChildren (child, NULL);
 
   /* And update bounds.  */
-  ViewUpdateBoundsForInsert (view);
+  ViewUpdateBoundsForInsert (child);
 
   /* Now, if the subcompositor is still not garbaged, damage each
      inferior of the view.  */
@@ -1168,7 +1168,7 @@ ViewInsertAfter (View *view, View *child, View *sibling)
   ViewRecomputeChildren (child, NULL);
 
   /* And update bounds.  */
-  ViewUpdateBoundsForInsert (view);
+  ViewUpdateBoundsForInsert (child);
 
   /* Now, if the subcompositor is still not garbaged, damage each
      inferior of the view.  */
@@ -1199,7 +1199,7 @@ ViewInsertBefore (View *view, View *child, View *sibling)
 
   /* Update subcompositor bounds.  Inserting a view cannot shrink
      anything.  */
-  ViewUpdateBoundsForInsert (view);
+  ViewUpdateBoundsForInsert (child);
 
   /* Now, if the subcompositor is still not garbaged, damage each
      inferior of the view.  */

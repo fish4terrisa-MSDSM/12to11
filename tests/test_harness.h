@@ -19,6 +19,8 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdlib.h>
+#include <stdio.h>
 #include <unistd.h>
 #include <limits.h>
 

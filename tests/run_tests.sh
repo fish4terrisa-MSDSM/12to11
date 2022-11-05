@@ -19,7 +19,10 @@
 # along with 12to11.  If not, see <https://www.gnu.org/licenses/>.
 
 pushd "$(dirname $0)"
-declare -a standard_tests=( simple_test damage_test transform_test viewporter_test )
+declare -a standard_tests=(
+    simple_test damage_test transform_test viewporter_test
+    subsurface_test
+)
 
 make -C . "${standard_tests[@]}"
 

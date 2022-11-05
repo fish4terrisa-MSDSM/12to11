@@ -22,18 +22,20 @@ name.c: $(12TO11ROOT)/name.xml name.h                         @@\
 ScannerTarget(12to11-test)
 ScannerTarget(viewporter)
 
-          SRCS1 = $(COMMONSRCS) simple_test.c
-          OBJS1 = $(COMMONOBJS) simple_test.o
-          SRCS2 = $(COMMONSRCS) damage_test.c
-          OBJS2 = $(COMMONOBJS) damage_test.o
-          SRCS3 = $(COMMONSRCS) transform_test.c
-          OBJS3 = $(COMMONSRCS) transform_test.o
-          SRCS4 = $(COMMONSRCS) viewporter_test.c
-          OBJS4 = $(COMMONSRCS) viewporter_test.o
           /* Not actually a test.  */
-          SRCS5 = $(COMMONSRCS) imgview.c
-          OBJS5 = $(COMMONSRCS) imgview.o
-       PROGRAMS = simple_test damage_test transform_test viewporter_test imgview
+          SRCS1 = $(COMMONSRCS) imgview.c
+          OBJS1 = $(COMMONSRCS) imgview.o
+          SRCS2 = $(COMMONSRCS) simple_test.c
+          OBJS2 = $(COMMONOBJS) simple_test.o
+          SRCS3 = $(COMMONSRCS) damage_test.c
+          OBJS3 = $(COMMONOBJS) damage_test.o
+          SRCS4 = $(COMMONSRCS) transform_test.c
+          OBJS4 = $(COMMONSRCS) transform_test.o
+          SRCS5 = $(COMMONSRCS) viewporter_test.c
+          OBJS5 = $(COMMONSRCS) viewporter_test.o
+          SRCS6 = $(COMMONSRCS) subsurface_test.c
+          OBJS6 = $(COMMONSRCS) subsurface_test.o
+       PROGRAMS = imgview simple_test damage_test transform_test viewporter_test subsurface_test
 
 /* Make all objects depend on HEADER.  */
 $(OBJS1): $(HEADER)
@@ -41,12 +43,13 @@ $(OBJS1): $(HEADER)
 /* And depend on all sources and headers.  */
 depend:: $(HEADER) $(SRCS1)
 
-NormalProgramTarget(simple_test,$(OBJS1),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
-NormalProgramTarget(damage_test,$(OBJS2),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
-NormalProgramTarget(transform_test,$(OBJS3),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
-NormalProgramTarget(viewporter_test,$(OBJS4),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
-NormalProgramTarget(imgview,$(OBJS5),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
+NormalProgramTarget(imgview,$(OBJS1),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
+NormalProgramTarget(simple_test,$(OBJS2),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
+NormalProgramTarget(damage_test,$(OBJS3),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
+NormalProgramTarget(transform_test,$(OBJS4),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
+NormalProgramTarget(viewporter_test,$(OBJS5),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
+NormalProgramTarget(subsurface_test,$(OBJS6),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
 DependTarget3($(SRCS1),$(SRCS2),$(SRCS3))
-DependTarget3($(SRCS4),$(SRCS5),NullParameter)
+DependTarget3($(SRCS4),$(SRCS5),$(SRCS6))
 
 all:: $(PROGRAMS)

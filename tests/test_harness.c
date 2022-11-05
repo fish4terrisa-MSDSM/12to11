@@ -391,6 +391,29 @@ swizzle_png_row (unsigned char *row_data, int width)
     }
 }
 
+/* Do the same, but also premultiply the individual color components
+   with the alpha.  */
+
+static void
+swizzle_png_row_premultiply (unsigned char *row_data, int width)
+{
+  int i;
+  unsigned char byte_1, byte_2, byte_3, byte_4;
+
+  for (i = 0; i < width; ++i)
+    {
+      byte_1 = row_data[i * 4 + 0];
+      byte_2 = row_data[i * 4 + 1];
+      byte_3 = row_data[i * 4 + 2];
+      byte_4 = row_data[i * 4 + 3];
+
+      row_data[i * 4 + 0] = (byte_3 * 1u * byte_4) / 255u;
+      row_data[i * 4 + 1] = (byte_2 * 1u * byte_4) / 255u;
+      row_data[i * 4 + 2] = (byte_1 * 1u * byte_4) / 255u;
+      row_data[i * 4 + 3] = byte_4;
+    }
+}
+
 /* Load a PNG image into a wl_buffer.  The image must be either
    PNG_COLOR_TYPE_RGB or PNG_COLOR_TYPE_RGB_ALPHA.  The image
    background is ignored.  */
@@ -473,8 +496,14 @@ load_png_image (struct test_display *display, const char *filename)
   png_read_end (png_ptr, NULL);
 
   for (i = 0; i < height; ++i)
-    /* Swizzle the big-endian data.  */
-    swizzle_png_row (row_pointers[i], width);
+    {
+      /* Swizzle the big-endian data.  */
+
+      if (color_type == PNG_COLOR_TYPE_RGB_ALPHA)
+	swizzle_png_row_premultiply (row_pointers[i], width);
+      else
+	swizzle_png_row (row_pointers[i], width);
+    }
 
   /* Now, destroy the read struct and close the file.  */
   png_destroy_read_struct (&png_ptr, &info_ptr, NULL);
