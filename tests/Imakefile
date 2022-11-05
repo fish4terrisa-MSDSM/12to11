@@ -7,6 +7,7 @@ LOCAL_LIBRARIES = $(WAYLAND_CLIENT) $(XLIB) $(PNG)
      COMMONOBJS = test_harness.o
      COMMONSRCS = test_harness.c
          HEADER = test_harness.h
+       GENFILES =
  EXTRA_DEFINES := -D_GNU_SOURCE -U_BSD_SOURCE -U_SVID_SOURCE
 
 #define ScannerTarget(name)                                   @@\
@@ -18,6 +19,7 @@ name.c: $(12TO11ROOT)/name.xml name.h                         @@\
                                                               @@\
     COMMONOBJS := $(COMMONOBJS) name.o                        @@\
     COMMONSRCS := $(COMMONSRCS) name.c                        @@\
+      GENFILES := $(GENFILES) name.c name.h                   @@\
 	HEADER := $(HEADER) name.h                            @@\
 
 ScannerTarget(12to11-test)
@@ -44,7 +46,7 @@ ScannerTarget(viewporter)
 $(OBJS1): $(HEADER)
 
 /* And depend on all sources and headers.  */
-depend:: $(HEADER) $(SRCS1)
+depend:: $(HEADER) $(COMMONSRCS)
 
 NormalProgramTarget(imgview,$(OBJS1),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
 NormalProgramTarget(simple_test,$(OBJS2),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
@@ -58,3 +60,6 @@ DependTarget3($(SRCS4),$(SRCS5),$(SRCS6))
 DependTarget3($(SRCS7),NullParameter,NullParameter)
 
 all:: $(PROGRAMS)
+
+clean::
+	$(RM) $(GENFILES)
