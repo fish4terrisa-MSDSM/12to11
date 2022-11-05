@@ -35,7 +35,11 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
      wp_viewporter.set_destination (50, 75)
 
    Each test is run in order, with both damage_buffer and damage being
-   used to compute buffer damage.  */
+   used to compute buffer damage.  Finally, the following requests are
+   tested with a buffer transform of 90:
+
+     wp_viewporter.set_source (250, 50, 200, 200)
+     wp_viewporter.set_destination (100, 100)  */
 
 enum test_kind
   {
@@ -44,6 +48,7 @@ enum test_kind
     VIEWPORT_SRC_50_50_200_200_KIND,
     VIEWPORT_SRC_50_50_200_200_DEST_500_500_KIND,
     VIEWPORT_SRC_50_50_200_200_DEST_50_75_KIND,
+    VIEWPORT_SRC_250_50_200_200_DEST_50_75_90CW_KIND,
   };
 
 static const char *test_names[] =
@@ -53,9 +58,10 @@ static const char *test_names[] =
     "viewport_src_50_50_200_200",
     "viewport_src_50_50_200_200_dest_500_500",
     "viewport_src_50_50_200_200_dest_50_75",
+    "viewport_src_250_50_200_200_dest_50_75_90cw",
   };
 
-#define LAST_TEST       VIEWPORT_SRC_50_50_200_200_DEST_50_75_KIND
+#define LAST_TEST	VIEWPORT_SRC_250_50_200_200_DEST_50_75_90CW_KIND
 
 /* The display.  */
 static struct test_display *display;
@@ -187,6 +193,17 @@ test_single_step (enum test_kind kind)
       do_viewport_damage_test (50, 50, 200, 200, 50, 75,
 			       "viewport_src_50_50_200_200_dest_50_75_1.dump",
 			       "viewport_src_50_50_200_200_dest_50_75_2.dump");
+      test_single_step (VIEWPORT_SRC_250_50_200_200_DEST_50_75_90CW_KIND);
+      break;
+
+    case VIEWPORT_SRC_250_50_200_200_DEST_50_75_90CW_KIND:
+      wl_surface_set_buffer_transform (wayland_surface,
+				       WL_OUTPUT_TRANSFORM_90);
+      do_viewport_damage_test (250, 50, 200, 200, 50, 75,
+			       "viewport_src_250_50_200_200_dest_50_75"
+			       "_90cw_1.dump",
+			       "viewport_src_250_50_200_200_dest_50_75"
+			       "_90cw_2.dump");
       break;
     }
 
