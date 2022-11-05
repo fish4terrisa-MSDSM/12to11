@@ -70,6 +70,17 @@ Pong (struct wl_client *client, struct wl_resource *resource,
 static void
 Destroy (struct wl_client *client, struct wl_resource *resource)
 {
+  XdgWmBase *wm_base;
+
+  /* If there are still xdg_surfaces created by this xdg_wm_base
+     resource, post an error.  */
+  wm_base = wl_resource_get_user_data (resource);
+
+  if (wm_base->list.next != &wm_base->list)
+    wl_resource_post_error (resource, XDG_WM_BASE_ERROR_DEFUNCT_SURFACES,
+			    "surfaces created by this xdg_wm_base still"
+			    " exist, yet it is being destroyed");
+
   wl_resource_destroy (resource);
 }
 

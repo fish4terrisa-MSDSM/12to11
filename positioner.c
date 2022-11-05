@@ -99,7 +99,7 @@ SetSize (struct wl_client *client, struct wl_resource *resource,
 
   if (width < 1 || height < 1)
     {
-      wl_resource_post_error (resource, XDG_POSITIONER_ERROR_INVALID_INPUT,
+      wl_resource_post_error (resource, XDG_SURFACE_ERROR_INVALID_SIZE,
 			      "invalid size %d %d", width, height);
       return;
     }
@@ -118,7 +118,7 @@ SetAnchorRect (struct wl_client *client, struct wl_resource *resource,
   if (width < 1 || height < 1)
     {
       wl_resource_post_error (resource, XDG_POSITIONER_ERROR_INVALID_INPUT,
-			      "invalid size %d %d", width, height);
+			      "invalid size specified (%d %d)", width, height);
       return;
     }
 
@@ -138,7 +138,7 @@ SetAnchor (struct wl_client *client, struct wl_resource *resource,
   if (anchor > XDG_POSITIONER_ANCHOR_BOTTOM_RIGHT)
     {
       wl_resource_post_error (resource, XDG_POSITIONER_ERROR_INVALID_INPUT,
-			      "not an anchor");
+			      "invalid anchor specified (%"PRIu32")", anchor);
       return;
     }
 
@@ -154,8 +154,8 @@ SetGravity (struct wl_client *client, struct wl_resource *resource,
 
   if (gravity > XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT)
     {
-      wl_resource_post_error (resource, XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT,
-			      "not a gravity");
+      wl_resource_post_error (resource, XDG_POSITIONER_ERROR_INVALID_INPUT,
+			      "invalid gravity specified (%"PRIu32")", gravity);
       return;
     }
 
@@ -939,4 +939,15 @@ Bool
 XLPositionerIsReactive (Positioner *positioner)
 {
   return positioner->reactive;
+}
+
+void
+XLCheckPositionerComplete (Positioner *positioner)
+{
+  if (positioner->anchor_width && positioner->width)
+    return;
+
+  wl_resource_post_error (positioner->resource,
+			  XDG_WM_BASE_ERROR_INVALID_POSITIONER,
+			  "the specified positioner is incomplete");
 }

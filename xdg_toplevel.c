@@ -2044,7 +2044,7 @@ SetMaxSize (struct wl_client *client, struct wl_resource *resource,
 
   if (width < 0 || height < 0)
     {
-      wl_resource_post_error (resource, WL_SURFACE_ERROR_INVALID_SIZE,
+      wl_resource_post_error (resource, XDG_TOPLEVEL_ERROR_INVALID_SIZE,
 			      "invalid max size %d %d", width, height);
       return;
     }
@@ -2067,7 +2067,7 @@ SetMinSize (struct wl_client *client, struct wl_resource *resource,
 
   if (width < 0 || height < 0)
     {
-      wl_resource_post_error (resource, WL_SURFACE_ERROR_INVALID_SIZE,
+      wl_resource_post_error (resource, XDG_TOPLEVEL_ERROR_INVALID_SIZE,
 			      "invalid min size %d %d", width, height);
       return;
     }

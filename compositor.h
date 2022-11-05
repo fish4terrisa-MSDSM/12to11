@@ -1386,6 +1386,7 @@ extern void XLPositionerCalculateGeometry (Positioner *, Role *, int *, int *,
 extern void XLRetainPositioner (Positioner *);
 extern void XLReleasePositioner (Positioner *);
 extern Bool XLPositionerIsReactive (Positioner *);
+extern void XLCheckPositionerComplete (Positioner *);
 
 /* Defined in xdg_toplevel.c.  */
 

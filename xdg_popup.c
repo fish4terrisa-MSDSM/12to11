@@ -105,15 +105,9 @@ struct _XdgPopup
 
   /* Reconstrain callback associated with the parent.  */
   void *reconstrain_callback_key;
-
-  /* The next and last popups in this list.  */
-  XdgPopup *next, *last;
 };
 
 
-
-/* List of all current popups.  */
-XdgPopup live_popups;
 
 /* Forward declarations.  */
 
@@ -143,10 +137,6 @@ DestroyBacking (XdgPopup *popup)
 
   if (popup->pending_callback_key)
     XLSeatCancelDestroyListener (popup->pending_callback_key);
-
-  /* Unlink the popup from the list.  */
-  popup->last->next = popup->next;
-  popup->next->last = popup->last;
 
   /* Release the positioner and free the popup.  */
   XLReleasePositioner (popup->positioner);
@@ -682,6 +672,9 @@ Reposition (struct wl_client *client, struct wl_resource *resource,
     = wl_resource_get_user_data (positioner_resource);
   XLRetainPositioner (popup->positioner);
 
+  /* Make sure that the positioner is complete.  */
+  XLCheckPositionerComplete (popup->positioner);
+
   xdg_popup_send_repositioned (resource, token);
   InternalReposition (popup);
 }
@@ -841,17 +834,14 @@ XLGetXdgPopup (struct wl_client *client, struct wl_resource *resource,
   popup->positioner = wl_resource_get_user_data (positioner);
   XLRetainPositioner (popup->positioner);
 
+  /* Make sure that the positioner is complete.  */
+  XLCheckPositionerComplete (popup->positioner);
+
   wl_resource_set_implementation (popup->resource, &xdg_popup_impl,
 				  popup, HandleResourceDestroy);
   popup->refcount++;
 
   XLXdgRoleAttachImplementation (role, &popup->impl);
-
-  /* Link the popup onto the list of all popups.  */
-  popup->last = &live_popups;
-  popup->next = live_popups.next;
-  live_popups.next->last = popup;
-  live_popups.next = popup;
 
   /* Send the initial configure event.  */
   InternalReposition (popup);
@@ -869,6 +859,5 @@ XLHandleXEventForXdgPopups (XEvent *event)
 void
 XLInitPopups (void)
 {
-  live_popups.next = &live_popups;
-  live_popups.last = &live_popups;
+  /* Nothing to do here.  */
 }
