@@ -1853,9 +1853,15 @@ extern void ReleaseBufferWithHelper (BufferReleaseHelper *, ExtBuffer *,
         ? (t) -1						\
         : ((((t) 1 << (TypeWidth (t) - 2)) - 1) * 2 + 1)))
 
+#if __GNUC__ >= 7
+
 #define IntAddWrapv(a, b, r) 		__builtin_add_overflow (a, b, r)
 #define IntSubtractWrapv(a, b, r)	__builtin_sub_overflow (a, b, r)
 #define IntMultiplyWrapv(a, b, r)	__builtin_mul_overflow (a, b, r)
+
+#define Popcount(number)		__builtin_popcount (number)
+
+#endif
 
 /* This is a macro in order to be more static analyzer friendly.  */
 #define XLAssert(cond) (!(cond) ? abort () : ((void) 0))
@@ -1872,3 +1878,9 @@ struct _Rectangle
   /* The width and height.  */
   int width, height;
 };
+
+/* port.h may override ports here.  */
+
+#ifdef PortFile
+#include PortFile
+#endif

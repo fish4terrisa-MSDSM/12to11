@@ -3063,7 +3063,7 @@ MaskPopCount (XIButtonState *mask)
   population = 0;
 
   for (i = 0; i < mask->mask_len; ++i)
-    population += __builtin_popcount (mask->mask[i]);
+    population += Popcount (mask->mask[i]);
 
   return population;
 }

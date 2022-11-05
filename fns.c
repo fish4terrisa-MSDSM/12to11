@@ -891,3 +891,27 @@ XLAddFdFlag (int fd, int flag, Bool abort_on_error)
 
   return True;
 }
+
+/* Functions for ports.  */
+
+#ifdef NeedPortPopcount
+
+int
+PortPopcount (unsigned long long int big)
+{
+  int num_bits;
+
+  num_bits = 0;
+
+  while (big)
+    {
+      if (big & 1)
+	++num_bits;
+
+      big >>= 1;
+    }
+
+  return num_bits;
+}
+
+#endif /* NeedPortPopcount.  */
