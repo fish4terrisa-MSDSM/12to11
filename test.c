@@ -60,6 +60,11 @@ struct _TestSurface
   int bounds_width, bounds_height;
 };
 
+/* The locked output scale.  N.B. that a test_scale_lock is not an
+   actual resource, and just represents the state of this
+   variable.  */
+int locked_output_scale;
+
 /* The test surface manager global.  */
 static struct wl_global *test_manager_global;
 
@@ -348,6 +353,47 @@ HandleResourceDestroy (struct wl_resource *resource)
   DestroyBacking (test);
 }
 
+
+
+static void
+DestroyScaleLock (struct wl_client *client, struct wl_resource *resource)
+{
+  wl_resource_destroy (resource);
+}
+
+static void
+SetScale (struct wl_client *client, struct wl_resource *resource,
+	  uint32_t scale)
+{
+  /* If the scale is invalid, reject it.  */
+  if (!scale)
+    {
+      wl_resource_post_error (resource, TEST_MANAGER_ERROR_INVALID_SCALE,
+			      "scale of 0 specified");
+      return;
+    }
+
+  /* Set the scale.  As there can only be one lock at any given
+     time, there is no need to check the resource data.  */
+  locked_output_scale = scale;
+  XLOutputHandleScaleChange (scale);
+}
+
+static const struct test_scale_lock_interface scale_lock_impl =
+  {
+    .destroy = DestroyScaleLock,
+    .set_scale = SetScale,
+  };
+
+static void
+HandleScaleLockResourceDestroy (struct wl_resource *resource)
+{
+  /* There is no resource data associated with scale locks.  Just
+     unlock the scale.  */
+  locked_output_scale = 0;
+  XLOutputHandleScaleChange (-1);
+}
+
 static void
 GetTestSurface (struct wl_client *client, struct wl_resource *resource,
 		uint32_t id, struct wl_resource *surface_resource)
@@ -451,9 +497,55 @@ GetTestSurface (struct wl_client *client, struct wl_resource *resource,
     abort ();
 }
 
+static void
+GetScaleLock (struct wl_client *client, struct wl_resource *resource,
+	      uint32_t id, uint32_t scale)
+{
+  struct wl_resource *lock_resource;
+
+  if (!scale)
+    {
+      wl_resource_post_error (resource, TEST_MANAGER_ERROR_INVALID_SCALE,
+			      "scale of 0 specified");
+      return;
+    }
+
+  if (locked_output_scale)
+    {
+      /* The scale is already locked, so don't create another
+	 lock.  */
+      wl_resource_post_error (resource, TEST_MANAGER_ERROR_SCALE_LOCK_EXISTS,
+			      "a scale lock already exists (another test is"
+			      " already running?)");
+      return;
+    }
+
+  lock_resource = wl_resource_create (client, &test_scale_lock_interface,
+				      wl_resource_get_version (resource),
+				      id);
+
+  if (!lock_resource)
+    {
+      wl_resource_post_no_memory (resource);
+      return;
+    }
+
+  /* Now, set the locked scale.  */
+  locked_output_scale = scale;
+
+  /* And update the global scale factor if need be.  */
+  if (scale != global_scale_factor)
+    XLOutputHandleScaleChange (scale);
+
+  /* And resource implementation.  */
+  wl_resource_set_implementation (lock_resource, &scale_lock_impl,
+				  NULL, HandleScaleLockResourceDestroy);
+}
+
 static const struct test_manager_interface test_manager_impl =
   {
     .get_test_surface = GetTestSurface,
+    .get_scale_lock = GetScaleLock,
   };
 
 

@@ -98,6 +98,9 @@ static ScaleChangeCallback scale_callbacks;
 /* The scale factor currently applied on a global basis.  */
 int global_scale_factor;
 
+/* The current real scale factor.  */
+static int real_scale_factor;
+
 /* Function run upon any kind of XRandR notify event.  */
 static void (*change_hook) (Time);
 
@@ -1035,6 +1038,19 @@ HandleScaleChange (int scale)
   RunScaleChangeCallbacks ();
 }
 
+static void
+HandleScaleSettingChange (int scale)
+{
+  real_scale_factor = scale;
+
+  /* If the scale factor is locked, just return.  */
+  if (locked_output_scale)
+    return;
+
+  /* Otherwise, update the scale.  */
+  HandleScaleChange (scale);
+}
+
 void *
 XLAddScaleChangeCallback (void *data, void (*func) (void *, int))
 {
@@ -1143,6 +1159,18 @@ XLGetMaxOutputBounds (int *x_min, int *y_min, int *x_max,
 }
 
 void
+XLOutputHandleScaleChange (int new_scale)
+{
+  /* If the value is not -1, just use the new scale.
+     Otherwise, use the current non-locked scale.  */
+
+  if (new_scale != -1)
+    HandleScaleChange (new_scale);
+  else
+    HandleScaleChange (real_scale_factor);
+}
+
+void
 XLInitRROutputs (void)
 {
   Bool extension;
@@ -1179,7 +1207,10 @@ XLInitRROutputs (void)
      factor was specified for debugging.  */
   if (!ApplyEnvironment ("GLOBAL_SCALE", &global_scale_factor))
     XLListenToIntegerSetting ("Gdk/WindowScalingFactor",
-			      HandleScaleChange);
+			      HandleScaleSettingChange);
+
+  /* Set the real scale factor.  */
+  real_scale_factor = global_scale_factor;
 
   /* Initialize the scale change callback list sentinel node.  */
   scale_callbacks.next = &scale_callbacks;
@@ -1204,4 +1235,3 @@ XLInitRROutputs (void)
   all_outputs = BuildOutputTree ();
   MakeGlobalsForOutputTree (all_outputs);
 }
-

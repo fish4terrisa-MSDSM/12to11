@@ -1206,6 +1206,7 @@ extern void XLRemoveScaleChangeCallback (void *);
 extern void XLClearOutputs (Surface *);
 extern void XLOutputSetChangeFunction (void (*) (Time));
 extern void XLGetMaxOutputBounds (int *, int *, int *, int *);
+extern void XLOutputHandleScaleChange (int);
 
 /* Defined in atoms.c.  */
 
@@ -1798,6 +1799,8 @@ extern XSyncFence FenceToXFence (Fence *);
 extern void XLInitPointerGestures (void);
 
 /* Defined in test.c.  */
+
+extern int locked_output_scale;
 
 extern void XLInitTest (void);
 extern Bool XLHandleOneXEventForTest (XEvent *);

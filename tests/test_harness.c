@@ -45,6 +45,9 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 /* Whether or not to write image data instead of verifying it.  */
 static bool write_image_data_instead;
 
+/* The test display.  */
+static struct test_display *display;
+
 static void
 handle_test_manager_display_string (void *data, struct test_manager *manager,
 				    const char *display_string)
@@ -154,10 +157,29 @@ die (const char *reason)
   exit (1);
 }
 
+/* This should be called when a test failed due to a non-IO error.  It
+   destroys the scale lock and synchronizes with the compositor so
+   that by the time the next test is run, the current test's scale
+   lock will have been released.  */
+
+static void __attribute__ ((noreturn))
+exit_with_code (int code)
+{
+  if (display)
+    {
+      test_scale_lock_destroy (display->scale_lock);
+      wl_display_roundtrip (display->display);
+    }
+
+  exit (code);
+}
+
 struct test_display *
 open_test_display (struct test_interface *interfaces, int num_interfaces)
 {
-  struct test_display *display;
+  if (display)
+    /* The display was already opened.  */
+    return display;
 
   display = malloc (sizeof *display);
 
@@ -191,8 +213,17 @@ open_test_display (struct test_interface *interfaces, int num_interfaces)
   if (!test_manager_check (display))
     goto error_3;
 
+  /* And try to set up the scale lock.  */
+  display->scale_lock
+    = test_manager_get_scale_lock (display->test_manager, 1);
+
+  if (!display->scale_lock)
+    goto error_4;
+
   return display;
 
+ error_4:
+  XFree (display->pixmap_formats);
  error_3:
   if (display->x_display)
     XCloseDisplay (display->x_display);
@@ -200,6 +231,7 @@ open_test_display (struct test_interface *interfaces, int num_interfaces)
   wl_display_disconnect (display->display);
  error_1:
   free (display);
+  display = NULL;
   return NULL;
 }
 
@@ -325,7 +357,7 @@ report_test_failure (const char *format, ...)
   fputs ("\n", stderr);
   va_end (ap);
 
-  exit (1);
+  exit_with_code (1);
 }
 
 void __attribute__ ((format (gnu_printf, 1, 2)))
@@ -767,6 +799,12 @@ verify_image_data (struct test_display *display, Window window,
 }
 
 void
+test_set_scale (struct test_display *display, int scale)
+{
+  test_scale_lock_set_scale (display->scale_lock, scale);
+}
+
+void
 test_init (void)
 {
   write_image_data_instead
@@ -777,5 +815,5 @@ void __attribute__ ((noreturn))
 test_complete (void)
 {
   test_log ("test ran successfully");
-  exit (0);
+  exit_with_code (0);
 }

@@ -33,23 +33,44 @@
     <enum name="error">
       <entry name="role_present" value="1"
 	     summary="given wl_surface has/had another role"/>
+      <entry name="scale_lock_exists" value="2"
+	     summary="another client has already locked the scale"/>
+      <entry name="invalid_scale" value="3"
+	     summary="the specified scale is invalid"/>
     </enum>
 
     <request name="get_test_surface">
       <description summary="obtain test surface role">
 	Get a test_surface object for a particular surface.  If a role
 	was already attached to this surface, or a role of a different
-	type was previously attached, a role_present error is issued.
+	type was previously attached, post a role_present error.
 
-	The window is created immediately after get_test_surface is
-	called.  It is mapped once a commit request with a non-nil
-	buffer is made.
+	Create the window immediately after get_test_surface is
+	called; the window is mapped once a commit request with a
+	non-nil buffer is made.
 
 	Once the window associated with the test_surface object is
-	mapped, a mapped event is sent.
+	mapped, send a mapped event.
       </description>
       <arg name="id" type="new_id" interface="test_surface"/>
       <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <request name="get_scale_lock">
+      <description summary="obtain scale lock">
+	Create a new test_scale_lock object.  As long as this object
+	exists, set the global output scale to the scale specified in
+	this request (or in a subsequent test_scale_lock.set_scale
+	request.)
+
+	If a test_scale_lock object already exists, generate a
+	scale_lock_exists error.
+
+	If the scale is invalid (by being less than 0), post an
+	invalid_scale error.
+      </description>
+      <arg name="id" type="new_id" interface="test_scale_lock"/>
+      <arg name="global_scale" type="uint"/>
     </request>
 
     <event name="display_string">
@@ -74,8 +95,8 @@
 
     <request name="destroy" type="destructor">
       <description summary="destroy role">
-	This request destroys the test_surface role.  Subsequently,
-	get_test_surface can be called again with its surface.
+	Destroy the test_surface role.  Subsequently, get_test_surface
+	can be called again with its surface.
       </description>
     </request>
 
@@ -93,5 +114,30 @@
       <arg name="xid" type="uint"/>
       <arg name="display_string" type="string"/>
     </event>
+  </interface>
+
+  <interface name="test_scale_lock" version="1">
+    <description summary="test scale lock">
+      A scale lock resource represents the "lock" a client holds on
+      the global output scale.  While it still exists, the scale for
+      every output will be whatever was specified when the lock was
+      created or by the last set_scale request.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy scale lock">
+	Destroy the specified scale lock, restore the actual scale of
+	each output, and let clients call get_scale_lock again.
+      </description>
+    </request>
+
+    <request name="set_scale">
+      <description summary="set the global output scale">
+	Set the scale of each output to the specified scale, and
+	resize all surfaces accordingly.  If the scale is invalid,
+	post an invalid_scale error.
+      </description>
+      <arg name="scale" type="uint"/>
+    </request>
   </interface>
 </protocol>

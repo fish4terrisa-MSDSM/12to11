@@ -51,6 +51,9 @@ struct test_display
   struct wl_shm *shm;
   struct test_manager *test_manager;
 
+  /* The test scale lock.  */
+  struct test_scale_lock *scale_lock;
+
   /* Test interfaces.  */
   struct test_interface *interfaces;
 
@@ -119,6 +122,7 @@ extern unsigned char *load_image_data (const char *,
 extern void verify_image_data (struct test_display *, Window, const char *);
 extern void test_init (void);
 extern void test_complete (void) __attribute__ ((noreturn));
+extern void test_set_scale (struct test_display *, int);
 
 #define ARRAYELTS(arr) (sizeof (arr) / sizeof (arr)[0])
 

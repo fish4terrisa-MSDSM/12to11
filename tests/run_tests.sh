@@ -21,13 +21,10 @@
 pushd "$(dirname $0)"
 declare -a standard_tests=(
     simple_test damage_test transform_test viewporter_test
-    subsurface_test
+    subsurface_test scale_test
 )
 
 make -C . "${standard_tests[@]}"
-
-# Run tandard tests, meaning those that should be run with a
-# GLOBAL_SCALE of 1 and an OUTPUT_SCALE of 1.
 
 export GLOBAL_SCALE=1
 export OUTPUT_SCALE=1
