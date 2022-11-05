@@ -40,7 +40,6 @@ command line options.
 .B \-printsocket\fP
 This option makes the protocol translator print the name of the
 Wayland socket to standard output.
-.TP
 .SH RESOURCES
 \fI12to11\fP understands some resource names and classes that can be
 used to specify various settings that affect its behavior.  Those
