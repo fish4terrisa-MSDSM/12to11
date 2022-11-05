@@ -171,6 +171,9 @@ XLMain (int argc, char **argv)
   /* Set the locale.  */
   setlocale (LC_ALL, "");
 
+  /* Initialize Xlib threads.  */
+  XInitThreads ();
+
   dpy = XOpenDisplay (NULL);
   wl_display = wl_display_create ();
 
@@ -187,9 +190,6 @@ XLMain (int argc, char **argv)
       fprintf (stderr, "Unable to add socket to Wayland display\n");
       exit (1);
     }
-
-  /* Initialize Xlib threads.  */
-  XInitThreads ();
 
   /* Call XGetDefault with some dummy values to have the resource
      database set up.  */
