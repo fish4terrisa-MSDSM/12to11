@@ -2644,6 +2644,10 @@ DoCull (Subcompositor *subcompositor, pixman_region32_t *damage,
 				      view->width,
 				      view->height);
 
+      /* The cull region must be destroyed after this code is called.
+	 If it is not then it will be leaked.  */
+      XLAssert (view->cull_region == NULL);
+
       /* Don't set the cull region if it is empty.  */
       if (pixman_region32_not_empty (&temp))
 	view->cull_region = CopyRegion (&temp);
@@ -2654,10 +2658,14 @@ DoCull (Subcompositor *subcompositor, pixman_region32_t *damage,
 	goto last;
 
       if (RenderIsBufferOpaque (buffer))
-	/* If the buffer is opaque, we can just ignore its opaque
-	   region.  */
-	pixman_region32_init_rect (&temp, view->abs_x, view->abs_y,
-				   view->width, view->height);
+	{
+	  /* If the buffer is opaque, we can just ignore its opaque
+	     region.  */
+	  pixman_region32_clear (&temp);
+	  pixman_region32_union_rect (&temp, &temp, view->abs_x,
+				      view->abs_y, view->width,
+				      view->height);
+	}
       else
 	{
 	  pixman_region32_intersect_rect (&temp, &view->opaque, 0, 0,

@@ -30,6 +30,7 @@ enum test_kind
     SUBSURFACE_MOVE_KIND,
     SUBSURFACE_STACKING_KIND,
     SUBSURFACE_TREE_KIND,
+    SUBSURFACE_GROW_SHRINK_KIND,
   };
 
 static const char *test_names[] =
@@ -40,6 +41,7 @@ static const char *test_names[] =
     "subsurface_move",
     "subsurface_stacking",
     "subsurface_tree",
+    "subsurface_grow_shrink",
   };
 
 struct test_subsurface
@@ -51,7 +53,7 @@ struct test_subsurface
   struct wl_surface *surface;
 };
 
-#define LAST_TEST       SUBSURFACE_TREE_KIND
+#define LAST_TEST       SUBSURFACE_GROW_SHRINK_KIND
 
 /* The display.  */
 static struct test_display *display;
@@ -83,6 +85,8 @@ static struct wl_buffer *subsurface_1_damaged_png;
 static struct wl_buffer *subsurface_transparency_png;
 static struct wl_buffer *cow_transparent_png;
 static struct wl_buffer *gradient_png;
+static struct wl_buffer *big_png;
+static struct wl_buffer *small_png;
 
 /* The test image ID.  */
 static uint32_t current_test_image;
@@ -452,6 +456,51 @@ test_single_step (enum test_kind kind)
 
       /* Move one of the views further to the right.  */
       wl_subsurface_set_position (subsurfaces[2]->subsurface, 100, 100);
+      wl_surface_commit (subsurfaces[1]->surface);
+      wait_frame_callback (wayland_surface);
+      sleep_or_verify ();
+
+      test_single_step (SUBSURFACE_GROW_SHRINK_KIND);
+      break;
+
+    case SUBSURFACE_GROW_SHRINK_KIND:
+      /* This test attaches a big buffer to the second subsurface.
+	 Then, it attaches a smaller buffer to the second subsurface.
+	 But first, it moves the first subsurface back to 40, 40, and
+	 unmaps the second and third subsurfaces.  */
+
+      big_png = load_png_image (display, "big.png");
+
+      if (!big_png)
+	report_test_failure ("failed to load big.png");
+
+      small_png = load_png_image (display, "small.png");
+
+      if (!small_png)
+	report_test_failure ("failed to load small.png");
+
+      wl_subsurface_set_position (subsurfaces[1]->subsurface, 40, 40);
+
+      wl_surface_attach (subsurfaces[3]->surface, NULL, 0, 0);
+      wl_surface_attach (subsurfaces[2]->surface, NULL, 0, 0);
+      wl_surface_commit (subsurfaces[3]->surface);
+      wl_surface_commit (subsurfaces[2]->surface);
+      wl_surface_commit (subsurfaces[1]->surface);
+      wait_frame_callback (wayland_surface);
+      sleep_or_verify ();
+
+      submit_surface_opaque_region (subsurfaces[1]->surface, 0, 0, 300,
+				    300);
+      wl_surface_attach (subsurfaces[1]->surface, big_png, 0, 0);
+      wl_surface_damage (subsurfaces[1]->surface, 0, 0, 300, 300);
+      wl_surface_commit (subsurfaces[1]->surface);
+      wait_frame_callback (wayland_surface);
+      sleep_or_verify ();
+
+      submit_surface_opaque_region (subsurfaces[1]->surface, 0, 0, 150,
+				    150);
+      wl_surface_attach (subsurfaces[1]->surface, small_png, 0, 0);
+      wl_surface_damage (subsurfaces[1]->surface, 0, 0, 150, 150);
       wl_surface_commit (subsurfaces[1]->surface);
       wait_frame_callback (wayland_surface);
       sleep_or_verify ();
