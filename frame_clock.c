@@ -442,7 +442,7 @@ StartFrame (FrameClock *clock, Bool urgent, Bool predict)
 
       /* Don't start the end frame timer if this frame is being drawn
 	 in response to configury.  */
-      predict = True;
+      predict = False;
     }
 
   clock->in_frame = True;

@@ -1129,8 +1129,6 @@ struct _RoleFuncs
   void (*move_by) (Surface *, Role *, int, int);
   void (*rescale) (Surface *, Role *);
   void (*parent_rescale) (Surface *, Role *);
-  void (*note_desync_child) (Surface *, Role *);
-  void (*note_child_synced) (Surface *, Role *);
   void (*select_extra_events) (Surface *, Role *, unsigned long);
   void (*note_focus) (Surface *, Role *, FocusMode);
   void (*outputs_changed) (Surface *, Role *);
@@ -1182,6 +1180,7 @@ extern Window XLWindowFromSurface (Surface *);
 extern void XLUpdateSurfaceOutputs (Surface *, int, int, int, int);
 extern void XLSurfaceSelectExtraEvents (Surface *, unsigned long);
 extern void XLSurfaceNoteFocus (Surface *, FocusMode);
+extern void XLSurfaceMergeCachedState (Surface *);
 
 extern void SurfaceToWindow (Surface *, double, double, double *, double *);
 extern void ScaleToWindow (Surface *, double, double, double *, double *);

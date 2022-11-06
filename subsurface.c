@@ -19,6 +19,7 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #include "compositor.h"
 
@@ -88,6 +89,9 @@ struct _Subsurface
 
   /* Commit callback attached to the parent.  */
   CommitCallback *commit_callback;
+
+  /* Whether or not this should be desynchronous.  */
+  Bool should_be_desync;
 
   /* Whether or not this is synchronous.  */
   Bool synchronous;
@@ -389,33 +393,28 @@ PlaceBelow (struct wl_client *client, struct wl_resource *resource,
 }
 
 static void
-NoteDesyncChild (Surface *surface, Role *role)
+SetSync1 (Subsurface *subsurface)
 {
-  Subsurface *subsurface;
+  Surface *child;
+  Subsurface *child_subsurface;
+  XLList *list;
 
-  subsurface = SubsurfaceFromRole (role);
+  /* Note that the given subsurface has become synchronous by setting
+     its synchronous flag to True.  */
 
-  if (!subsurface->parent || !subsurface->parent->role
-      || !subsurface->parent->role->funcs.note_desync_child)
-    return;
+  subsurface->synchronous = True;
 
-  subsurface->parent->role->funcs.note_desync_child (subsurface->parent,
-						     subsurface->parent->role);
-}
+  if (subsurface->role.surface)
+    {
+      list = subsurface->role.surface->subsurfaces;
 
-static void
-NoteChildSynced (Surface *surface, Role *role)
-{
-  Subsurface *subsurface;
-
-  subsurface = SubsurfaceFromRole (role);
-
-  if (!subsurface->parent || !subsurface->parent->role
-      || !subsurface->parent->role->funcs.note_child_synced)
-    return;
-
-  subsurface->parent->role->funcs.note_child_synced (subsurface->parent,
-						     subsurface->parent->role);
+      for (; list; list = list->next)
+	{
+	  child = list->data;
+	  child_subsurface = SubsurfaceFromRole (child->role);
+	  SetSync1 (child_subsurface);
+	}
+    }
 }
 
 static void
@@ -425,12 +424,90 @@ SetSync (struct wl_client *client, struct wl_resource *resource)
 
   subsurface = wl_resource_get_user_data (resource);
 
-  if (subsurface->role.surface
-      && !subsurface->synchronous)
-    NoteChildSynced (subsurface->role.surface,
-		     &subsurface->role);
+  /* This subsurface should not actually be desynchronous.  */
+  subsurface->should_be_desync = False;
 
-  subsurface->synchronous = True;
+  /* Now, make each child synchronous recursively.  */
+  SetSync1 (subsurface);
+}
+
+static Bool
+IsParentSynchronous (Subsurface *subsurface)
+{
+  Surface *surface;
+  Subsurface *parent;
+
+  surface = subsurface->parent;
+
+  if (!surface || surface->role_type != SubsurfaceType)
+    return False;
+
+  parent = SubsurfaceFromRole (surface->role);
+
+  return parent->synchronous;
+}
+
+static void
+NoteSubsurfaceDesynchronous (Subsurface *subsurface, Bool apply_state)
+{
+  Surface *child;
+  Subsurface *child_subsurface;
+  XLList *list;
+
+  /* Note that the given subsurface has become desynchronous, and
+     apply pending state.  Make each of its children that should be
+     desynchronous desynchronous as well, but avoid applying their
+     pending state.  */
+
+  subsurface->synchronous = False;
+
+  if (subsurface->pending_commit && subsurface->role.surface
+      && apply_state)
+    {
+      XLCommitSurface (subsurface->role.surface, False);
+
+      /* Set pending_commit to False only here, where it is certain
+	 that the cached state has been applied.  */
+      subsurface->pending_commit = False;
+    }
+
+  if (subsurface->role.surface)
+    {
+      list = subsurface->role.surface->subsurfaces;
+
+      for (; list; list = list->next)
+	{
+	  child = list->data;
+	  child_subsurface = SubsurfaceFromRole (child->role);
+
+	  if (child_subsurface->should_be_desync)
+	    NoteSubsurfaceDesynchronous (child_subsurface,
+					 False);
+	}
+    }
+}
+
+static void
+NoteSubsurfaceTeardown (Subsurface *subsurface)
+{
+  Surface *child;
+  Subsurface *child_subsurface;
+  XLList *list;
+
+  /* The same, but it avoids applying any pending state.  Used during
+     teardown.  */
+
+  list = subsurface->role.surface->subsurfaces;
+  subsurface->synchronous = False;
+
+  for (; list; list = list->next)
+    {
+      child = list->data;
+      child_subsurface = SubsurfaceFromRole (child->role);
+
+      if (child_subsurface->should_be_desync)
+	NoteSubsurfaceTeardown (child_subsurface);
+    }
 }
 
 static void
@@ -440,18 +517,45 @@ SetDesync (struct wl_client *client, struct wl_resource *resource)
 
   subsurface = wl_resource_get_user_data (resource);
 
-  if (subsurface->role.surface
-      && subsurface->synchronous)
-    NoteDesyncChild (subsurface->role.surface,
-		     &subsurface->role);
+  /* Set it so that this subsurface should be desynchronous.  If the
+     parent is synchronous, then it does not actually become
+     desynchronous until the pending state is applied.  */
+  subsurface->should_be_desync = True;
 
-  subsurface->synchronous = False;
+  /* Return if the parent is synchronous, as Wayland specifies
+     children of synchronous subsurfaces are always synchronous.  */
 
-  if (subsurface->pending_commit
-      && subsurface->role.surface)
-    XLCommitSurface (subsurface->role.surface, False);
+  if (IsParentSynchronous (subsurface))
+    return;
 
-  subsurface->pending_commit = False;
+  /* Make subsurface desynchronous and apply its pending state.  If
+     any of its children are supposed to be desynchronous, make them
+     desynchronous as well, but do not apply the pending state.  This
+     is how the documentation for the set_desync request is worded:
+
+       If cached state exists when wl_surface.commit is called in
+       desynchronized mode, the pending state is added to the cached
+       state, and applied as a whole. This invalidates the cache.
+
+       Note: even if a sub-surface is set to desynchronized, a parent
+       sub-surface may override it to behave as synchronized. For
+       details, see wl_subsurface.
+
+       If a surface's parent surface behaves as desynchronized, then
+       the cached state is applied on set_desync.
+
+    Notice how the last paragraph tries to stress that only surfaces
+    that are made desynchronous at the time of a set_desync request
+    made on them are supposed to have their cached state applied at
+    the time of that request.
+
+    Normally, applying the cached state of the desynchronous
+    subsurface will cause the cached state of its children to be
+    applied.  However, there could be no cached state at all on the
+    surface specified as the argument to the set_desync request, in
+    which case children should not have their pending state applied.
+    This behavior is subject to tests in subsurface_test.c.  */
+  NoteSubsurfaceDesynchronous (subsurface, True);
 }
 
 static const struct wl_subsurface_interface wl_subsurface_impl =
@@ -487,6 +591,11 @@ EarlyCommit (Surface *surface, Role *role)
       subsurface->pending_commit = True;
       return False;
     }
+  else if (subsurface->pending_commit)
+    /* There is still pending state.  Merge the state into the surface
+       first, before SubcompositorUpdate is called by
+       InternalCommit.  */
+    XLSurfaceMergeCachedState (surface);
 
   return True;
 }
@@ -752,6 +861,10 @@ Setup (Surface *surface, Role *role)
   ViewSkip (surface->view);
   ViewSkip (surface->under);
 
+  /* Subsurfaces are synchronous by default.  Make every child
+     synchronous.  */
+  SetSync1 (subsurface);
+
   return True;
 }
 
@@ -785,10 +898,9 @@ Teardown (Surface *surface, Role *role)
 
   subsurface = SubsurfaceFromRole (role);
 
-  /* If this subsurface is desynchronous, tell the toplevel parent
-     that it is now gone.  */
-  if (!subsurface->synchronous)
-    NoteDesyncChild (role->surface, role);
+  /* Make each of the surface's children that should be desynchronous
+     desynchronous.  */
+  NoteSubsurfaceTeardown (subsurface);
 
   role->surface = NULL;
 
@@ -955,8 +1067,6 @@ GetSubsurface (struct wl_client *client, struct wl_resource *resource,
   subsurface->role.funcs.get_window = GetWindow;
   subsurface->role.funcs.rescale = Rescale;
   subsurface->role.funcs.parent_rescale = ParentRescale;
-  subsurface->role.funcs.note_child_synced = NoteChildSynced;
-  subsurface->role.funcs.note_desync_child = NoteDesyncChild;
 
   subsurface->parent = parent;
   subsurface->commit_callback

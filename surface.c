@@ -1008,9 +1008,11 @@ TryEarlyRelease (Surface *surface)
 }
 
 static void
-InternalCommit (Surface *surface, State *pending)
+InternalCommit1 (Surface *surface, State *pending)
 {
   FrameCallback *start, *end;
+
+  /* Merge the state in pending into the surface's current state.  */
 
   if (pending->pending & PendingBuffer)
     {
@@ -1133,6 +1135,12 @@ InternalCommit (Surface *surface, State *pending)
 				&surface->current_state.frame_callbacks);
 	}
     }
+}
+
+static void
+InternalCommit (Surface *surface, State *pending)
+{
+  InternalCommit1 (surface, pending);
 
   /* Run commit callbacks.  This tells synchronous subsurfaces to
      update, and tells explicit synchronization to wait for any sync
@@ -1828,6 +1836,15 @@ XLSurfaceNoteFocus (Surface *surface, FocusMode focus)
 
   surface->role->funcs.note_focus (surface, surface->role,
 				   focus);
+}
+
+/* Merge the cached state in surface into its current state in
+   preparation for commit.  */
+
+void
+XLSurfaceMergeCachedState (Surface *surface)
+{
+  InternalCommit1 (surface, &surface->cached_state);
 }
 
 

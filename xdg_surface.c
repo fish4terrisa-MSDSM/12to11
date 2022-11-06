@@ -159,9 +159,6 @@ struct _XdgRole
   /* The input region of the attached subsurface.  */
   pixman_region32_t input_region;
 
-  /* The number of desynchronous children of this toplevel.  */
-  int n_desync_children;
-
   /* The type of the attached role.  */
   XdgRoleImplementationType type;
 };
@@ -277,6 +274,29 @@ RunFrameCallbacksConditionally (XdgRole *role)
     /* weston-simple-shm seems to assume that a frame callback can
        only arrive after all buffers have been released.  */
     role->state |= StatePendingFrameCallback;
+}
+
+static void
+UpdateFrameRefreshPrediction (XdgRole *role)
+{
+  int desync_children;
+
+  /* Count the number of desynchronous children attached to this
+     surface, directly or indirectly.  When this number is more than
+     1, enable frame refresh prediction, which allows separate frames
+     from subsurfaces to be batched together.  */
+
+  if (role->role.surface)
+    {
+      desync_children = 0;
+      XLUpdateDesynchronousChildren (role->role.surface,
+				     &desync_children);
+
+      if (desync_children)
+	XLFrameClockSetPredictRefresh (role->clock);
+      else
+	XLFrameClockDisablePredictRefresh (role->clock);
+    }
 }
 
 static void
@@ -679,18 +699,6 @@ Setup (Surface *surface, Role *role)
 		       surface->under);
   SubcompositorInsert (xdg_role->subcompositor,
 		       surface->view);
-
-  /* Count the number of desynchronous children attached to this
-     surface, directly or indirectly.  This number is then updated as
-     surfaces are attached, made desynchronous and/or removed in
-     NoteChildSynced and NoteDesyncChild.  */
-  XLUpdateDesynchronousChildren (surface, &xdg_role->n_desync_children);
-
-  /* If there are desynchronous children, enable frame refresh
-     prediction in the frame clock, which batches subframes from
-     multiple subsurfaces together if they arrive in time.  */
-  if (xdg_role->n_desync_children)
-    XLFrameClockSetPredictRefresh (xdg_role->clock);
 
   /* Retain the backing data.  */
   xdg_role->refcount++;
@@ -1167,6 +1175,10 @@ NoteFrame (FrameMode mode, uint64_t id, void *data)
 
       if (!(role->state & StateFrameStarted))
 	{
+	  /* Update whether or not frame refresh prediction is to be
+	     used.  */
+	  UpdateFrameRefreshPrediction (role);
+
 	  if (XLFrameClockStartFrame (role->clock, False))
 	    role->state |= StateFrameStarted;
 	}
@@ -1318,31 +1330,6 @@ Rescale (Surface *surface, Role *role)
 }
 
 static void
-NoteChildSynced (Surface *surface, Role *role)
-{
-  XdgRole *xdg_role;
-
-  xdg_role = XdgRoleFromRole (role);
-
-  if (xdg_role->n_desync_children)
-    xdg_role->n_desync_children--;
-
-  if (!xdg_role->n_desync_children)
-    XLFrameClockDisablePredictRefresh (xdg_role->clock);
-}
-
-static void
-NoteDesyncChild (Surface *surface, Role *role)
-{
-  XdgRole *xdg_role;
-
-  xdg_role = XdgRoleFromRole (role);
-
-  xdg_role->n_desync_children++;
-  XLFrameClockSetPredictRefresh (xdg_role->clock);
-}
-
-static void
 HandleFreeze (void *data)
 {
   XdgRole *role;
@@ -1469,8 +1456,6 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
   role->role.funcs.post_resize = PostResize;
   role->role.funcs.move_by = MoveBy;
   role->role.funcs.rescale = Rescale;
-  role->role.funcs.note_desync_child = NoteDesyncChild;
-  role->role.funcs.note_child_synced = NoteChildSynced;
   role->role.funcs.select_extra_events = SelectExtraEvents;
   role->role.funcs.note_focus = NoteFocus;
   role->role.funcs.outputs_changed = OutputsChanged;

@@ -32,6 +32,7 @@ enum test_kind
     SUBSURFACE_TREE_KIND,
     SUBSURFACE_GROW_SHRINK_KIND,
     SUBSURFACE_STACKING_1_KIND,
+    SUBSURFACE_DESYNC_KIND,
   };
 
 static const char *test_names[] =
@@ -44,6 +45,7 @@ static const char *test_names[] =
     "subsurface_tree",
     "subsurface_grow_shrink",
     "subsurface_stacking_1",
+    "subsurface_desync_kind",
   };
 
 struct test_subsurface
@@ -55,7 +57,7 @@ struct test_subsurface
   struct wl_surface *surface;
 };
 
-#define LAST_TEST       SUBSURFACE_STACKING_1_KIND
+#define LAST_TEST       SUBSURFACE_DESYNC_KIND
 
 /* The display.  */
 static struct test_display *display;
@@ -77,9 +79,10 @@ static struct test_surface *test_surface;
 static struct wl_surface *wayland_surface;
 
 /* Various subsurfaces.  */
-static struct test_subsurface *subsurfaces[4];
+static struct test_subsurface *subsurfaces[9];
 
 /* Various buffers.  */
+static struct wl_buffer *tiny_png;
 static struct wl_buffer *subsurface_base_png;
 static struct wl_buffer *subsurface_damage_png;
 static struct wl_buffer *subsurface_1_png;
@@ -203,7 +206,6 @@ make_test_subsurface_with_parent (struct test_subsurface *parent)
 static void
 test_single_step (enum test_kind kind)
 {
-  struct wl_buffer *buffer;
   struct wl_region *region;
 
   test_log ("running test step: %s", test_names[kind]);
@@ -211,16 +213,15 @@ test_single_step (enum test_kind kind)
   switch (kind)
     {
     case MAP_WINDOW_KIND:
-      buffer = load_png_image (display, "tiny.png");
+      tiny_png = load_png_image (display, "tiny.png");
 
-      if (!buffer)
+      if (!tiny_png)
 	report_test_failure ("failed to load tiny.png");
 
-      wl_surface_attach (wayland_surface, buffer, 0, 0);
+      wl_surface_attach (wayland_surface, tiny_png, 0, 0);
       wl_surface_damage (wayland_surface, 0, 0, INT_MAX, INT_MAX);
       submit_surface_opaque_region (wayland_surface, 0, 0, 4, 4);
       wl_surface_commit (wayland_surface);
-      wl_buffer_destroy (buffer);
       break;
 
     case SUBSURFACE_UNDER_KIND:
@@ -551,6 +552,138 @@ test_single_step (enum test_kind kind)
 	 subsurface lies the third subsurface (gradient.png), above
 	 which lies the fourth subsurface (cow_transparent.png), and
 	 finally the third (small.png).  */
+      sleep_or_verify ();
+
+      test_single_step (SUBSURFACE_DESYNC_KIND);
+      break;
+
+    case SUBSURFACE_DESYNC_KIND:
+      /* Hide every other subsurface other than subsurfaces[0].  */
+
+      wl_surface_attach (subsurfaces[1]->surface, NULL, 0, 0);
+      wl_surface_attach (subsurfaces[2]->surface, NULL, 0, 0);
+      wl_surface_attach (subsurfaces[3]->surface, NULL, 0, 0);
+      wl_surface_commit (subsurfaces[3]->surface);
+      wl_surface_commit (subsurfaces[2]->surface);
+      wl_surface_commit (subsurfaces[1]->surface);
+      wait_frame_callback (wayland_surface);
+      sleep_or_verify ();
+
+      /* Create a tree of subsurfaces as follows:
+
+	 subsurfaces[4] (as a child of subsurfaces[0])
+	   subsurfaces[5]
+	   subsurfaces[6]
+	     subsurfaces[7]
+	     subsurfaces[8]  */
+
+      subsurfaces[4] = make_test_subsurface_with_parent (subsurfaces[0]);
+
+      if (!subsurfaces[4])
+	report_test_failure ("failed to create subsurfaces");
+
+      subsurfaces[5]
+	= make_test_subsurface_with_parent (subsurfaces[4]);
+      subsurfaces[6]
+	= make_test_subsurface_with_parent (subsurfaces[4]);
+
+      if (!subsurfaces[5] || !subsurfaces[6])
+	report_test_failure ("failed to create subsurfaces");
+
+      subsurfaces[7]
+	= make_test_subsurface_with_parent (subsurfaces[6]);
+      subsurfaces[8]
+	= make_test_subsurface_with_parent (subsurfaces[6]);
+
+      if (!subsurfaces[7] || !subsurfaces[8])
+	report_test_failure ("failed to create subsurfaces");
+
+      /* Confirm all the children.  Attach tiny_png to prevent some
+	 subsurfaces from being unmapped.  */
+      wl_surface_attach (subsurfaces[4]->surface, tiny_png, 0, 0);
+      wl_surface_attach (subsurfaces[6]->surface, tiny_png, 0, 0);
+      wl_surface_damage (subsurfaces[4]->surface, 0, 0, 4, 4);
+      wl_surface_damage (subsurfaces[6]->surface, 0, 0, 4, 4);
+
+      wl_surface_commit (subsurfaces[6]->surface);
+      wl_surface_commit (subsurfaces[4]->surface);
+      wl_surface_commit (subsurfaces[0]->surface);
+
+      /* Now, make subsurfaces[8] desynchronous.  */
+      wl_subsurface_set_desync (subsurfaces[8]->subsurface);
+
+      /* Attach gradient.png to subsurfaces[8].  While subsurfaces[8]
+	 is desync, 6 and 4 are both synchronous.  */
+      wl_surface_attach (subsurfaces[8]->surface, gradient_png, 0, 0);
+      wl_surface_damage (subsurfaces[8]->surface, 0, 0, 100, 300);
+      wl_surface_commit (subsurfaces[8]->surface);
+
+      /* Thus, the state should not appear.  */
+      wait_frame_callback (wayland_surface);
+      sleep_or_verify ();
+
+      /* Next, make subsurfaces[6] desynchronous.  */
+      wl_subsurface_set_desync (subsurfaces[6]->subsurface);
+
+      /* gradient.png should still not appear.  */
+      wait_frame_callback (wayland_surface);
+      sleep_or_verify ();
+
+      /* Finally, make subsurfaces[0] and subsurfaces[4]
+	 desynchronous.  As subsurfaces[0] has cached state (it was
+	 committed earlier), its state and that of all its children
+	 should be applied.  As a result, gradient.png should appear
+	 without having to commit subsurfaces[8] again.  */
+      wl_subsurface_set_desync (subsurfaces[4]->subsurface);
+      wl_subsurface_set_desync (subsurfaces[0]->subsurface);
+
+      /* Commit wayland_surface to get a frame callback.  */
+      wait_frame_callback (wayland_surface);
+
+      /* gradient.png should now appear onscreen.  */
+      sleep_or_verify ();
+
+      /* Next, make subsurfaces[6] synchronous.  Attach small.png to
+	 subsurfaces[8] and gradient.png to subsurfaces[5].  */
+      wl_subsurface_set_sync (subsurfaces[6]->subsurface);
+
+      wl_surface_attach (subsurfaces[8]->surface, small_png, 0, 0);
+      wl_surface_damage (subsurfaces[8]->surface, 0, 0, 150, 150);
+      wl_surface_commit (subsurfaces[8]->surface);
+
+      /* Commit subsurfaces[4] for a frame callback.  Verify that the
+	 contents did not change, as subsurfaces[6] is
+	 synchronous.  */
+      wait_frame_callback (subsurfaces[4]->surface);
+      sleep_or_verify ();
+
+      /* Commit subsurfaces[6], then commit subsurfaces[4] to apply
+	 the pending state.  The state in subsurfaces[8] should be
+	 applied.  */
+      wl_surface_commit (subsurfaces[6]->surface);
+      wait_frame_callback (subsurfaces[4]->surface);
+      sleep_or_verify ();
+
+      /* Now, attach big_png to subsurfaces[8].  */
+      wl_surface_attach (subsurfaces[8]->surface, big_png, 0, 0);
+      wl_surface_damage (subsurfaces[8]->surface, 0, 0, 300, 300);
+      wl_surface_commit (subsurfaces[8]->surface);
+
+      /* Make subsurfaces[6]->surface desynchronous.  Nothing should
+	 appear despite subsurfaces[8] having become desynchronous, as
+	 subsurfaces[6] has no cached state.  subsurfaces[4] is only
+	 committed to get a frame callback.  */
+      wl_subsurface_set_desync (subsurfaces[6]->subsurface);
+      wait_frame_callback (subsurfaces[4]->surface);
+      sleep_or_verify ();
+
+      /* Now, apply a buffer transform to subsurfaces[8].  Upon
+	 commit, big.png should be displayed rotated 90 degrees
+	 clockwise, by the buffer transform being merged with the
+	 cached state of the surface prior to being committed.  */
+      wl_surface_set_buffer_transform (subsurfaces[8]->surface,
+				       WL_OUTPUT_TRANSFORM_90);
+      wait_frame_callback (subsurfaces[8]->surface);
       sleep_or_verify ();
       break;
     }
