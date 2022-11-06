@@ -642,13 +642,13 @@ MakeView (void)
 static int
 ViewMaxX (View *view)
 {
-  return view->abs_x + ViewWidth (view) - 1;
+  return view->abs_x + view->width - 1;
 }
 
 static int
 ViewMaxY (View *view)
 {
-  return view->abs_y + ViewHeight (view) - 1;
+  return view->abs_y + view->height - 1;
 }
 
 static Bool
@@ -1703,7 +1703,7 @@ ViewMove (View *view, int x, int y)
 	      SetGarbaged (view->subcompositor);
 	    }
 
-	  /* If moving this biew bumps subcompositor.max_x and/or
+	  /* If moving this view bumps subcompositor.max_x and/or
 	     subcompositor.max_y, don't recompute either.  */
 
 	  if (view->subcompositor->max_x < ViewMaxX (view))
