@@ -685,6 +685,24 @@ test_single_step (enum test_kind kind)
 				       WL_OUTPUT_TRANSFORM_90);
       wait_frame_callback (subsurfaces[8]->surface);
       sleep_or_verify ();
+
+      /* Now, attach subsurface_1.png in subsurfaces[7].  Nothing
+	 should be displayed.  */
+      wl_surface_attach (subsurfaces[7]->surface, subsurface_1_png,
+			 0, 0);
+      wl_surface_damage (subsurfaces[7]->surface, 0, 0, 256, 256);
+      wl_surface_commit (subsurfaces[7]->surface);
+
+      /* Also move the subsurface a little.  */
+      wl_subsurface_set_position (subsurfaces[7]->subsurface, 100, 100);
+
+      wait_frame_callback (wayland_surface);
+      sleep_or_verify ();
+
+      /* Commit subsurfaces[6].  As it is now desynchronous,
+	 subsurface_1.png should be displayed.  */
+      wait_frame_callback (subsurfaces[6]->surface);
+      sleep_or_verify ();
       break;
     }
 

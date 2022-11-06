@@ -592,10 +592,15 @@ EarlyCommit (Surface *surface, Role *role)
       return False;
     }
   else if (subsurface->pending_commit)
-    /* There is still pending state.  Merge the state into the surface
-       first, before SubcompositorUpdate is called by
-       InternalCommit.  */
-    XLSurfaceMergeCachedState (surface);
+    {
+      /* There is still cached state.  Merge the state into the
+	 surface first, before SubcompositorUpdate is called by
+	 InternalCommit.  */
+      XLSurfaceMergeCachedState (surface);
+
+      /* As the state is merged, there is no more cached state.  */
+      subsurface->pending_commit = False;
+    }
 
   return True;
 }
