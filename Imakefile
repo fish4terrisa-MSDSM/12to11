@@ -23,7 +23,7 @@ DependSubdirs($(SUBDIRS))
        GENHEADERS = transfer_atoms.h drm_modifiers.h
            HEADER = $(GENHEADERS) compositor.h
 
-#if defined LinuxArchitecture || define GNUArchitecture
+#if defined LinuxArchitecture || defined GNUArchitecture
    EXTRA_DEFINES := -DPortFile=\"port_gnu.h\" -D_GNU_SOURCE -U_BSD_SOURCE -U_SVID_SOURCE
   DEPEND_DEFINES := -DPortFile=\"port_gnu.h\"
 #else
