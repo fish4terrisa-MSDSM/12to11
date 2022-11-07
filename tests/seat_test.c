@@ -267,10 +267,7 @@ static const struct test_surface_listener test_surface_listener =
 static struct test_expect_data *
 get_next_expect_data (void)
 {
-  struct test_expect_data *data;
   int i;
-
-  data = current_listener_data;
 
   for (i = 0; i < num_listener_data; ++i)
     {
