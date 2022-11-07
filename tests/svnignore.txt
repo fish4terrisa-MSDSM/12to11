@@ -7,6 +7,7 @@ transform_test
 viewporter_test
 subsurface_test
 scale_test
+seat_test
 imgview
 reject.dump
 Makefile

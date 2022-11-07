@@ -37,6 +37,14 @@
 	     summary="another client has already locked the scale"/>
       <entry name="invalid_scale" value="3"
 	     summary="the specified scale is invalid"/>
+      <entry name="invalid_button" value="4"
+	     summary="the specified button is invalid"/>
+      <entry name="value_exists" value="5"
+	     summary="the specified valuator is already included"/>
+      <entry name="bad_seat_version" value="6"
+	     summary="an invalid version was specified"/>
+      <entry name="invalid_valuator" value="7"
+	     summary="the specified valuator is invalid"/>
     </enum>
 
     <request name="get_test_surface">
@@ -47,7 +55,8 @@
 
 	Create the window immediately after get_test_surface is
 	called; the window is mapped once a commit request with a
-	non-nil buffer is made.
+	non-nil buffer is made.  The window is created as an
+	override-redirect child of the root window, at 0, 0.
 
 	Once the window associated with the test_surface object is
 	mapped, send a mapped event.
@@ -71,6 +80,18 @@
       </description>
       <arg name="id" type="new_id" interface="test_scale_lock"/>
       <arg name="global_scale" type="uint"/>
+    </request>
+
+    <request name="get_test_seat">
+      <description summary="obtain test seat">
+	Create a new seat controller object and its associated seat.
+	The seat will not correspond to any real input device, but
+	will allow artificial events to be constructed and processed.
+
+	A test_seat_controller.bind_seat request can be used to bind
+	to the given seat.
+      </description>
+      <arg name="id" type="new_id" interface="test_seat_controller"/>
     </request>
 
     <event name="display_string">
@@ -138,6 +159,266 @@
 	post an invalid_scale error.
       </description>
       <arg name="scale" type="uint"/>
+    </request>
+  </interface>
+
+  <interface name="test_XIButtonState" version="1">
+    <description summary="XInput 2 button state">
+      The button state associated with an event.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy this resource">
+	Destroy the given resource.
+      </description>
+    </request>
+
+    <request name="add_button">
+      <description summary="add button">
+	Add the button with the given number to the button state.  If
+	button is 0 or more than 8, raise an invalid_button error.
+      </description>
+      <arg name="button" type="uint"/>
+    </request>
+
+    <request name="remove_button">
+      <description summary="remove button">
+	Remove the button with the given number from the button state.
+	If button is 0 or more than 8, raise an invalid_button error.
+	If the button was not previously added to the button state, do
+	nothing.
+      </description>
+      <arg name="button" type="uint"/>
+    </request>
+  </interface>
+
+  <interface name="test_XIModifierState" version="1">
+    <description summary="XInput 2 modifier state">
+      The modifier state associated with an event.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy this resource">
+	Destroy the given resource.
+      </description>
+    </request>
+
+    <request name="set_values">
+      <description summary="set modifiers">
+	Set the modifiers in this modifier state.
+      </description>
+
+      <arg name="base" type="int"/>
+      <arg name="latched" type="int"/>
+      <arg name="locked" type="int"/>
+      <arg name="effective" type="int"/>
+    </request>
+  </interface>
+
+  <interface name="test_XIValuatorState" version="1">
+    <description summary="XInput 2 valuator state">
+      The valuator state associated with an event.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy this resource">
+	Destroy the given resource.
+      </description>
+    </request>
+
+    <request name="add_valuator">
+      <description summary="add a valuator">
+	Add a valuator with the given value to the specified valuator
+	state.  If the value already exists, post a value_exists
+	error.  If the valuator is more than 65535 or 0, post an
+	invalid_valuator error.
+      </description>
+
+      <arg name="valuator" type="uint"/>
+      <arg name="value" type="fixed"/>
+    </request>
+  </interface>
+
+  <interface name="test_seat_controller" version="1">
+    <description summary="test seat">
+      This object extends a wl_seat created with the
+      test_manager.get_test_seat request with several requests to
+      dispatch generated events.
+
+      If the seat associated with the test controller is destroyed by
+      the time a request is made with the test controller, the latter
+      request is simply ignored.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy test seat controller">
+	Destroy the test seat controller resource.
+      </description>
+    </request>
+
+    <request name="bind_seat">
+      <description summary="bind to the seat">
+	Create a wl_seat resource for this seat controller's
+	associated seat, with the specified version.  If the version
+	is unsupported, raise a bad_seat_version error.
+      </description>
+      <arg name="version" type="uint"/>
+      <arg name="id" type="new_id" interface="wl_seat"/>
+    </request>
+
+    <request name="get_XIModifierState">
+      <description summary="obtain a test_XIModifierState">
+	Create a test_XIModifierState resource with all fields set to
+	0.
+      </description>
+      <arg name="id" type="new_id" interface="test_XIModifierState"/>
+    </request>
+
+    <request name="get_XIButtonState">
+      <description summary="obtain a test_XIButtonState">
+	Create a test_XIButtonState resource containing no buttons.
+      </description>
+      <arg name="id" type="new_id" interface="test_XIButtonState"/>
+    </request>
+
+    <request name="get_XIValuatorState">
+      <description summary="obtain a test_XIValuatorState">
+	Create a test_XIValuatorState resource containing no
+	valuators.
+      </description>
+      <arg name="id" type="new_id" interface="test_XIValuatorState"/>
+    </request>
+
+    <request name="dispatch_XI_Enter">
+      <description summary="dispatch entry event">
+	Dispatch an XI_Enter event to the seat.  If buttons (or any
+	following field) is null, use a value comprised of 0s instead.
+      </description>
+
+      <arg name="time" type="uint"/>
+      <arg name="sourceid" type="int"/>
+      <arg name="detail" type="int"/>
+      <arg name="root" type="uint"/>
+      <arg name="event" type="uint"/>
+      <arg name="child" type="uint"/>
+      <arg name="root_x" type="fixed"/>
+      <arg name="root_y" type="fixed"/>
+      <arg name="event_x" type="fixed"/>
+      <arg name="event_y" type="fixed"/>
+      <arg name="mode" type="int"/>
+      <arg name="focus" type="int"/>
+      <arg name="same_screen" type="int"/>
+      <arg name="buttons" type="object" interface="test_XIButtonState"
+	   allow-null="true"/>
+      <arg name="mods" type="object" interface="test_XIModifierState"
+	   allow-null="true"/>
+      <arg name="group" type="object" interface="test_XIModifierState"
+	   allow-null="true"/>
+    </request>
+
+    <request name="dispatch_XI_Leave">
+      <description summary="dispatch leave event">
+	Dispatch an XI_Leave event to the seat.  If buttons (or any
+	following field) is null, use a value comprised of 0s instead.
+      </description>
+
+      <arg name="time" type="uint"/>
+      <arg name="sourceid" type="int"/>
+      <arg name="detail" type="int"/>
+      <arg name="root" type="uint"/>
+      <arg name="event" type="uint"/>
+      <arg name="child" type="uint"/>
+      <arg name="root_x" type="fixed"/>
+      <arg name="root_y" type="fixed"/>
+      <arg name="event_x" type="fixed"/>
+      <arg name="event_y" type="fixed"/>
+      <arg name="mode" type="int"/>
+      <arg name="focus" type="int"/>
+      <arg name="same_screen" type="int"/>
+      <arg name="buttons" type="object" interface="test_XIButtonState"
+	   allow-null="true"/>
+      <arg name="mods" type="object" interface="test_XIModifierState"
+	   allow-null="true"/>
+      <arg name="group" type="object" interface="test_XIModifierState"
+	   allow-null="true"/>
+    </request>
+
+    <request name="dispatch_XI_Motion">
+      <description summary="dispatch motion event">
+	Dispatch an XI_Motion device event to the seat.
+      </description>
+
+      <arg name="time" type="uint"/>
+      <arg name="sourceid" type="int"/>
+      <arg name="detail" type="int"/>
+      <arg name="root" type="uint"/>
+      <arg name="event" type="uint"/>
+      <arg name="child" type="uint"/>
+      <arg name="root_x" type="fixed"/>
+      <arg name="root_y" type="fixed"/>
+      <arg name="event_x" type="fixed"/>
+      <arg name="event_y" type="fixed"/>
+      <arg name="flags" type="int"/>
+      <arg name="buttons" type="object" interface="test_XIButtonState"
+	   allow-null="true"/>
+      <arg name="valuators" type="object" interface="test_XIValuatorState"
+	   allow-null="true"/>
+      <arg name="mods" type="object" interface="test_XIModifierState"
+	   allow-null="true"/>
+      <arg name="group" type="object" interface="test_XIModifierState"
+	   allow-null="true"/>
+    </request>
+
+    <request name="dispatch_XI_ButtonPress">
+      <description summary="dispatch button press event">
+	Dispatch an XI_ButtonPress device event to the seat.
+      </description>
+
+      <arg name="time" type="uint"/>
+      <arg name="sourceid" type="int"/>
+      <arg name="detail" type="int"/>
+      <arg name="root" type="uint"/>
+      <arg name="event" type="uint"/>
+      <arg name="child" type="uint"/>
+      <arg name="root_x" type="fixed"/>
+      <arg name="root_y" type="fixed"/>
+      <arg name="event_x" type="fixed"/>
+      <arg name="event_y" type="fixed"/>
+      <arg name="flags" type="int"/>
+      <arg name="buttons" type="object" interface="test_XIButtonState"
+	   allow-null="true"/>
+      <arg name="valuators" type="object" interface="test_XIValuatorState"
+	   allow-null="true"/>
+      <arg name="mods" type="object" interface="test_XIModifierState"
+	   allow-null="true"/>
+      <arg name="group" type="object" interface="test_XIModifierState"
+	   allow-null="true"/>
+    </request>
+
+    <request name="dispatch_XI_ButtonRelease">
+      <description summary="dispatch button release event">
+	Dispatch an XI_ButtonRelease device event to the seat.
+      </description>
+
+      <arg name="time" type="uint"/>
+      <arg name="sourceid" type="int"/>
+      <arg name="detail" type="int"/>
+      <arg name="root" type="uint"/>
+      <arg name="event" type="uint"/>
+      <arg name="child" type="uint"/>
+      <arg name="root_x" type="fixed"/>
+      <arg name="root_y" type="fixed"/>
+      <arg name="event_x" type="fixed"/>
+      <arg name="event_y" type="fixed"/>
+      <arg name="flags" type="int"/>
+      <arg name="buttons" type="object" interface="test_XIButtonState"
+	   allow-null="true"/>
+      <arg name="valuators" type="object" interface="test_XIValuatorState"
+	   allow-null="true"/>
+      <arg name="mods" type="object" interface="test_XIModifierState"
+	   allow-null="true"/>
+      <arg name="group" type="object" interface="test_XIModifierState"
+	   allow-null="true"/>
     </request>
   </interface>
 </protocol>

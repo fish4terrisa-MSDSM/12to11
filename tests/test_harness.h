@@ -23,6 +23,8 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <stdio.h>
 #include <unistd.h>
 #include <limits.h>
+#include <time.h>
+#include <string.h>
 
 #include <wayland-client.h>
 
@@ -30,6 +32,21 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <X11/Xutil.h>
 
 #include "12to11-test.h"
+
+struct test_seat
+{
+  /* The test seat, if any.  */
+  struct test_seat_controller *controller;
+
+  /* The seat resource itself.  */
+  struct wl_seat *seat;
+
+  /* The wl_pointer resource.  */
+  struct wl_pointer *pointer;
+
+  /* The buttons currently held down.  */
+  unsigned char buttons;
+};
 
 struct test_display
 {
@@ -56,6 +73,9 @@ struct test_display
 
   /* Test interfaces.  */
   struct test_interface *interfaces;
+
+  /* The test seat.  */
+  struct test_seat *seat;
 
   /* The number of such interfaces.  */
   int num_test_interfaces;
@@ -123,6 +143,7 @@ extern void verify_image_data (struct test_display *, Window, const char *);
 extern void test_init (void);
 extern void test_complete (void) __attribute__ ((noreturn));
 extern void test_set_scale (struct test_display *, int);
+extern void test_init_seat (struct test_display *);
 
 #define ARRAYELTS(arr) (sizeof (arr) / sizeof (arr)[0])
 

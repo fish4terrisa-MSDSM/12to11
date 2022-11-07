@@ -372,6 +372,20 @@ test_log (const char *format, ...)
   va_end (ap);
 }
 
+static void __attribute__ ((noreturn, format (gnu_printf, 1, 2)))
+report_test_internal_error (const char *format, ...)
+{
+  va_list ap;
+
+  va_start (ap, format);
+  fputs ("internal error: ", stderr);
+  vfprintf (stderr, format, ap);
+  fputs ("\n", stderr);
+  va_end (ap);
+
+  abort ();
+}
+
 bool
 make_test_surface (struct test_display *display,
 		   struct wl_surface **surface_return,
@@ -809,6 +823,40 @@ test_init (void)
 {
   write_image_data_instead
     = getenv ("TEST_WRITE_REFERENCE") != NULL;
+}
+
+void
+test_init_seat (struct test_display *display)
+{
+  if (display->seat)
+    report_test_internal_error ("tried to initialize seat twice");
+
+  display->seat = malloc (sizeof *display->seat);
+
+  if (!display->seat)
+    report_test_failure ("failed to allocate seat");
+
+  display->seat->controller
+    = test_manager_get_test_seat (display->test_manager);
+
+  if (!display->seat->controller)
+    report_test_failure ("failed to obtain seat controller");
+
+  /* The protocol translator currently supports version 8 of wl_seat,
+     so bind to that.  */
+
+  display->seat->seat
+    = test_seat_controller_bind_seat (display->seat->controller,
+				      8);
+
+  if (!display->seat->seat)
+    report_test_failure ("failed to bind to test seat");
+
+  display->seat->pointer
+    = wl_seat_get_pointer (display->seat->seat);
+
+  if (!display->seat->pointer)
+    report_test_failure ("failed to bind to test pointer");
 }
 
 void __attribute__ ((noreturn))

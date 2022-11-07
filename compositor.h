@@ -1803,6 +1803,7 @@ extern int locked_output_scale;
 
 extern void XLInitTest (void);
 extern Bool XLHandleOneXEventForTest (XEvent *);
+extern Surface *XLLookUpTestSurface (Window, Subcompositor **);
 
 /* Defined in buffer_release.c.  */
 
@@ -1814,6 +1815,11 @@ extern BufferReleaseHelper *MakeBufferReleaseHelper (AllReleasedCallback,
 extern void FreeBufferReleaseHelper (BufferReleaseHelper *);
 extern void ReleaseBufferWithHelper (BufferReleaseHelper *, ExtBuffer *,
 				     RenderTarget);
+
+/* Defined in test_seat.c.  */
+
+extern void XLGetTestSeat (struct wl_client *, struct wl_resource *,
+			   uint32_t);
 
 /* Utility functions that don't belong in a specific file.  */
 

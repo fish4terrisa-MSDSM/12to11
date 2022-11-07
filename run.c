@@ -305,6 +305,6 @@ XLRunCompositor (void)
   poll_fds.next = &poll_fds;
   poll_fds.last = &poll_fds;
 
-  while (true)
+  while (True)
     RunStep ();
 }

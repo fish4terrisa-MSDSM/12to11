@@ -40,7 +40,9 @@ ScannerTarget(viewporter)
           OBJS6 = $(COMMONSRCS) subsurface_test.o
           SRCS7 = $(COMMONSRCS) scale_test.c
           OBJS7 = $(COMMONSRCS) scale_test.o
-       PROGRAMS = imgview simple_test damage_test transform_test viewporter_test subsurface_test scale_test
+          SRCS8 = $(COMMONSRCS) seat_test.c
+          OBJS8 = $(COMMONSRCS) seat_test.o
+       PROGRAMS = imgview simple_test damage_test transform_test viewporter_test subsurface_test scale_test seat_test
 
 /* Make all objects depend on HEADER.  */
 $(OBJS1): $(HEADER)
@@ -55,9 +57,10 @@ NormalProgramTarget(transform_test,$(OBJS4),NullParameter,$(LOCAL_LIBRARIES),Nul
 NormalProgramTarget(viewporter_test,$(OBJS5),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
 NormalProgramTarget(subsurface_test,$(OBJS6),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
 NormalProgramTarget(scale_test,$(OBJS7),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
+NormalProgramTarget(seat_test,$(OBJS8),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
 DependTarget3($(SRCS1),$(SRCS2),$(SRCS3))
 DependTarget3($(SRCS4),$(SRCS5),$(SRCS6))
-DependTarget3($(SRCS7),NullParameter,NullParameter)
+DependTarget3($(SRCS7),$(SRCS8),NullParameter)
 
 all:: $(PROGRAMS)
 

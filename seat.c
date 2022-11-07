@@ -94,6 +94,7 @@ enum
     IsExternalGrabApplied = (1 << 8),
     IsInPinchGesture	  = (1 << 9),
     IsInSwipeGesture	  = (1 << 10),
+    IsTestSeat		  = (1 << 11),
   };
 
 enum
@@ -1694,13 +1695,11 @@ HandleResourceDestroy (struct wl_resource *resource)
 }
 
 static void
-HandleBind (struct wl_client *client, void *data,
-	    uint32_t version, uint32_t id)
+HandleBind1 (struct wl_client *client, Seat *seat, uint32_t version,
+	     uint32_t id)
 {
   struct wl_resource *resource;
-  Seat *seat;
 
-  seat = data;
   resource = wl_resource_create (client, &wl_seat_interface,
 				 version, id);
 
@@ -1710,7 +1709,7 @@ HandleBind (struct wl_client *client, void *data,
       return;
     }
 
-  wl_resource_set_implementation (resource, &wl_seat_impl, data,
+  wl_resource_set_implementation (resource, &wl_seat_impl, seat,
 				  HandleResourceDestroy);
 
   wl_seat_send_capabilities (resource, (WL_SEAT_CAPABILITY_POINTER
@@ -1719,7 +1718,14 @@ HandleBind (struct wl_client *client, void *data,
   if (wl_resource_get_version (resource) > 2)
     wl_seat_send_name (resource, seat->name);
 
-  RetainSeat (data);
+  RetainSeat (seat);
+}
+
+static void
+HandleBind (struct wl_client *client, void *data, uint32_t version,
+	    uint32_t id)
+{
+  HandleBind1 (client, data, version, id);
 }
 
 static void
@@ -1757,19 +1763,8 @@ UpdateValuators (Seat *seat, XIDeviceInfo *device)
 }
 
 static void
-MakeSeatForDevicePair (int master_keyboard, int master_pointer,
-		       XIDeviceInfo *pointer_info)
+InitSeatCommon (Seat *seat)
 {
-  Seat *seat;
-  XkbStateRec state;
-
-  seat = XLCalloc (1, sizeof *seat);
-  seat->master_keyboard = master_keyboard;
-  seat->master_pointer = master_pointer;
-  seat->name = XLStrdup (pointer_info->name);
-  seat->global = wl_global_create (compositor.wl_display,
-				   &wl_seat_interface, 8,
-				   seat, HandleBind);
   seat->client_info.next = &seat->client_info;
   seat->client_info.last = &seat->client_info;
 
@@ -1786,6 +1781,24 @@ MakeSeatForDevicePair (int master_keyboard, int master_pointer,
   seat->modifier_callbacks.last = &seat->modifier_callbacks;
 
   wl_array_init (&seat->keys);
+}
+
+static void
+MakeSeatForDevicePair (int master_keyboard, int master_pointer,
+		       XIDeviceInfo *pointer_info)
+{
+  Seat *seat;
+  XkbStateRec state;
+
+  seat = XLCalloc (1, sizeof *seat);
+  seat->master_keyboard = master_keyboard;
+  seat->master_pointer = master_pointer;
+  seat->name = XLStrdup (pointer_info->name);
+  seat->global = wl_global_create (compositor.wl_display,
+				   &wl_seat_interface, 8,
+				   seat, HandleBind);
+
+  InitSeatCommon (seat);
 
   XLMakeAssoc (seats, master_keyboard, seat);
   XLMakeAssoc (seats, master_pointer, seat);
@@ -2423,8 +2436,10 @@ HandleRawKey (XIRawEvent *event)
   /* This is used for tracking grabs.  */
   seat->its_depress_time = event->time;
 
-  /* Update the last user time.  */
-  seat->last_user_time = TimestampFromServerTime (event->time);
+  /* Update the last user time.  send_event events can have a
+     different timestamp not synchronized with that of the server.  */
+  if (!event->send_event)
+    seat->last_user_time = TimestampFromServerTime (event->time);
 }
 
 static void
@@ -2867,6 +2882,10 @@ UpdateModifiersForSeats (unsigned int base, unsigned int locked,
     {
       seat = tem->data;
 
+      /* If the seat is a test seat, ignore.  */
+      if (seat->flags & IsTestSeat)
+	continue;
+
       seat->base = base;
       seat->locked = locked;
       seat->latched = latched;
@@ -2946,7 +2965,9 @@ DispatchFocusIn (Surface *surface, XIFocusInEvent *event)
     return;
 
   /* Record the time the focus changed for the external grab.  */
-  seat->last_focus_time = TimestampFromServerTime (event->time);
+
+  if (!event->send_event)
+    seat->last_focus_time = TimestampFromServerTime (event->time);
 
   SetFocusSurface (seat, surface);
 }
@@ -3939,7 +3960,9 @@ DispatchMotion (Subcompositor *subcompositor, XIDeviceEvent *xev)
   seat->its_press_time = xev->time;
 
   /* Update the last user time.  */
-  seat->last_user_time = TimestampFromServerTime (xev->time);
+
+  if (!xev->send_event)
+    seat->last_user_time = TimestampFromServerTime (xev->time);
 
   actual_dispatch = FindSurfaceUnder (subcompositor, xev->event_x,
 				      xev->event_y);
@@ -4381,7 +4404,9 @@ DispatchBarrierHit (XIBarrierEvent *barrier)
 			barrier->time);
 
   /* Set the last user time.  */
-  seat->last_user_time = TimestampFromServerTime (barrier->time);
+
+  if (!barrier->send_event)
+    seat->last_user_time = TimestampFromServerTime (barrier->time);
 }
 
 static void
@@ -4473,7 +4498,9 @@ DispatchGesturePinch (Subcompositor *subcompositor, XIGesturePinchEvent *pinch)
   seat->its_press_time = pinch->time;
 
   /* Update the last user time.  */
-  seat->last_user_time = TimestampFromServerTime (pinch->time);
+
+  if (!pinch->send_event)
+    seat->last_user_time = TimestampFromServerTime (pinch->time);
 
   /* Now find the dispatch surface so we can enter it if required.
      Most of this code is copied from DispatchMotion; it should
@@ -4641,7 +4668,9 @@ DispatchGestureSwipe (Subcompositor *subcompositor, XIGestureSwipeEvent *swipe)
   seat->its_press_time = swipe->time;
 
   /* Update the last user time.  */
-  seat->last_user_time = TimestampFromServerTime (swipe->time);
+
+  if (!swipe->send_event)
+    seat->last_user_time = TimestampFromServerTime (swipe->time);
 
   /* Now find the dispatch surface so we can enter it if required.
      Most of this code is copied from DispatchMotion; it should
@@ -6396,3 +6425,8 @@ XLSeatCancelExternalGrab (Seat *seat)
   XIUngrabDevice (compositor.display, seat->master_keyboard,
 		  seat->external_grab_time);
 }
+
+/* This is a particularly ugly hack, but there is no other way to
+   expose all the internals needed by test_seat.c.  */
+
+#include "test_seat.c"

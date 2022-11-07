@@ -542,10 +542,18 @@ GetScaleLock (struct wl_client *client, struct wl_resource *resource,
 				  NULL, HandleScaleLockResourceDestroy);
 }
 
+static void
+GetTestSeat (struct wl_client *client, struct wl_resource *resource,
+	     uint32_t id)
+{
+  XLGetTestSeat (client, resource, id);
+}
+
 static const struct test_manager_interface test_manager_impl =
   {
     .get_test_surface = GetTestSurface,
     .get_scale_lock = GetScaleLock,
+    .get_test_seat = GetTestSeat,
   };
 
 
@@ -633,4 +641,21 @@ XLHandleOneXEventForTest (XEvent *event)
     }
 
   return False;
+}
+
+Surface *
+XLLookUpTestSurface (Window window, Subcompositor **subcompositor)
+{
+  TestSurface *test;
+
+  if (!surfaces)
+    return NULL;
+
+  test = XLLookUpAssoc (surfaces, window);
+
+  if (!test)
+    return NULL;
+
+  *subcompositor = test->subcompositor;
+  return test->role.surface;
 }

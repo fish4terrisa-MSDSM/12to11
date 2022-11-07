@@ -106,7 +106,12 @@ ScannerTarget(idle-inhibit-unstable-v1)
 ScannerTarget(pointer-gestures-unstable-v1)
 ScannerTarget(12to11-test)
 
-/* Make OBJS depend on scanner headers, and depend on both them and SRCS.  */
+/* Make seat.o depend on test_seat.c, as it includes that.  Both files
+   are rather special.  */
+seat.o: test_seat.c
+
+/* Make OBJS depend on scanner headers, and depend on both them and
+   SRCS.  */
 $(OBJS): $(GENHEADERS)
 
 /* depend somehow does not depend on SRCS, even though some of OBJS
