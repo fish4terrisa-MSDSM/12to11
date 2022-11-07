@@ -519,6 +519,7 @@ ApplyScale (Surface *surface)
   int scale, effective;
   double b, g, e, d;
   XLList *subsurface;
+  Surface *subsurface_surface;
   Role *role;
 
   scale = surface->current_state.buffer_scale;
@@ -590,7 +591,8 @@ ApplyScale (Surface *surface)
       for (; subsurface; subsurface = subsurface->next)
 	{
 	  /* Get the subsurface role.  */
-	  role = subsurface->data;
+	  subsurface_surface = subsurface->data;
+	  role = subsurface_surface->role;
 
 	  /* Make sure it still has a surface, since it should not be
 	     in surface->subsurfaces otherwise.  */

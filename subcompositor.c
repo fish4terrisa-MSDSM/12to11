@@ -419,7 +419,7 @@ enum
    a surface.  */
 
 #define IsDamageComplicated(damage)		\
-  (pixman_region32_n_rects (damage) > 10)
+  (pixman_region32_n_rects (damage) >= 10)
 
 static void
 SimplifyDamage (pixman_region32_t *damage, int min_x, int min_y,

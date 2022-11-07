@@ -33,6 +33,8 @@ enum test_kind
     SUBSURFACE_GROW_SHRINK_KIND,
     SUBSURFACE_STACKING_1_KIND,
     SUBSURFACE_DESYNC_KIND,
+    SUBSURFACE_COMPLEX_DAMAGE_KIND,
+    SUBSURFACE_SCALE_KIND,
   };
 
 static const char *test_names[] =
@@ -45,7 +47,9 @@ static const char *test_names[] =
     "subsurface_tree",
     "subsurface_grow_shrink",
     "subsurface_stacking_1",
-    "subsurface_desync_kind",
+    "subsurface_desync",
+    "subsurface_complex_damage",
+    "subsurface_scale",
   };
 
 struct test_subsurface
@@ -57,7 +61,7 @@ struct test_subsurface
   struct wl_surface *surface;
 };
 
-#define LAST_TEST       SUBSURFACE_DESYNC_KIND
+#define LAST_TEST       SUBSURFACE_SCALE_KIND
 
 /* The display.  */
 static struct test_display *display;
@@ -92,6 +96,8 @@ static struct wl_buffer *cow_transparent_png;
 static struct wl_buffer *gradient_png;
 static struct wl_buffer *big_png;
 static struct wl_buffer *small_png;
+static struct wl_buffer *subsurface_1_complex_png;
+static struct wl_buffer *subsurface_transparency_damage_png;
 
 /* The test image ID.  */
 static uint32_t current_test_image;
@@ -703,7 +709,108 @@ test_single_step (enum test_kind kind)
 	 subsurface_1.png should be displayed.  */
       wait_frame_callback (subsurfaces[6]->surface);
       sleep_or_verify ();
+
+      test_single_step (SUBSURFACE_COMPLEX_DAMAGE_KIND);
       break;
+
+    case SUBSURFACE_COMPLEX_DAMAGE_KIND:
+      /* Hide subsurfaces[8].  After this, subsurfaces[7].png should
+	 be displayed entirely.  */
+      wl_surface_attach (subsurfaces[8]->surface, NULL, 0, 0);
+      wait_frame_callback (subsurfaces[8]->surface);
+      sleep_or_verify ();
+
+      /* Move subsurfaces[8] to 270, 270.  This adds some damage to
+	 quadrant D.  */
+      wl_subsurface_set_position (subsurfaces[8]->subsurface, 600, 600);
+
+      /* Make subsurfaces[8] synchronous.  */
+      wl_subsurface_set_sync (subsurfaces[8]->subsurface);
+
+      /* Attach a buffer to subsurfaces[8].  */
+      wl_surface_set_buffer_transform (subsurfaces[8]->surface,
+				       WL_OUTPUT_TRANSFORM_NORMAL);
+      wl_surface_attach (subsurfaces[8]->surface, small_png, 0, 0);
+      wl_surface_commit (subsurfaces[8]->surface);
+
+      /* Nothing should appear.  */
+      wait_frame_callback (wayland_surface);
+      sleep_or_verify ();
+
+      /* Attach subsurface_1_complex.png to subsurfaces[7], and apply
+	 detailed damage.  Verify that the result remains correct
+	 despite the subcompositor performing damage
+	 simplification.  */
+      subsurface_1_complex_png
+	= load_png_image (display, "subsurface_1_complex.png");
+
+      if (!subsurface_1_complex_png)
+	report_test_failure ("failed to load subsurface_1_complex.png");
+
+      subsurface_transparency_damage_png
+	= load_png_image (display, "subsurface_transparency_damage.png");
+
+      if (!subsurface_transparency_damage_png)
+	report_test_failure ("failed to load subsurface_transparency_damage.png");
+
+      /* Set a complex opaque region.  */
+      region = wl_compositor_create_region (display->compositor);
+      wl_region_add (region, 0, 0, 256, 256);
+      wl_region_subtract (region, 128, 128, 70, 70);
+      wl_surface_set_opaque_region (subsurfaces[0]->surface, region);
+      wl_region_destroy (region);
+
+      /* Attach subsurface_1_complex.png.  */
+      wl_surface_attach (subsurfaces[7]->surface, subsurface_1_complex_png,
+			 0, 0);
+      wl_surface_damage (subsurfaces[7]->surface, 20, 24, 139, 55);
+      wl_surface_damage (subsurfaces[7]->surface, 31, 108, 25, 24);
+      wl_surface_damage (subsurfaces[7]->surface, 16, 179, 10, 9);
+      wl_surface_damage (subsurfaces[7]->surface, 80, 85, 73, 43);
+      wl_surface_damage (subsurfaces[7]->surface, 153, 56, 39, 53);
+      wl_surface_damage (subsurfaces[7]->surface, 125, 56, 28, 29);
+      wl_surface_damage (subsurfaces[7]->surface, 128, 128, 70, 70);
+      wl_surface_commit (subsurfaces[7]->surface);
+
+      /* Make subsurfaces[6] and subsurfaces[4] synchronous.  */
+      wl_subsurface_set_sync (subsurfaces[4]->subsurface);
+      wl_subsurface_set_sync (subsurfaces[6]->subsurface);
+
+      /* Commit subsurfaces[6]->surface and
+	 subsurfaces[4]->surface.  */
+      wl_surface_commit (subsurfaces[6]->surface);
+      wl_surface_commit (subsurfaces[4]->surface);
+
+      /* Now, apply damage to quadrants C and D.  Attach
+	 subsurface_transparency_damage.png to subsurfaces[0].  */
+      wl_surface_attach (subsurfaces[0]->surface,
+			 subsurface_transparency_damage_png,
+			 0, 0);
+      wl_surface_damage (subsurfaces[0]->surface, 52, 882, 810, 58);
+      wait_frame_callback (subsurfaces[0]->surface);
+      sleep_or_verify ();
+
+      test_single_step (SUBSURFACE_SCALE_KIND);
+      break;
+
+    case SUBSURFACE_SCALE_KIND:
+      /* Set the global output scale to two, then three.  Verify the
+	 subcompositor tree each time.  */
+      test_set_scale (display, 2);
+      wait_frame_callback (wayland_surface);
+
+      /* Sleep for 1 second to wait for the scale hooks to completely
+	 run.  */
+      sleep (1);
+      sleep_or_verify ();
+
+      test_set_scale (display, 3);
+      wait_frame_callback (wayland_surface);
+
+      /* Sleep for 1 second to wait for the scale hooks to completely
+	 run.  */
+      sleep (1);
+      sleep_or_verify ();
     }
 
   if (kind == LAST_TEST)
