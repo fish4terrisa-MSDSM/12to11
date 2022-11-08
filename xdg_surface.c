@@ -1475,6 +1475,9 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
   role->release_helper = MakeBufferReleaseHelper (AllBuffersReleased,
 						  role);
 
+  /* Set the client.  */
+  RenderSetClient (role->target, client);
+
   role->subcompositor = MakeSubcompositor ();
   role->clock = XLMakeFrameClockForWindow (role->window);
   XLFrameClockSetFreezeCallback (role->clock, HandleFreeze, role);

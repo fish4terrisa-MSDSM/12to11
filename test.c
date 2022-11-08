@@ -457,6 +457,9 @@ GetTestSurface (struct wl_client *client, struct wl_resource *resource,
   test->subcompositor = MakeSubcompositor ();
   test->target = RenderTargetFromWindow (test->window, DefaultEventMask);
 
+  /* Set the client.  */
+  RenderSetClient (test->target, client);
+
   /* And a buffer release helper.  */
   test->release_helper = MakeBufferReleaseHelper (AllBuffersReleased,
 						  test);

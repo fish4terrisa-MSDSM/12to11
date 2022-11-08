@@ -77,6 +77,9 @@ typedef struct _Buffer
 /* The shared memory global.  */
 static struct wl_global *global_shm;
 
+/* The error base of the Render extension.  */
+int render_first_error;
+
 static void
 DereferencePool (Pool *pool)
 {
@@ -534,10 +537,10 @@ HandleBind (struct wl_client *client, void *data,
 static void
 InitRender (void)
 {
-  int major, minor, base, dummy;
+  int major, minor, base;
 
   if (!XRenderQueryExtension (compositor.display,
-			      &base, &dummy))
+			      &base, &render_first_error))
     {
       fprintf (stderr, "XRender is not supported by this X server\n");
       exit (1);

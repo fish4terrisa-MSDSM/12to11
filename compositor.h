@@ -325,6 +325,10 @@ struct _RenderFuncs
   /* Create a rendering target for the given pixmap.  */
   RenderTarget (*target_from_pixmap) (Pixmap);
 
+  /* Set the client associated with the target.  This allows some
+     extra pixmap memory allocation tracking to be done.  */
+  void (*set_client) (RenderTarget, struct wl_client *);
+
   /* Set the standard event mask of the target.  */
   void (*set_standard_event_mask) (RenderTarget, unsigned long);
 
@@ -537,6 +541,7 @@ extern void InitRenderers (void);
 
 extern RenderTarget RenderTargetFromWindow (Window, unsigned long);
 extern RenderTarget RenderTargetFromPixmap (Pixmap);
+extern void RenderSetClient (RenderTarget, struct wl_client *);
 extern void RenderSetStandardEventMask (RenderTarget, unsigned long);
 extern void RenderNoteTargetSize (RenderTarget, int, int);
 extern Picture RenderPictureFromTarget (RenderTarget);
@@ -741,6 +746,8 @@ extern void XLPrintBuffer (ExtBuffer *);
 extern void ExtBufferDestroy (ExtBuffer *);
 
 /* Defined in shm.c.  */
+
+extern int render_first_error;
 
 extern void XLInitShm (void);
 
@@ -1407,6 +1414,29 @@ extern Bool XLHandleXEventForXdgPopups (XEvent *);
 extern void XLInitPopups (void);
 
 /* Defined in xerror.c.  */
+
+typedef struct _ClientErrorData ClientErrorData;
+
+struct _ClientErrorData
+{
+  /* The wl_listener used to hang this data from.  */
+  struct wl_listener listener;
+
+  /* How many pixels of pixmap data this client has allocated.  This
+     data is guaranteed to be present as long as the client still
+     exists.  */
+  uint64_t n_pixels;
+
+  /* The number of references to this error data.  The problem with is
+     that resources are destroyed after the client error data, so
+     without reference counting the client data will become invalid by
+     the time the destroy listener is called.  */
+  int refcount;
+};
+
+extern ClientErrorData *ErrorDataForClient (struct wl_client *);
+extern void ReleaseClientData (ClientErrorData *);
+extern void ProcessPendingDisconnectClients (void);
 
 extern void InitXErrors (void);
 extern void CatchXErrors (void);

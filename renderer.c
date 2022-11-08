@@ -81,6 +81,15 @@ RenderTargetFromPixmap (Pixmap pixmap)
 }
 
 void
+RenderSetClient (RenderTarget target, struct wl_client *client)
+{
+  if (!render_funcs.set_client)
+    return;
+
+  render_funcs.set_client (target, client);
+}
+
+void
 RenderSetStandardEventMask (RenderTarget target,
 			    unsigned long standard_event_mask)
 {

@@ -215,6 +215,10 @@ RunStep (void)
   /* Drain complete selection transfers.  */
   FinishTransfers ();
 
+  /* Disconnect clients that have experienced out-of-memory
+     errors.  */
+  ProcessPendingDisconnectClients ();
+
   /* FinishTransfers can potentially send events to Wayland clients
      and make X requests.  Flush after it is called.  */
   XFlush (compositor.display);
@@ -273,6 +277,10 @@ RunStep (void)
       wl_display_flush_clients (compositor.wl_display);
     }
 
+  /* Disconnect clients that have experienced out-of-memory
+     errors.  */
+  ProcessPendingDisconnectClients ();
+
   rc = ProcessPoll (fds, 2 + i, &timeout);
 
   if (rc > 0)
@@ -295,6 +303,10 @@ RunStep (void)
 				       pollfds[j]->data, pollfds[j]);
 	}
     }
+
+  /* Disconnect clients that have experienced out-of-memory
+     errors.  */
+  ProcessPendingDisconnectClients ();
 }
 
 void __attribute__ ((noreturn))

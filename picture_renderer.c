@@ -183,6 +183,9 @@ struct _PresentCompletionCallback
 
 struct _BackBuffer
 {
+  /* How many pixels were allocated.  */
+  uint64_t n_pixels;
+
   /* The picture of this back buffer.  High bit means the back buffer
      is busy.  */
   Picture picture;
@@ -227,6 +230,10 @@ struct _PictureTarget
 
   /* Two back buffers.  */
   BackBuffer *back_buffers[2];
+
+  /* Structure used to allocate the amount of pixmap allocated on
+     behalf of a client.  */
+  ClientErrorData *client;
 
   /* Presentation event context.  */
   XID presentation_event_context;
@@ -699,7 +706,7 @@ HandleActivityEvent (uint64_t counter)
 
 
 static void
-FreeBackBuffer (BackBuffer *buffer)
+FreeBackBuffer (PictureTarget *target, BackBuffer *buffer)
 {
   XRenderFreePicture (compositor.display, (buffer->picture
 					   & ~BufferSync
@@ -707,6 +714,15 @@ FreeBackBuffer (BackBuffer *buffer)
   XFreePixmap (compositor.display, (buffer->pixmap
 				    & ~BufferSync));
   FenceRelease (buffer->idle_fence);
+
+  /* Subtract the amount of pixels allocated from the target.  */
+  if (target->client
+      && IntSubtractWrapv (target->client->n_pixels,
+			   buffer->n_pixels,
+			   &target->client->n_pixels))
+    /* Handle overflow by just setting n_pixels to 0.  */
+    target->client->n_pixels = 0;
+
   XLFree (buffer);
 }
 
@@ -718,7 +734,7 @@ FreeBackBuffers (PictureTarget *target)
   for (i = 0; i < ArrayElements (target->back_buffers); ++i)
     {
       if (target->back_buffers[i])
-	FreeBackBuffer (target->back_buffers[i]);
+	FreeBackBuffer (target, target->back_buffers[i]);
     }
 
   /* Also clear target->picture if it is a window target.  */
@@ -752,6 +768,18 @@ CreateBackBuffer (PictureTarget *target)
 
   /* The target is no longer freshly presented.  */
   target->flags &= ~JustPresented;
+
+  /* Calculate how many pixels would be allocated and add it to the
+     target data.  */
+
+  if (IntMultiplyWrapv (target->width, target->height,
+			&buffer->n_pixels))
+    buffer->n_pixels = UINT64_MAX;
+
+  if (target->client
+      && IntAddWrapv (target->client->n_pixels, buffer->n_pixels,
+		      &target->client->n_pixels))
+    target->client->n_pixels = UINT64_MAX;
 
   return buffer;
 }
@@ -1254,6 +1282,40 @@ TargetFromWindow (Window window, unsigned long event_mask)
 }
 
 static void
+SetClient (RenderTarget target, struct wl_client *client)
+{
+  PictureTarget *picture_target;
+  ClientErrorData *data;
+  uint64_t pixels;
+
+  picture_target = target.pointer;
+
+  /* Release the client data if some is already attached.  */
+  if (picture_target->client)
+    {
+      if (picture_target->client
+	  && IntMultiplyWrapv (picture_target->width,
+			       picture_target->height,
+			       &pixels)
+	  && IntSubtractWrapv (picture_target->client->n_pixels,
+			       pixels,
+			       &picture_target->client->n_pixels))
+	picture_target->client->n_pixels = 0;
+
+      ReleaseClientData (picture_target->client);
+    }
+  picture_target->client = NULL;
+
+  if (!client)
+    return;
+
+  /* Retain the client data.  */
+  data = ErrorDataForClient (client);
+  picture_target->client = data;
+  data->refcount++;
+}
+
+static void
 SetStandardEventMask (RenderTarget target, unsigned long standard_event_mask)
 {
   PictureTarget *pict_target;
@@ -1269,13 +1331,34 @@ static void
 NoteTargetSize (RenderTarget target, int width, int height)
 {
   PictureTarget *pict_target;
+  uint64_t pixels;
 
   pict_target = target.pointer;
 
   if (width != pict_target->width
       || height != pict_target->height)
-    /* Recreate all the back buffers for the new target size.  */
-    FreeBackBuffers (pict_target);
+    {
+      /* Recreate all the back buffers for the new target size.  */
+      FreeBackBuffers (pict_target);
+
+      /* First, remove existing pixels from the client.  */
+      if (pict_target->client
+	  && IntMultiplyWrapv (pict_target->width,
+			       pict_target->height,
+			       &pixels)
+	  && IntSubtractWrapv (pict_target->client->n_pixels,
+			       pixels,
+			       &pict_target->client->n_pixels))
+	pict_target->client->n_pixels = 0;
+
+      /* Next, add the new width and height to the client.  */
+      if (pict_target->client
+	  && IntMultiplyWrapv (width, height, &pixels)
+	  && IntAddWrapv (pict_target->client->n_pixels,
+			  pixels,
+			  &pict_target->client->n_pixels))
+	pict_target->client->n_pixels = UINT64_MAX;
+    }
 
   pict_target->width = width;
   pict_target->height = height;
@@ -1314,6 +1397,7 @@ DestroyRenderTarget (RenderTarget target)
   PresentRecord *record, *last;
   BufferActivityRecord *activity_record, *activity_last;
   IdleCallback *idle, *idle_last;
+  uint64_t pixels;
 
   pict_target = target.pointer;
 
@@ -1369,6 +1453,22 @@ DestroyRenderTarget (RenderTarget target)
   if (pict_target->picture)
     XRenderFreePicture (compositor.display,
 			pict_target->picture);
+
+  /* Dereference the client data if it is set.  Also, remove the
+     pixels recorded.  */
+  if (pict_target->client)
+    {
+      if (pict_target->client
+	  && IntMultiplyWrapv (pict_target->width,
+			       pict_target->height,
+			       &pixels)
+	  && IntSubtractWrapv (pict_target->client->n_pixels,
+			       pixels,
+			       &pict_target->client->n_pixels))
+	pict_target->client->n_pixels = 0;
+
+      ReleaseClientData (pict_target->client);
+    }
 
   XFree (pict_target);
 }
@@ -1899,6 +1999,7 @@ static RenderFuncs picture_render_funcs =
     .init_render_funcs = InitRenderFuncs,
     .target_from_window = TargetFromWindow,
     .target_from_pixmap = TargetFromPixmap,
+    .set_client = SetClient,
     .set_standard_event_mask = SetStandardEventMask,
     .note_target_size = NoteTargetSize,
     .picture_from_target = PictureFromTarget,

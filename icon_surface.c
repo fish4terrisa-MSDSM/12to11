@@ -416,6 +416,11 @@ XLGetIconSurface (Surface *surface)
   /* Create a target associated with the window.  */
   role->target = RenderTargetFromWindow (role->window, None);
 
+  /* Set the client.  */
+  if (surface->resource)
+    RenderSetClient (role->target,
+		     wl_resource_get_client (surface->resource));
+
   /* For simplicity reasons we do not handle idle notifications
      asynchronously.  */
   RenderSetNeedWaitForIdle (role->target);
