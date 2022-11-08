@@ -3,12 +3,13 @@
      12TO11ROOT = ..
         DEPLIBS = $(DEPXLIB)
   SYS_LIBRARIES = MathLibrary
-LOCAL_LIBRARIES = $(WAYLAND_CLIENT) $(XLIB) $(PNG)
+LOCAL_LIBRARIES = $(WAYLAND_CLIENT) $(XLIB) $(PNG) $(GBM) $(DRM)
      COMMONOBJS = test_harness.o
      COMMONSRCS = test_harness.c
          HEADER = test_harness.h
        GENFILES =
  EXTRA_DEFINES := -D_GNU_SOURCE -U_BSD_SOURCE -U_SVID_SOURCE
+      INCLUDES := $(DRMINCLUDES) $(PIXMANINCLUDES)
 
 #define ScannerTarget(name)                                   @@\
 name.h: $(12TO11ROOT)/name.xml                                @@\
@@ -24,6 +25,7 @@ name.c: $(12TO11ROOT)/name.xml name.h                         @@\
 
 ScannerTarget(12to11-test)
 ScannerTarget(viewporter)
+ScannerTarget(linux-dmabuf-unstable-v1)
 
           /* Not actually a test.  */
           SRCS1 = $(COMMONSRCS) imgview.c
@@ -42,7 +44,9 @@ ScannerTarget(viewporter)
           OBJS7 = $(COMMONSRCS) scale_test.o
           SRCS8 = $(COMMONSRCS) seat_test.c
           OBJS8 = $(COMMONSRCS) seat_test.o
-       PROGRAMS = imgview simple_test damage_test transform_test viewporter_test subsurface_test scale_test seat_test
+          SRCS9 = $(COMMONSRCS) dmabuf_test.c
+	  OBJS9 = $(COMMONSRCS) dmabuf_test.o
+       PROGRAMS = imgview simple_test damage_test transform_test viewporter_test subsurface_test scale_test seat_test dmabuf_test
 
 /* Make all objects depend on HEADER.  */
 $(OBJS1): $(HEADER)
@@ -58,6 +62,7 @@ NormalProgramTarget(viewporter_test,$(OBJS5),NullParameter,$(LOCAL_LIBRARIES),Nu
 NormalProgramTarget(subsurface_test,$(OBJS6),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
 NormalProgramTarget(scale_test,$(OBJS7),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
 NormalProgramTarget(seat_test,$(OBJS8),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
+NormalProgramTarget(dmabuf_test,$(OBJS9),NullParameter,$(LOCAL_LIBRARIES),NullParameter);
 DependTarget3($(SRCS1),$(SRCS2),$(SRCS3))
 DependTarget3($(SRCS4),$(SRCS5),$(SRCS6))
 DependTarget3($(SRCS7),$(SRCS8),NullParameter)

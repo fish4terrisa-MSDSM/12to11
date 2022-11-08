@@ -8,6 +8,7 @@ viewporter_test
 subsurface_test
 scale_test
 seat_test
+dmabuf_test
 imgview
 reject.dump
 Makefile

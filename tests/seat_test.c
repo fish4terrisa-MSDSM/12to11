@@ -606,9 +606,18 @@ handle_pointer_enter (void *data, struct wl_pointer *wl_pointer,
   event->header.last = record_tail;
   record_tail = &event->header;
 
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
+#endif
+
   event->x = wl_fixed_to_double (surface_x);
   event->y = wl_fixed_to_double (surface_x);
   event->surface = surface;
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 }
 
 static void
@@ -628,9 +637,18 @@ handle_pointer_leave (void *data, struct wl_pointer *wl_pointer,
   if (!event)
     report_test_failure ("failed to record event");
 
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
+#endif
+
   event->header.kind = POINTER_LEAVE_EVENT;
   event->header.last = record_tail;
   record_tail = &event->header;
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 }
 
 static void
@@ -653,12 +671,21 @@ handle_pointer_motion (void *data, struct wl_pointer *wl_pointer,
   if (!event)
     report_test_failure ("failed to record event");
 
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
+#endif
+
   event->header.kind = POINTER_MOTION_EVENT;
   event->header.last = record_tail;
   record_tail = &event->header;
 
   event->x = wl_fixed_to_double (surface_x);
   event->y = wl_fixed_to_double (surface_y);
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 }
 
 static void

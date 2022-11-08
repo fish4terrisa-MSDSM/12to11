@@ -26,6 +26,8 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <time.h>
 #include <string.h>
 
+#include <sys/types.h>
+
 #include <wayland-client.h>
 
 #include <X11/Xlib.h>
