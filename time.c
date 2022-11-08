@@ -182,7 +182,7 @@ StartAlarms (XSyncCounter counter, XSyncValue current_value)
 		| XSyncCAValue | XSyncCAEvents);
 
   /* Start the first kind of alarm.  This alarm assumes that the
-     counter does not wrap around along with the server time.
+     counter does wrap around along with the server time.
 
      The protocol allows for more kinds of server behavior, but all
      servers either implement the counter as one that wraps around
@@ -199,10 +199,13 @@ StartAlarms (XSyncCounter counter, XSyncValue current_value)
       /* Set the trigger and ask for events.  */
       attributes.trigger = trigger;
       attributes.events = True;
+      XSyncIntToValue (&attributes.delta, -1);
 
       /* Create the alarm.  */
       alarm_a = XSyncCreateAlarm (compositor.display,
-				  value_mask, &attributes);
+				  value_mask | XSyncCADelta,
+				  &attributes);
+      XSync (compositor.display, False);
     }
   else
     {
