@@ -82,11 +82,21 @@ struct test_recorded_button_event
   uint32_t button, state;
 };
 
+struct test_subsurface
+{
+  /* The subsurface itself.  */
+  struct wl_subsurface *subsurface;
+
+  /* The associated surface.  */
+  struct wl_surface *surface;
+};
+
 enum test_kind
   {
     MAP_WINDOW_KIND,
     TEST_ENTRY_KIND,
     TEST_CLICK_KIND,
+    TEST_GRAB_KIND,
   };
 
 static const char *test_names[] =
@@ -94,18 +104,22 @@ static const char *test_names[] =
     "map_window",
     "test_entry",
     "test_click",
+    "test_grab",
   };
 
-#define LAST_TEST	        TEST_CLICK_KIND
+#define LAST_TEST	        TEST_GRAB_KIND
 #define TEST_SOURCE_DEVICE	4500000
 
 /* The display.  */
 static struct test_display *display;
 
+/* The subcompositor.  */
+static struct wl_subcompositor *subcompositor;
+
 /* Test interfaces.  */
 static struct test_interface test_interfaces[] =
   {
-    /* No interfaces yet.  */
+    { "wl_subcompositor", &subcompositor, &wl_subcompositor_interface, 1, },
   };
 
 /* The test surface window.  */
@@ -125,11 +139,12 @@ static struct test_recorded_event *record_tail;
 
 /* Forward declarations.  */
 static void submit_surface_damage (struct wl_surface *, int, int, int, int);
+static void wait_frame_callback (struct wl_surface *);
 static void expect_surface_enter (double, double);
 static void expect_surface_motion (double, double);
 static void record_events (void);
 static void expect_frame_event (void);
-static void expect_enter_event (double, double);
+static void expect_enter_event (struct wl_surface *, double, double);
 static void expect_motion_event (double, double);
 static void expect_leave_event (void);
 static void expect_button_event (int, int);
@@ -157,6 +172,42 @@ static Window
 test_get_root (void)
 {
   return DefaultRootWindow (display->x_display);
+}
+
+
+
+static struct test_subsurface *
+make_test_subsurface (void)
+{
+  struct test_subsurface *subsurface;
+
+  subsurface = malloc (sizeof *subsurface);
+
+  if (!subsurface)
+    goto error_1;
+
+  subsurface->surface
+    = wl_compositor_create_surface (display->compositor);
+
+  if (!subsurface->surface)
+    goto error_2;
+
+  subsurface->subsurface
+    = wl_subcompositor_get_subsurface (subcompositor,
+				       subsurface->surface,
+				       wayland_surface);
+
+  if (!subsurface->subsurface)
+    goto error_3;
+
+  return subsurface;
+
+ error_3:
+  wl_surface_destroy (subsurface->surface);
+ error_2:
+  free (subsurface);
+ error_1:
+  return NULL;
 }
 
 
@@ -297,10 +348,130 @@ run_click_test (struct test_XIButtonState *button_state)
 }
 
 static void
+run_grab_test (struct test_XIButtonState *button_state,
+	       struct test_subsurface *child)
+{
+  /* First, get all events that should already have arrived.  */
+  wl_display_roundtrip (display->display);
+
+  /* Next, dispatch all of the events.  */
+  test_seat_controller_dispatch_XI_Enter (display->seat->controller,
+					  test_get_time (),
+					  TEST_SOURCE_DEVICE,
+					  XINotifyAncestor,
+					  test_get_root (),
+					  test_surface_window,
+					  None,
+					  wl_fixed_from_double (0.0),
+					  wl_fixed_from_double (0.0),
+					  wl_fixed_from_double (0.0),
+					  wl_fixed_from_double (0.0),
+					  XINotifyNormal,
+					  False, True, NULL, NULL,
+					  NULL);
+  test_seat_controller_dispatch_XI_Motion (display->seat->controller,
+					   test_get_time (),
+					   TEST_SOURCE_DEVICE,
+					   0,
+					   test_get_root (),
+					   test_surface_window,
+					   None,
+					   wl_fixed_from_double (0.0),
+					   wl_fixed_from_double (0.0),
+					   wl_fixed_from_double (0.0),
+					   wl_fixed_from_double (0.0),
+					   0,
+					   button_state,
+					   NULL, NULL, NULL);
+  test_seat_controller_dispatch_XI_Motion (display->seat->controller,
+					   test_get_time (),
+					   TEST_SOURCE_DEVICE,
+					   0,
+					   test_get_root (),
+					   test_surface_window,
+					   None,
+					   wl_fixed_from_double (150.0),
+					   wl_fixed_from_double (150.0),
+					   wl_fixed_from_double (150.0),
+					   wl_fixed_from_double (150.0),
+					   0,
+					   button_state,
+					   NULL, NULL, NULL);
+  test_seat_controller_dispatch_XI_ButtonPress (display->seat->controller,
+						test_get_time (),
+						TEST_SOURCE_DEVICE,
+						1,
+						test_get_root (),
+						test_surface_window,
+						None,
+						wl_fixed_from_double (150.0),
+						wl_fixed_from_double (150.0),
+						wl_fixed_from_double (150.0),
+						wl_fixed_from_double (150.0),
+						0,
+						button_state,
+						NULL, NULL, NULL);
+  test_XIButtonState_add_button (button_state, 1);
+  test_seat_controller_dispatch_XI_Motion (display->seat->controller,
+					   test_get_time (),
+					   TEST_SOURCE_DEVICE,
+					   0,
+					   test_get_root (),
+					   test_surface_window,
+					   None,
+					   wl_fixed_from_double (95.0),
+					   wl_fixed_from_double (95.0),
+					   wl_fixed_from_double (95.0),
+					   wl_fixed_from_double (95.0),
+					   0,
+					   button_state,
+					   NULL, NULL, NULL);
+  test_seat_controller_dispatch_XI_ButtonRelease (display->seat->controller,
+						  test_get_time (),
+						  TEST_SOURCE_DEVICE,
+						  1,
+						  test_get_root (),
+						  test_surface_window,
+						  None,
+						  wl_fixed_from_double (95.0),
+						  wl_fixed_from_double (90.0),
+						  wl_fixed_from_double (95.0),
+						  wl_fixed_from_double (95.0),
+						  0,
+						  button_state,
+						  NULL, NULL, NULL);
+  test_XIButtonState_remove_button (button_state, 1);
+
+  /* Now, verify the events that arrive.  */
+  record_events ();
+  expect_frame_event ();
+  expect_enter_event (wayland_surface, 95.0, 95.0);
+  expect_frame_event ();
+  expect_leave_event ();
+  expect_frame_event ();
+  expect_button_event (BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+  expect_frame_event ();
+  expect_motion_event (-5.0, -5.0);
+  expect_frame_event ();
+  expect_button_event (BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+  expect_frame_event ();
+  expect_motion_event (50.0, 50.0);
+  expect_frame_event ();
+  expect_enter_event (child->surface, 50.0, 50.0);
+  expect_frame_event ();
+  expect_leave_event ();
+  expect_frame_event ();
+  expect_motion_event (0.0, 0.0);
+  expect_frame_event ();
+  expect_enter_event (wayland_surface, 0.0, 0.0);
+}
+
+static void
 test_single_step (enum test_kind kind)
 {
-  struct wl_buffer *buffer;
+  struct wl_buffer *buffer, *child_buffer;
   struct test_XIButtonState *button_state;
+  struct test_subsurface *child;
 
  again:
   test_log ("running test step: %s", test_names[kind]);
@@ -316,7 +487,6 @@ test_single_step (enum test_kind kind)
       wl_surface_attach (wayland_surface, buffer, 0, 0);
       submit_surface_damage (wayland_surface, 0, 0, 500, 500);
       wl_surface_commit (wayland_surface);
-      wl_buffer_destroy (buffer);
       break;
 
     case TEST_ENTRY_KIND:
@@ -390,6 +560,61 @@ test_single_step (enum test_kind kind)
 	report_test_failure ("failed to obtain button state resource");
 
       run_click_test (button_state);
+      kind = TEST_GRAB_KIND;
+      goto again;
+
+    case TEST_GRAB_KIND:
+      /* Test subsurface grabbing.  Create a 100x100 child of the
+	 parent surface, and move it to 100, 100.  Then, enter the
+	 parent at 0, 0, and dispatch a motion event there.  Dispatch
+	 a motion event to 150, 150 (inside the child).  Press button
+	 1.  Dispatch a motion event to 95, 95.  Finally, release
+	 button 1.  Verify that only the following events are sent in
+	 the given order:
+
+           enter (SERIAL, PARENT, 0.0, 0.0)
+           frame ()
+	   motion (TIME, 0.0, 0.0)
+	   frame ()
+	   leave ()
+	   frame ()
+	   enter (SERIAL, CHILD, 50.0, 50.0)
+	   frame ()
+	   motion (TIME, 50.0, 50.0)
+	   frame ()
+           button (SERIAL, TIME, BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED)
+           frame ()
+	   motion (TIME, -5.0, -5.0)
+	   frame ()
+	   button (SERIAL, TIME, BTN_LEFT, WL_POINTER_BUTTON_STATE_RELASED)
+	   frame ()
+	   leave ()
+	   frame ()
+	   enter (SERIAL, PARENT, 95.0, 95.0)
+	   frame ()  */
+
+      child = make_test_subsurface ();
+
+      if (!child)
+	report_test_failure ("failed to create test subsurface");
+
+      child_buffer = load_png_image (display, "seat_child.png");
+
+      if (!child_buffer)
+	report_test_failure ("failed to load seat_child.png");
+
+      wl_surface_attach (child->surface, child_buffer, 0, 0);
+      wl_surface_commit (child->surface);
+      wl_subsurface_set_position (child->subsurface, 100, 100);
+
+      /* wait_frame_callback is necessary because input regions are
+	 not updated until the update completes.  */
+      wait_frame_callback (wayland_surface);
+
+      /* Run the test.  */
+      run_grab_test (button_state, child);
+
+      break;
     }
 
   if (kind == LAST_TEST)
@@ -428,7 +653,7 @@ expect_frame_event (void)
 }
 
 static void
-expect_enter_event (double x, double y)
+expect_enter_event (struct wl_surface *surface, double x, double y)
 {
   struct test_recorded_event *event;
   struct test_recorded_enter_event *enter;
@@ -444,7 +669,8 @@ expect_enter_event (double x, double y)
     {
       enter = (struct test_recorded_enter_event *) event;
 
-      if (enter->x == x && enter->y == y)
+      if (enter->x == x && enter->y == y
+	  && (!surface || (surface == enter->surface)))
 	free (event);
       else
 	report_test_failure ("expected enter event received "
@@ -542,7 +768,7 @@ expect_surface_enter (double x, double y)
 
   /* Expect an enter event, followed by a frame event.  */
   expect_frame_event ();
-  expect_enter_event (x, y);
+  expect_enter_event (NULL, x, y);
   expect_no_events ();
 }
 
@@ -812,6 +1038,50 @@ submit_surface_damage (struct wl_surface *surface, int x, int y, int width,
 	    height);
 
   wl_surface_damage (surface, x, y, width, height);
+}
+
+
+
+static void
+handle_wl_callback_done (void *data, struct wl_callback *callback,
+			   uint32_t callback_data)
+{
+  bool *flag;
+
+  wl_callback_destroy (callback);
+
+  /* Now tell wait_frame_callback to break out of the loop.  */
+  flag = data;
+  *flag = true;
+}
+
+static const struct wl_callback_listener wl_callback_listener =
+  {
+    handle_wl_callback_done,
+  };
+
+
+
+static void
+wait_frame_callback (struct wl_surface *surface)
+{
+  struct wl_callback *callback;
+  bool flag;
+
+  /* Commit surface and wait for a frame callback.  */
+
+  callback = wl_surface_frame (surface);
+  flag = false;
+
+  wl_callback_add_listener (callback, &wl_callback_listener,
+			    &flag);
+  wl_surface_commit (surface);
+
+  while (!flag)
+    {
+      if (wl_display_dispatch (display->display) == -1)
+        die ("wl_display_dispatch");
+    }
 }
 
 static void

@@ -34,15 +34,17 @@ enum test_kind
   {
     ARGB8888_KIND,
     ARGB8888_LINEAR_KIND,
+    XBGR8888_KIND,
   };
 
 static const char *test_names[] =
   {
     "argb8888",
     "argb8888_linear",
+    "xbgr8888",
   };
 
-#define LAST_TEST	ARGB8888_LINEAR_KIND
+#define LAST_TEST	XBGR8888_KIND
 
 struct test_params_data
 {
@@ -148,6 +150,11 @@ verify_single_step (enum test_kind kind)
 			 "argb8888_linear.dump");
       break;
 
+    case XBGR8888_KIND:
+      verify_image_data (display, test_surface_window,
+			 "xbgr8888_implicit.dump");
+      break;
+
     default:
       break;
     }
@@ -190,7 +197,7 @@ test_single_step (enum test_kind kind)
 	{
 	  test_log ("skipping ARGB888 with linear modifier as"
 		    " that is not supported");
-	  test_complete ();
+	  test_single_step (XBGR8888_KIND);
 	}
 
       buffer = create_rainbow_buffer (GBM_FORMAT_ARGB8888,
@@ -210,6 +217,36 @@ test_single_step (enum test_kind kind)
       wl_surface_commit (wayland_surface);
       wl_buffer_destroy (buffer);
       break;
+
+    case XBGR8888_KIND:
+
+      /* XBGR8888 currently does not work due to a bug in glamor.  */
+#if 0
+      if (!is_format_supported (DRM_FORMAT_XBGR8888,
+				DRM_FORMAT_MOD_INVALID))
+#endif
+	{
+	  test_log ("skipping XBGR8888 with implicit modifier as"
+		    " that is not supported");
+	  test_complete ();
+	}
+
+      buffer = create_rainbow_buffer (GBM_FORMAT_XBGR8888,
+				      DRM_FORMAT_MOD_INVALID,
+				      0x0000ff,
+				      0x00ff00,
+				      0xff0000);
+
+      if (!buffer)
+	report_test_failure ("failed to create XBGR8888 buffer");
+
+      wl_surface_attach (wayland_surface, buffer, 0, 0);
+      submit_surface_damage (wayland_surface, 0, 0,
+			     INT_MAX, INT_MAX);
+      submit_frame_callback (wayland_surface, kind);
+      wl_surface_commit (wayland_surface);
+      wl_buffer_destroy (buffer);      
+      break;
     }
 }
 
@@ -220,6 +257,10 @@ test_next_step (enum test_kind kind)
     {
     case ARGB8888_KIND:
       test_single_step (ARGB8888_LINEAR_KIND);
+      break;
+
+    case ARGB8888_LINEAR_KIND:
+      test_single_step (XBGR8888_KIND);
       break;
 
     default:
