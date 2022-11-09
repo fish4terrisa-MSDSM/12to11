@@ -228,10 +228,6 @@ CategorizeClients (struct wl_list *client_list,
 	  categories[i++] = MemoryCategoryV;
 	  clients[i - 1] = client;
 	}
-
-      fprintf (stderr,
-	       "%p %"PRIu64" %"PRIu64" %u\n", client, total, data->n_pixels,
-	       categories[i - 1]);
     }
 }
 
