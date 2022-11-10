@@ -94,6 +94,7 @@ typedef struct _TextInput TextInput;
 typedef struct _TextInputState TextInputState;
 typedef struct _TextPosition TextPosition;
 typedef struct _PreeditBuffer PreeditBuffer;
+typedef struct _KeysymMap KeysymMap;
 
 typedef enum _XimStyleKind XimStyleKind;
 
@@ -112,6 +113,18 @@ enum
     PendingCursorRectangle = (1 << 1),
     PendingSurroundingText = (1 << 2),
   };
+
+struct _KeysymMap
+{
+  /* Packed map between keycodes and keysyms.  */
+  KeyCode *keycodes;
+
+  /* The keysyms.  */
+  KeySym *keysyms;
+
+  /* The number of keycodes and keysyms in this map.  */
+  int key_count;
+};
 
 struct _PreeditBuffer
 {
@@ -188,6 +201,10 @@ struct _TextInput
 
   /* Number of commit requests performed.  */
   uint32_t serial;
+
+  /* Map between keys currently held down and keysyms they looked up
+     to.  */
+  KeysymMap keysym_map;
 };
 
 /* Structure describing a list of TextInput resources associated with
@@ -240,6 +257,93 @@ static XIMStyle xim_style;
 
 /* The order in which XIM input styles will be searched for.  */
 static XimStyleKind xim_style_order[5];
+
+
+
+static void
+ClearKeysymMap (KeysymMap *map)
+{
+  XLFree (map->keycodes);
+  XLFree (map->keysyms);
+  map->keycodes = NULL;
+  map->keysyms = NULL;
+  map->key_count = 0;
+}
+
+static void
+InsertKeysym (KeysymMap *map, KeyCode keycode, KeySym keysym)
+{
+  int i;
+
+  /* Insert keysym into map, under keycode.  See if map already
+     contains the given keycode.  */
+
+  for (i = 0; i < map->key_count; ++i)
+    {
+      if (map->keycodes[i] == keycode)
+	{
+	  map->keysyms[i] = keysym;
+	  return;
+	}
+    }
+
+  /* Otherwise, add it to the end.  */
+  map->key_count++;
+  map->keycodes
+    = XLRealloc (map->keycodes,
+		 map->key_count * sizeof *map->keycodes);
+  map->keysyms
+    = XLRealloc (map->keysyms,
+		 map->key_count * sizeof *map->keysyms);
+  map->keycodes[map->key_count - 1] = keycode;
+  map->keysyms[map->key_count - 1] = keysym;
+}
+
+static void
+RemoveKeysym (KeysymMap *map, KeyCode keycode)
+{
+  int i;
+
+  /* Find where the keycode is located in the map.  */
+
+  for (i = 0; i < map->key_count; ++i)
+    {
+      if (map->keycodes[i] == keycode)
+	{
+	  /* Remove the keycode from the list and shrink it.  */
+	  memcpy (&map->keycodes[i], &map->keycodes[i + 1],
+		  (map->key_count - (i + 1)) * sizeof *map->keycodes);
+	  memcpy (&map->keysyms[i], &map->keysyms[i + 1],
+		  (map->key_count - (i + 1)) * sizeof *map->keysyms);
+
+	  map->key_count -= 1;
+	  map->keycodes
+	    = XLRealloc (map->keycodes,
+			 map->key_count * sizeof *map->keycodes);
+	  map->keysyms
+	    = XLRealloc (map->keysyms,
+			 map->key_count * sizeof *map->keysyms);
+
+	  return;
+	}
+    }
+}
+
+static KeySym
+GetKeysym (KeysymMap *map, KeyCode keycode)
+{
+  int i;
+
+  for (i = 0; i < map->key_count; ++i)
+    {
+      if (map->keycodes[i] == keycode)
+	return map->keysyms[i];
+    }
+
+  return 0;
+}
+
+
 
 static int
 CurrentCursorX (TextInput *input)
@@ -929,6 +1033,11 @@ InputDoLeave (TextInput *input, Surface *old_surface)
   if (input->current_state.surrounding_text)
     XLFree (input->current_state.surrounding_text);
 
+  /* Clear the keysym-keycode table.  Correlating key release with key
+     press events is no longer important, as a leave event has been
+     sent to the seat.  */
+  ClearKeysymMap (&input->keysym_map);
+
   memset (&input->current_state, 0, sizeof input->current_state);
 }
 
@@ -985,6 +1094,9 @@ HandleResourceDestroy (struct wl_resource *resource)
   /* If there is still a preedit buffer, destroy it.  */
   if (input->buffer)
     FreePreeditBuffer (input->buffer);
+
+  /* Destroy the map of pressed keycodes to keysyms.  */
+  ClearKeysymMap (&input->keysym_map);
 
   /* Free the text input itself.  */
   XLFree (input);
@@ -1081,21 +1193,21 @@ NoticeLeave (TextInputClientInfo *info)
 
   DebugPrint ("client info: %p", info);
 
-      input = info->inputs.next;
-      while (input != &info->inputs)
-	{
-	  DebugPrint ("sending leave to text input %p", input);
+  input = info->inputs.next;
+  while (input != &info->inputs)
+    {
+      DebugPrint ("sending leave to text input %p", input);
 
-	  /* Otherwise, if info->focus_surface->resource is still
-	     there, send the leave event to each text input.  */
-	  if (info->focus_surface->resource)
-	    /* Send the enter event to each text input.  */
-	    zwp_text_input_v3_send_leave (input->resource,
-					  info->focus_surface->resource);
-	  InputDoLeave (input, info->focus_surface);
+      /* Otherwise, if info->focus_surface->resource is still
+	 there, send the leave event to each text input.  */
+      if (info->focus_surface->resource)
+	/* Send the enter event to each text input.  */
+	zwp_text_input_v3_send_leave (input->resource,
+				      info->focus_surface->resource);
+      InputDoLeave (input, info->focus_surface);
 
-	  input = input->next;
-	}
+      input = input->next;
+    }
 
   /* And clear the focus surface.  */
   info->focus_surface = NULL;
@@ -3157,10 +3269,14 @@ LookupString (TextInput *input, XEvent *event, KeySym *keysym_return)
   DebugPrint ("status is: %d", (int) status);
 
   /* If no string was returned, return False.  Otherwise, convert the
-     string to UTF-8 and commit it.  */
-  if (status != XLookupChars && status != XLookupBoth)
+     string to UTF-8 and commit it.  However, use the keysym if both a
+     keysym and string were looked up, as a keysym allows modifiers to
+     be correctly dispatched to the seat and avoids doing potentially
+     expensive character conversion.  */
+  if (status != XLookupChars)
     {
-      if (status == XLookupKeySym && keysym_return)
+      if ((status == XLookupKeySym
+	   || status == XLookupBoth) && keysym_return)
 	/* Return the keysym if it was looked up.  */
 	*keysym_return = keysym;
 
@@ -3174,21 +3290,6 @@ LookupString (TextInput *input, XEvent *event, KeySym *keysym_return)
 
   /* Convert the string.  */
   buffer = ConvertString (buffer, nbytes, &buffer_size);
-
-  /* If the string happens to consist of only 1 control character and
-     a keysym was also found, give preference to the keysym.  */
-  if (buffer_size == 1 && status == XLookupBoth
-      && buffer[0] > 0 && buffer[0] < 32)
-    {
-      DebugPrint ("using keysym in preference to single control char");
-
-      XFree (buffer);
-
-      if (keysym_return)
-	*keysym_return = keysym;
-
-      return False;
-    }
 
   if (buffer)
     CommitString (input, buffer, buffer_size);
@@ -3327,6 +3428,47 @@ XLTextInputDispatchCoreEvent (Surface *surface, XEvent *event)
 	      /* Since that failed, dispatch the event to the seat.  */
 	      DebugPrint ("lookup failed; dispatching event to seat; "
 			  "keysym is: %lu", keysym);
+
+	      /* If the event is a KeyPress event and a keysym was
+		 looked up, record the keysym in the text input's
+		 keycode-keysym table, so the correct keycode can be
+		 looked up upon the next KeyRelease event.  X input
+		 methods tend not to filter the KeyRelease events, so
+		 the KeyRelease event for an event that changed the
+		 keysym will be sent with the wrong keycode, which
+		 does not matter much with X programs, but leads to
+		 Wayland programs constantly autorepeating the keycode
+		 for which a KeyPress event was sent.  */
+
+	      if (event->xkey.type == KeyPress && keysym)
+		{
+		  DebugPrint ("inserting keysym %lu into map under %u",
+			      keysym, event->xkey.keycode);
+		  InsertKeysym (&input->keysym_map, event->xkey.keycode,
+				keysym);
+		}
+	      else if (event->xkey.type == KeyRelease)
+		{
+		  /* If no keysym was committed by the input method,
+		     use the keysym provided in the last KeyPress
+		     event for the keycode.  Otherwise, the input
+		     method probably knows better than us, so use the
+		     keysym provided by the input method.  */
+		  if (!keysym)
+		    {
+		      keysym = GetKeysym (&input->keysym_map,
+					  event->xkey.keycode);
+		      DebugPrint ("obtained keysym %lu for keycode %u"
+				  " while processing KeyRelease event",
+				  keysym, event->xkey.keycode);
+		    }
+
+		  DebugPrint ("removing keycode %u from map",
+			      event->xkey.keycode);
+
+		  /* Remove the keycode from the keysym map.  */
+		  RemoveKeysym (&input->keysym_map, event->xkey.keycode);
+		}
 
 	      XLSeatDispatchCoreKeyEvent (im_seat, surface, event, keysym);
 	    }
