@@ -40,11 +40,17 @@ struct test_seat
   /* The test seat, if any.  */
   struct test_seat_controller *controller;
 
+  /* The device manager, if any.  */
+  struct test_device_controller *device_controller;
+
   /* The seat resource itself.  */
   struct wl_seat *seat;
 
   /* The wl_pointer resource.  */
   struct wl_pointer *pointer;
+
+  /* The device ID of the seat.  */
+  uint32_t device_id;
 
   /* The buttons currently held down.  */
   unsigned char buttons;

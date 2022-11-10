@@ -29,6 +29,7 @@ enum test_expect_event_kind
     POINTER_MOTION_EVENT,
     POINTER_LEAVE_EVENT,
     POINTER_BUTTON_EVENT,
+    POINTER_AXIS_VALUE120_EVENT,
   };
 
 struct test_recorded_event
@@ -82,6 +83,18 @@ struct test_recorded_button_event
   uint32_t button, state;
 };
 
+struct test_recorded_axis_value120_event
+{
+  /* The event header.  */
+  struct test_recorded_event header;
+
+  /* The axis.  */
+  uint32_t axis;
+
+  /* The value120.  */
+  int32_t value120;
+};
+
 struct test_subsurface
 {
   /* The subsurface itself.  */
@@ -97,6 +110,7 @@ enum test_kind
     TEST_ENTRY_KIND,
     TEST_CLICK_KIND,
     TEST_GRAB_KIND,
+    TEST_VALUATOR_KIND,
   };
 
 static const char *test_names[] =
@@ -105,9 +119,10 @@ static const char *test_names[] =
     "test_entry",
     "test_click",
     "test_grab",
+    "test_valuator",
   };
 
-#define LAST_TEST	        TEST_GRAB_KIND
+#define LAST_TEST	        TEST_VALUATOR_KIND
 #define TEST_SOURCE_DEVICE	4500000
 
 /* The display.  */
@@ -148,6 +163,7 @@ static void expect_enter_event (struct wl_surface *, double, double);
 static void expect_motion_event (double, double);
 static void expect_leave_event (void);
 static void expect_button_event (int, int);
+static void expect_axis_value120_event (uint32_t, int32_t);
 static void expect_no_events (void);
 
 
@@ -467,11 +483,166 @@ run_grab_test (struct test_XIButtonState *button_state,
 }
 
 static void
+run_valuator_test (void)
+{
+  struct test_XIDeviceInfo *info;
+  struct test_XIValuatorState *valuator_state;
+
+  /* First, create the device info.  */
+  info
+    = test_device_controller_get_device_info (display->seat->device_controller);
+
+  /* Send the first leave event.  */
+  test_seat_controller_dispatch_XI_Leave (display->seat->controller,
+					  test_get_time (),
+					  TEST_SOURCE_DEVICE,
+					  XINotifyAncestor,
+					  test_get_root (),
+					  test_surface_window,
+					  None,
+					  wl_fixed_from_double (-1.0),
+					  wl_fixed_from_double (-1.0),
+					  wl_fixed_from_double (-1.0),
+					  wl_fixed_from_double (-1.0),
+					  XINotifyNormal,
+					  False, True,
+					  NULL, NULL, NULL);
+
+  /* Set the device ID and add the valuators.  */
+  test_XIDeviceInfo_set_device_id (info, display->seat->device_id);
+  test_XIDeviceInfo_set_use (info, XIMasterPointer);
+  test_XIDeviceInfo_set_attachment (info, display->seat->controller);
+  test_XIDeviceInfo_set_name (info, "Test virtual pointer");
+  test_XIDeviceInfo_set_enabled (info, 1);
+  test_XIDeviceInfo_add_XIScrollClassInfo (info,
+					   TEST_SOURCE_DEVICE,
+					   1,
+					   XIScrollTypeVertical,
+					   wl_fixed_from_double (1.0),
+					   XIScrollFlagPreferred);
+  test_XIDeviceInfo_add_XIScrollClassInfo (info,
+					   TEST_SOURCE_DEVICE,
+					   2,
+					   XIScrollTypeHorizontal,
+					   wl_fixed_from_double (2.0),
+					   XIScrollFlagPreferred);
+  test_XIDeviceInfo_add_XIValuatorClassInfo (info,
+					     TEST_SOURCE_DEVICE,
+					     1,
+					     "Rel Scroll Vertical",
+					     wl_fixed_from_double (0.0),
+					     wl_fixed_from_double (0.0),
+					     wl_fixed_from_double (0.0),
+					     1,
+					     XIModeRelative);
+  test_XIDeviceInfo_add_XIValuatorClassInfo (info,
+					     TEST_SOURCE_DEVICE,
+					     2,
+					     "Rel Scroll Horizontal",
+					     wl_fixed_from_double (0.0),
+					     wl_fixed_from_double (0.0),
+					     wl_fixed_from_double (0.0),
+					     1,
+					     XIModeRelative);
+  test_device_controller_add_device_info (display->seat->device_controller,
+					  info);
+  test_XIDeviceInfo_destroy (info);
+
+  /* Dispatch the first entry event.  */
+  test_seat_controller_dispatch_XI_Enter (display->seat->controller,
+					  test_get_time (),
+					  TEST_SOURCE_DEVICE,
+					  XINotifyAncestor,
+					  test_get_root (),
+					  test_surface_window,
+					  None,
+					  wl_fixed_from_double (1.0),
+					  wl_fixed_from_double (1.0),
+					  wl_fixed_from_double (1.0),
+					  wl_fixed_from_double (1.0),
+					  XINotifyNormal,
+					  False, True, NULL, NULL,
+					  NULL);
+
+  /* Create the valuator state.  */
+  valuator_state
+    = test_seat_controller_get_XIValuatorState (display->seat->controller);
+
+  if (!valuator_state)
+    report_test_failure ("failed to create valuator state");
+
+  test_XIValuatorState_add_valuator (valuator_state, 1,
+				     wl_fixed_from_double (1.0));
+  test_XIValuatorState_add_valuator (valuator_state, 2,
+				     wl_fixed_from_double (1.0));
+
+  /* Dispatch the first motion event.  */
+  test_seat_controller_dispatch_XI_Motion (display->seat->controller,
+					   test_get_time (),
+					   TEST_SOURCE_DEVICE,
+					   0,
+					   test_get_root (),
+					   test_surface_window,
+					   None,
+					   wl_fixed_from_double (2.0),
+					   wl_fixed_from_double (2.0),
+					   wl_fixed_from_double (2.0),
+					   wl_fixed_from_double (2.0),
+					   0,
+					   NULL,
+					   valuator_state,
+					   NULL, NULL);
+  test_XIValuatorState_destroy (valuator_state);
+
+  /* Dispatch the second motion event.  */
+  valuator_state
+    = test_seat_controller_get_XIValuatorState (display->seat->controller);
+
+  if (!valuator_state)
+    report_test_failure ("failed to create valuator state");
+
+  test_XIValuatorState_add_valuator (valuator_state, 1,
+				     wl_fixed_from_double (1.1));
+  test_XIValuatorState_add_valuator (valuator_state, 2,
+				     wl_fixed_from_double (2.6));
+  test_seat_controller_dispatch_XI_Motion (display->seat->controller,
+					   test_get_time (),
+					   TEST_SOURCE_DEVICE,
+					   0,
+					   test_get_root (),
+					   test_surface_window,
+					   None,
+					   wl_fixed_from_double (2.0),
+					   wl_fixed_from_double (2.0),
+					   wl_fixed_from_double (2.0),
+					   wl_fixed_from_double (2.0),
+					   0,
+					   NULL,
+					   valuator_state,
+					   NULL, NULL);
+  test_XIValuatorState_destroy (valuator_state);
+
+  /* Now, verify the events that arrive.  */
+  record_events ();
+  expect_frame_event ();
+  expect_axis_value120_event (WL_POINTER_AXIS_VERTICAL_SCROLL, 12);
+  expect_axis_value120_event (WL_POINTER_AXIS_HORIZONTAL_SCROLL, 96);
+  expect_frame_event ();
+  expect_motion_event (2.0, 2.0);
+  expect_frame_event ();
+  expect_enter_event (wayland_surface, 1.0, 1.0);
+  expect_frame_event ();
+  expect_leave_event ();
+}
+
+static void
 test_single_step (enum test_kind kind)
 {
   struct wl_buffer *buffer, *child_buffer;
   struct test_XIButtonState *button_state;
   struct test_subsurface *child;
+
+  button_state = NULL;
 
  again:
   test_log ("running test step: %s", test_names[kind]);
@@ -613,7 +784,99 @@ test_single_step (enum test_kind kind)
 
       /* Run the test.  */
       run_grab_test (button_state, child);
+      kind = TEST_VALUATOR_KIND;
+      goto again;
 
+    case TEST_VALUATOR_KIND:
+      /* Dispatch a leave event at -1, -1, and then attach the following
+	 scroll valuator information to the seat:
+
+	   type
+	     ScrollClass
+	   number
+	     1
+	   scroll_type
+	     Vertical
+	   flags
+	     Preferred
+	   increment
+	     1.0
+
+	   type
+	     ScrollClass
+	   number
+	     2
+	   scroll_type
+	     Horizontal
+	   flags
+	     Preferred
+	   increment
+	     2.0
+
+	   type
+	     ValuatorClass
+	   sourceid
+	     TEST_SOURCE_DEVICE
+	   number
+	     1
+	   label
+	     Rel Scroll Vertical
+	   min
+	     0.0
+	   max
+	     0.0
+	   resolution
+	     1
+	   mode
+	     Relative
+	   value
+	     0.0
+
+	   type
+	     ValuatorClass
+	   sourceid
+	     TEST_SOURCE_DEVICE
+	   number
+	     2
+	   label
+	     Rel Scroll Horizontal
+	   min
+	     0.0
+	   max
+	     0.0
+	   resolution
+	     1
+	   mode
+	     Relative
+	   value
+	     0.0
+
+       then, dispatch an entry event at 1, 1, followed by two motion
+       events at 2, 2 with the following valuators:
+
+         1, 1.0, 2, 1.0
+	 1, 1.1, 2, 2.6
+
+       verify that the following events arrive in the specified order:
+
+       leave ()
+       frame ()
+       enter (SERIAL, PARENT, 1.0, 1.0)
+       frame ()       
+
+       motion (TIME, 2.0, 2.0) (this motion event should arrive because
+                                the entry event happened after
+				the scroll valuator information was
+				recorded.  The first motion event to
+				arrive after that should be used to obtain
+				the current value of the valuator, and
+				not for calculating scroll deltas.)
+       frame ();
+       axis_value120 (WL_POINTER_AXIS_HORIZONTAL_SCROLL, 96)
+       axis_value120 (WL_POINTER_AXIS_VERTICAL_SCROLL, 12)
+       frame ();  */
+
+      run_valuator_test ();
       break;
     }
 
@@ -750,6 +1013,37 @@ expect_button_event (int button, int state)
     }
   else
     report_test_failure ("expected button event, but it was not received");
+}
+
+static void
+expect_axis_value120_event (uint32_t axis, int32_t value120)
+{
+  struct test_recorded_event *event;
+  struct test_recorded_axis_value120_event *axis_value120_event;
+
+  event = record_tail;
+
+  if (!event)
+    report_test_failure ("expected event not sent");
+
+  record_tail = event->last;
+
+  if (event->kind == POINTER_AXIS_VALUE120_EVENT)
+    {
+      axis_value120_event
+	= (struct test_recorded_axis_value120_event *) event;
+
+      if (axis_value120_event->axis == axis
+	  && axis_value120_event->value120 == value120)
+	free (event);
+      else
+	report_test_failure ("expected axis_value120 event received "
+			     "with incorrect parameters (axis: %"PRIu32","
+			     " value120: %"PRIi32")", axis, value120);
+    }
+  else
+    report_test_failure ("expected axis_value120 event, but it was not "
+			 "received");
 }
 
 static void
@@ -1011,7 +1305,34 @@ static void
 handle_pointer_axis_value120 (void *data, struct wl_pointer *wl_pointer,
 			      uint32_t axis, int32_t value120)
 {
-  /* TODO... */
+  struct test_recorded_axis_value120_event *event;
+
+  if (!recording_events)
+    {
+      test_log ("ignored button event");
+      return;
+    }
+
+  event = malloc (sizeof *event);
+
+  if (!event)
+    report_test_failure ("failed to record event");
+
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
+#endif
+
+  event->header.kind = POINTER_AXIS_VALUE120_EVENT;
+  event->header.last = record_tail;
+  record_tail = &event->header;
+
+  event->axis = axis;
+  event->value120 = value120;
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 }
 
 static const struct wl_pointer_listener pointer_listener =

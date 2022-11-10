@@ -23,9 +23,11 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
    have to include anything itself! */
 
 typedef struct _TestSeatController TestSeatController;
+typedef struct _TestDeviceController TestDeviceController;
 typedef struct _TestXIModifierState TestXIModifierState;
 typedef struct _TestXIValuatorState TestXIValuatorState;
 typedef struct _TestXIButtonState TestXIButtonState;
+typedef struct _TestXIDeviceInfo TestXIDeviceInfo;
 
 /* The current test seat counter.  */
 static unsigned int test_seat_counter;
@@ -40,6 +42,18 @@ struct _TestSeatController
 
   /* The associated controller resource.  */
   struct wl_resource *resource;
+};
+
+struct _TestDeviceController
+{
+  /* The associated struct wl_resource.  */
+  struct wl_resource *resource;
+
+  /* Array of device IDs used by this test device controller.  */
+  int *device_ids;
+
+  /* Number of device IDs associated with this controller.  */
+  int num_ids;
 };
 
 struct _TestXIModifierState
@@ -71,6 +85,43 @@ struct _TestXIButtonState
 {
   /* Mask of set buttons.  Always between 0 and 8.  */
   unsigned char mask[XIMaskLen (8)];
+};
+
+enum
+  {
+    StateDeviceIdSet   = 1,
+    StateNameSet       = 1 << 1,
+    StateUseSet	       = 1 << 2,
+    StateAttachmentSet = 1 << 3,
+    StateEnabledSet    = 1 << 4,
+    StateComplete      = 0x1f,
+  };
+
+struct _TestXIDeviceInfo
+{
+  /* The associated resource.  */
+  struct wl_resource *resource;
+
+  /* The device name.  */
+  char *name;
+
+  /* Array of classes.  */
+  XIAnyClassInfo **classes;
+
+  /* The device ID.  */
+  int device_id;
+
+  /* The use, attachment.  */
+  int use, attachment;
+
+  /* Whether or not the device is enabled.  */
+  Bool enabled;
+
+  /* The number of classes there are.  */
+  int num_classes;
+
+  /* How many fields are set.  */
+  int state;
 };
 
 
@@ -169,6 +220,13 @@ HandleXIButtonStateDestroy (struct wl_resource *resource)
 
 
 static void
+DestroyXIValuatorState (struct wl_client *client,
+			struct wl_resource *resource)
+{
+  wl_resource_destroy (resource);
+}
+
+static void
 AddValuatorToTestXIValuatorState (struct wl_client *client,
 				  struct wl_resource *resource,
 				  uint32_t valuator,
@@ -200,7 +258,7 @@ AddValuatorToTestXIValuatorState (struct wl_client *client,
       if (state->mask_len < XIMaskLen (valuator))
 	{
 	  state->mask = XLRealloc (state->mask,
-				   state->mask_len);
+				   XIMaskLen (valuator));
 
 	  /* Clear the newly allocated part of the mask.  */
 	  memset (state->mask + state->mask_len,
@@ -221,7 +279,7 @@ AddValuatorToTestXIValuatorState (struct wl_client *client,
 	  if (i == valuator)
 	    /* Insert the new value.  */
 	    new_values[j++] = wl_fixed_to_double (value);
-	  else if (XIMaskIsSet (state->mask, valuator))
+	  else if (XIMaskIsSet (state->mask, i))
 	    /* Use the old value.  */
 	    new_values[j++] = *old_values++;
 	}
@@ -238,6 +296,7 @@ AddValuatorToTestXIValuatorState (struct wl_client *client,
 
 static const struct test_XIValuatorState_interface XIValuatorState_impl =
   {
+    .destroy = DestroyXIValuatorState,
     .add_valuator = AddValuatorToTestXIValuatorState,
   };
 
@@ -261,8 +320,355 @@ HandleXIValuatorStateDestroy (struct wl_resource *resource)
 
 
 static void
-DestroyTestSeatController (struct wl_client *client,
-			   struct wl_resource *resource)
+DestroyDeviceInfo (struct wl_client *client, struct wl_resource *resource)
+{
+  wl_resource_destroy (resource);
+}
+
+static void
+SetDeviceId (struct wl_client *client, struct wl_resource *resource,
+	     uint32_t device_id)
+{
+  TestXIDeviceInfo *info;
+
+  info = wl_resource_get_user_data (resource);
+
+  if (device_id < 65536)
+    {
+      wl_resource_post_error (resource, TEST_MANAGER_ERROR_INVALID_DEVICE_ID,
+			      "invalid device id specified");
+      return;
+    }
+
+  info->device_id = device_id;
+  info->state |= StateDeviceIdSet;
+}
+
+static void
+SetName (struct wl_client *client, struct wl_resource *resource,
+	 const char *name)
+{
+  TestXIDeviceInfo *info;
+
+  info = wl_resource_get_user_data (resource);
+
+  if (info->name)
+    XLFree (info->name);
+  info->name = XLStrdup (name);
+  info->state |= StateNameSet;
+}
+
+static void
+SetUse (struct wl_client *client, struct wl_resource *resource,
+	int32_t use)
+{
+  TestXIDeviceInfo *info;
+
+  info = wl_resource_get_user_data (resource);
+  info->use = use;
+  info->state |= StateUseSet;
+}
+
+static void
+SetAttachment (struct wl_client *client, struct wl_resource *resource,
+	       struct wl_resource *attachment_resource)
+{
+  TestSeatController *controller;
+  TestXIDeviceInfo *info;
+
+  controller = wl_resource_get_user_data (attachment_resource);
+  info = wl_resource_get_user_data (resource);
+
+  info->attachment = controller->seat->master_pointer;
+  info->state |= StateAttachmentSet;
+}
+
+static void
+SetEnabled (struct wl_client *client, struct wl_resource *resource,
+	    uint32_t enabled)
+{
+  TestXIDeviceInfo *info;
+
+  info = wl_resource_get_user_data (resource);
+
+  if (enabled)
+    info->enabled = True;
+  else
+    info->enabled = False;
+  info->state |= StateEnabledSet;
+}
+
+static void
+AddXIScrollClassInfo (struct wl_client *client, struct wl_resource *resource,
+		      int32_t sourceid, int32_t number, int32_t scroll_type,
+		      wl_fixed_t increment, int32_t flags)
+{
+  TestXIDeviceInfo *info;
+  XIScrollClassInfo *class;
+
+  if (sourceid < 65536)
+    {
+      wl_resource_post_error (resource, TEST_MANAGER_ERROR_INVALID_DEVICE_ID,
+			      "invalid device ID specified");
+      return;
+    }
+
+  info = wl_resource_get_user_data (resource);
+
+  class = XLMalloc (sizeof *class);
+  class->type = XIScrollClass;
+  class->sourceid = sourceid;
+  class->number = number;
+  class->scroll_type = scroll_type;
+  class->increment = wl_fixed_to_double (increment);
+  class->flags = flags;
+
+  /* Extend info->classes to hold more classes.  */
+  info->num_classes++;
+  info->classes = XLRealloc (info->classes,
+			     sizeof *info->classes * info->num_classes);
+
+  /* Attach the class.  */
+  info->classes[info->num_classes - 1] = (XIAnyClassInfo *) class;
+}
+
+static void
+AddXIValuatorClassInfo (struct wl_client *client, struct wl_resource *resource,
+			int32_t sourceid, int32_t number, const char *label,
+			wl_fixed_t min, wl_fixed_t max, wl_fixed_t value,
+			int32_t resolution, int32_t mode)
+{
+  TestXIDeviceInfo *info;
+  XIValuatorClassInfo *class;
+
+  if (sourceid < 65536)
+    {
+      wl_resource_post_error (resource, TEST_MANAGER_ERROR_INVALID_DEVICE_ID,
+			      "invalid device ID specified");
+      return;
+    }
+
+  /* Avoid interning empty strings.  */
+
+  if (!strlen (label))
+    {
+      wl_resource_post_error (resource, TEST_MANAGER_ERROR_INVALID_LABEL,
+			      "the specified label is invalid");
+      return;
+    }
+
+  info = wl_resource_get_user_data (resource);
+  class = XLMalloc (sizeof *class);
+  class->type = XIValuatorClass;
+  class->sourceid = sourceid;
+  class->number = number;
+  class->label = InternAtom (label);
+  class->min = wl_fixed_to_double (min);
+  class->max = wl_fixed_to_double (max);
+  class->value = wl_fixed_to_double (value);
+  class->resolution = resolution;
+  class->mode = mode;
+
+  /* Extend info->classes to hold more classes.  */
+  info->num_classes++;
+  info->classes = XLRealloc (info->classes,
+			     sizeof *info->classes * info->num_classes);
+
+  /* Attach the class.  */
+  info->classes[info->num_classes - 1] = (XIAnyClassInfo *) class;
+}
+
+static const struct test_XIDeviceInfo_interface XIDeviceInfo_impl =
+  {
+    .destroy = DestroyDeviceInfo,
+    .set_device_id = SetDeviceId,
+    .set_name = SetName,
+    .set_use = SetUse,
+    .set_attachment = SetAttachment,
+    .set_enabled = SetEnabled,
+    .add_XIScrollClassInfo = AddXIScrollClassInfo,
+    .add_XIValuatorClassInfo = AddXIValuatorClassInfo,
+  };
+
+static void
+HandleXIDeviceInfoDestroy (struct wl_resource *resource)
+{
+  TestXIDeviceInfo *info;
+  int i;
+
+  info = wl_resource_get_user_data (resource);
+
+  /* Free the name.  */
+  XLFree (info->name);
+
+  /* Free each of the classes.  */
+  for (i = 0; i < info->num_classes; ++i)
+    XLFree (info->classes[i]);
+
+  /* Free the class array.  */
+  XLFree (info->classes);
+
+  /* Free the info itself.  */
+  XLFree (info);
+}
+
+
+
+static void
+DestroyDeviceController (struct wl_client *client,
+			 struct wl_resource *resource)
+{
+  wl_resource_destroy (resource);
+}
+
+static void
+AddDeviceInfo (struct wl_client *client, struct wl_resource *resource,
+	       struct wl_resource *device_info)
+{
+  TestDeviceController *controller;
+  TestXIDeviceInfo *info;
+  Seat *seat;
+  DeviceInfo *deviceinfo;
+  int i;
+  XIDeviceInfo test_info;
+
+  /* Add a virtual device to the device controller.  */
+  controller = wl_resource_get_user_data (resource);
+  info = wl_resource_get_user_data (device_info);
+
+  /* First, ensure that the device info is completely specified.  */
+
+  if ((info->state & StateComplete) != StateComplete)
+    {
+      wl_resource_post_error (resource,
+			      TEST_MANAGER_ERROR_INCOMPLETE_DEVICE_INFO,
+			      "the specified device information was not"
+			      " completely specified");
+      return;
+    }
+
+  /* Next, check whether or not a device already exists.  */
+  seat = XLLookUpAssoc (seats, info->device_id);
+  deviceinfo = XLLookUpAssoc (devices, info->device_id);
+
+  if ((seat && seat->flags & IsTestDeviceSpecified) || deviceinfo)
+    {
+      /* If a device already exists, see whether or not it was created
+	 by this test device controller.  */
+
+      for (i = 0; i < controller->num_ids; ++i)
+	{
+	  if (controller->device_ids[i] == info->device_id)
+	    /* It was created by this controller.  Simply update the
+	       values.  */
+	    goto continue_update;
+	}
+
+      /* Otherwise, post an error.  */
+      wl_resource_post_error (resource,
+			      TEST_MANAGER_ERROR_DEVICE_EXISTS,
+			      "the device %d already exists, and was "
+			      "not created by this controller",
+			      info->device_id);
+      return;
+    }
+
+ continue_update:
+
+  /* Now, construct the XIDeviceInfo.  */
+  test_info.deviceid = info->device_id;
+  test_info.name = info->name;
+  test_info.use = info->use;
+  test_info.attachment = info->attachment;
+  test_info.enabled = info->enabled;
+  test_info.num_classes = info->num_classes;
+  test_info.classes = info->classes;
+
+  /* If the seat exists, repopulate its valuators with that specified
+     in the device info.  */
+
+  if (seat)
+    {
+      FreeValuators (seat);
+      UpdateValuators (seat, &test_info);
+
+      /* Next, set a flag that means the seat has its information
+	 provided by device info.  */
+      seat->flags |= IsTestDeviceSpecified;
+    }
+
+  /* Now, record the device info.  */
+  RecordDeviceInformation (&test_info);
+}
+
+static void
+GetDeviceInfo (struct wl_client *client, struct wl_resource *resource,
+	       uint32_t id)
+{
+  TestXIDeviceInfo *info;
+
+  info = XLSafeMalloc (sizeof *info);
+
+  if (!info)
+    {
+      wl_resource_post_no_memory (resource);
+      return;
+    }
+
+  memset (info, 0, sizeof *info);
+  info->resource
+    = wl_resource_create (client, &test_XIDeviceInfo_interface,
+			  wl_resource_get_version (resource), id);
+
+  if (!info->resource)
+    {
+      XLFree (info);
+      return;
+    }
+
+  wl_resource_set_implementation (info->resource, &XIDeviceInfo_impl,
+				  info, HandleXIDeviceInfoDestroy);
+}
+
+static const struct test_device_controller_interface device_controller_impl =
+  {
+    .destroy = DestroyDeviceController,
+    .add_device_info = AddDeviceInfo,
+    .get_device_info = GetDeviceInfo,
+  };
+
+static void
+HandleTestDeviceControllerDestroy (struct wl_resource *resource)
+{
+  TestDeviceController *controller;
+  int i;
+  Seat *seat;
+
+  controller = wl_resource_get_user_data (resource);
+
+  /* Remove each device associated with the device controller.  */
+  for (i = 0; i < controller->num_ids; ++i)
+    {
+      NoticeDeviceDisabled (controller->device_ids[i]);
+
+      /* NoticeDeviceDisabled is special-cased to not free valuators
+	 for test seats.  If there is a seat associated with this
+	 device ID, free the valuators on it as well.  */
+      seat = XLLookUpAssoc (seats, controller->device_ids[i]);
+      FreeValuators (seat);
+
+      /* Clear the test device specified flag.  */
+      seat->flags &= ~IsTestDeviceSpecified;
+    }
+
+  XLFree (controller);
+}
+
+
+
+static void
+DestroySeatController (struct wl_client *client,
+		       struct wl_resource *resource)
 {
   wl_resource_destroy (resource);
 }
@@ -664,9 +1070,41 @@ DispatchXIButtonRelease (struct wl_client *client, struct wl_resource *resource,
   DispatchTestEvent (controller, event, (XIEvent *) &test_event);
 }
 
+static void
+GetDeviceController (struct wl_client *client, struct wl_resource *resource,
+		     uint32_t id)
+{
+  TestDeviceController *controller;
+
+  controller = XLSafeMalloc (sizeof *controller);
+
+  if (!controller)
+    {
+      wl_resource_post_no_memory (resource);
+      return;
+    }
+
+  memset (controller, 0, sizeof *controller);
+  controller->resource
+    = wl_resource_create (client, &test_device_controller_interface,
+			  wl_resource_get_version (resource), id);
+
+  if (!controller->resource)
+    {
+      XLFree (controller);
+      wl_resource_post_no_memory (resource);
+      return;
+    }
+
+  wl_resource_set_implementation (controller->resource,
+				  &device_controller_impl,
+				  controller,
+				  HandleTestDeviceControllerDestroy);
+}
+
 static const struct test_seat_controller_interface seat_controller_impl =
   {
-    .destroy = DestroyTestSeatController,
+    .destroy = DestroySeatController,
     .bind_seat = BindSeat,
     .get_XIModifierState = GetXIModifierState,
     .get_XIButtonState = GetXIButtonState,
@@ -676,6 +1114,7 @@ static const struct test_seat_controller_interface seat_controller_impl =
     .dispatch_XI_Motion = DispatchXIMotion,
     .dispatch_XI_ButtonPress = DispatchXIButtonPress,
     .dispatch_XI_ButtonRelease = DispatchXIButtonRelease,
+    .get_device_controller = GetDeviceController,
   };
 
 static void
@@ -787,4 +1226,8 @@ XLGetTestSeat (struct wl_client *client, struct wl_resource *resource,
 
   wl_resource_set_implementation (controller->resource, &seat_controller_impl,
 				  controller, HandleControllerResourceDestroy);
+
+  /* Send the device ID to the client.  */
+  test_seat_controller_send_device_id (controller->resource,
+				       seat->master_pointer);
 }

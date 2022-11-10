@@ -95,6 +95,7 @@ enum
     IsInPinchGesture	  = (1 << 9),
     IsInSwipeGesture	  = (1 << 10),
     IsTestSeat		  = (1 << 11),
+    IsTestDeviceSpecified = (1 << 12),
   };
 
 enum
@@ -2189,7 +2190,9 @@ NoticeDeviceDisabled (int deviceid)
 
   seat = XLLookUpAssoc (seats, deviceid);
 
-  if (seat)
+  /* Test seats should not be destroyed here.  */
+
+  if (seat && !(seat->flags & IsTestSeat))
     {
       /* The device has been disabled, mark the seat inert and
 	 dereference it.  The seat is still referred to by the
@@ -6181,13 +6184,16 @@ XLSeatDispatchCoreKeyEvent (Seat *seat, Surface *surface, XEvent *event,
   if (keysym)
     {
       /* If looking up the event keycode also results in the keysym,
-	 then just use the keycode specified in the event.  */
+	 then just use the keycode specified in the event.  This is
+	 because French keyboard layouts have multiple keycodes that
+	 decode to the same keysym, which causes problems later on
+	 when Wayland clients keep repeating the "a" key, as a keysym
+	 was looked up for the key press but not for the corresponding
+	 key release.  */
       if (XkbLookupKeySym (compositor.display, event->xkey.keycode,
 			   event->xkey.state, &mods_return, &sym_return)
 	  && keysym == sym_return)
-	{
-	  keycode = event->xkey.keycode;
-	}
+	keycode = event->xkey.keycode;
       else
 	keycode = XKeysymToKeycode (compositor.display, keysym);
 

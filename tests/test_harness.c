@@ -825,6 +825,26 @@ test_init (void)
     = getenv ("TEST_WRITE_REFERENCE") != NULL;
 }
 
+
+
+static void
+handle_seat_controller_device_id (void *data,
+				  struct test_seat_controller *controller,
+				  uint32_t device_id)
+{
+  struct test_display *display;
+
+  display = data;
+  display->seat->device_id = device_id;
+}
+
+static const struct test_seat_controller_listener seat_controller_listener =
+  {
+    handle_seat_controller_device_id,
+  };
+
+
+
 void
 test_init_seat (struct test_display *display)
 {
@@ -841,6 +861,22 @@ test_init_seat (struct test_display *display)
 
   if (!display->seat->controller)
     report_test_failure ("failed to obtain seat controller");
+
+  display->seat->device_controller
+    = test_seat_controller_get_device_controller (display->seat->controller);
+
+  if (!display->seat->device_controller)
+    report_test_failure ("failed to obtain device controller");
+
+  /* Fetch the device ID of the seat.  */
+  display->seat->device_id = 0;
+  test_seat_controller_add_listener (display->seat->controller,
+				     &seat_controller_listener,
+				     display);
+  wl_display_roundtrip (display->display);
+
+  if (!display->seat->device_id)
+    report_test_failure ("failed to obtain device ID");
 
   /* The protocol translator currently supports version 8 of wl_seat,
      so bind to that.  */

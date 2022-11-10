@@ -45,6 +45,14 @@
 	     summary="an invalid version was specified"/>
       <entry name="invalid_valuator" value="7"
 	     summary="the specified valuator is invalid"/>
+      <entry name="invalid_device_id" value="8"
+	     summary="the specified device ID is too small"/>
+      <entry name="incomplete_device_info" value="9"
+	     summary="the specified device info is incomplete"/>
+      <entry name="device_exists" value="10"
+	     summary="the specified artifical device already exists"/>
+      <entry name="invalid_label" value="11"
+	     summary="the specified label is invalid"/>
     </enum>
 
     <request name="get_test_surface">
@@ -239,11 +247,155 @@
     </request>
   </interface>
 
+  <interface name="test_XIDeviceInfo" version="1">
+    <description summary="XInput 2 device information">
+      Simulated XInput 2 device information for a device.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy test device info">
+	Destroy the test device info resource.
+      </description>
+    </request>
+
+    <request name="set_device_id">
+      <description summary="set the device ID">
+	Set the device ID of this device info structure to the
+	specified ID.  If the ID is less than 65536, post an
+	invalid_device_id error.
+      </description>
+
+      <arg name="device_id" type="uint"/>
+    </request>
+
+    <request name="set_name">
+      <description summary="set the device name">
+	Set the name of this device to the specified name.
+      </description>
+
+      <arg name="name" type="string"/>
+    </request>
+
+    <request name="set_use">
+      <description summary="set the device use">
+	Set the use of this device to the specified value.
+      </description>
+
+      <arg name="use" type="int"/>
+    </request>
+
+    <request name="set_attachment">
+      <description summary="set the device attachment">
+	Set the device attachment to the master pointer and keyboard
+	of the specified seat controller.
+      </description>
+
+      <arg name="attachment" type="object"
+	   interface="test_seat_controller"/>
+    </request>
+
+    <request name="set_enabled">
+      <description summary="set device enabled">
+	Set whether or not the device is enabled.
+      </description>
+
+      <arg name="enabled" type="uint"/>
+    </request>
+
+    <request name="add_XIScrollClassInfo">
+      <description summary="add a scroll class to the device information">
+	Add a scroll class with the specified type, source ID, number,
+	scroll type, increment and flags to the device info.
+
+	If the specified source device ID is less than 65536, post an
+	invalid_device_id error.
+      </description>
+
+      <arg name="sourceid" type="int"/>
+      <arg name="number" type="int"/>
+      <arg name="scroll_type" type="int"/>
+      <arg name="increment" type="fixed"/>
+      <arg name="flags" type="int"/>
+    </request>
+
+    <request name="add_XIValuatorClassInfo">
+      <description summary="add a valuator class to the device information">
+	Add a valuator class with the specified type, source ID,
+	number, label, min, max, value, resolution and mode to the
+	device info.
+
+	If the specified source device ID is less than 65536, post an
+	invalid_device_id error.
+
+	Intern the label into an atom.  If the string is empty, raise
+	an invalid_label error.
+      </description>
+
+      <arg name="sourceid" type="int"/>
+      <arg name="number" type="int"/>
+      <arg name="label" type="string"/>
+      <arg name="min" type="fixed"/>
+      <arg name="max" type="fixed"/>
+      <arg name="value" type="fixed"/>
+      <arg name="resolution" type="int"/>
+      <arg name="mode" type="int"/>
+    </request>
+  </interface>
+
+  <interface name="test_device_controller" version="1">
+    <description summary="test device controller">
+      This object allows registering a list of artificial input
+      devices to use during tests.  These devices must have a device
+      ID larger than 65535, and are removed upon destruction of the
+      test controller resource.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy test device controller">
+	Destroy the test device controller resource.
+      </description>
+    </request>
+
+    <request name="add_device_info">
+      <description summary="add artificial device">
+	Register a device with the specified device information.  If
+	the device info is incomplete, meaning that one of
+	set_device_id, set_name, set_use, set_attachment, or
+	set_enabled was not called after it was created, post an
+	incomplete_device_info error.  If the device ID already
+	exists, post a device_exists error if the device was not
+	created by this device controller, or update the device with
+	the new information if it was.
+
+	If a test seat is created with the device ID in the specified
+	device info after add_device_info is called, then the seat
+	will not possess this device info.
+
+	The device will be removed upon destruction of the
+	test_device_controller resource.
+      </description>
+
+      <arg name="device_info" type="object" interface="test_XIDeviceInfo"/>
+    </request>
+
+    <request name="get_device_info">
+      <description summary="create device info">
+	Create a device information object.  The device information
+	object is not associated with the test controller in any way.
+      </description>
+
+      <arg name="id" type="new_id" interface="test_XIDeviceInfo"/>
+    </request>
+  </interface>
+
   <interface name="test_seat_controller" version="1">
     <description summary="test seat">
       This object extends a wl_seat created with the
       test_manager.get_test_seat request with several requests to
       dispatch generated events.
+
+      Immediately after being created, a device_id event is sent with
+      the device ID of this seat.
 
       If the seat associated with the test controller is destroyed by
       the time a request is made with the test controller, the latter
@@ -420,5 +572,21 @@
       <arg name="group" type="object" interface="test_XIModifierState"
 	   allow-null="true"/>
     </request>
+
+    <request name="get_device_controller">
+      <description summary="get device controller">
+	Obtain a new device controller.
+      </description>
+
+      <arg name="id" type="new_id" interface="test_device_controller"/>
+    </request>
+
+    <event name="device_id">
+      <description summary="device ID">
+	This event is sent immediately after the test_seat_controller
+	is created, with the device ID of the test seat.
+      </description>
+      <arg name="device_id" type="uint"/>
+    </event>
   </interface>
 </protocol>
