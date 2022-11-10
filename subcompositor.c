@@ -17,30 +17,12 @@ for more details.
 You should have received a copy of the GNU General Public License
 along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
-#ifndef TEST
-
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <alloca.h>
 
 #include "compositor.h"
-
-#define TEST_STATIC
-#else
-
-typedef int Bool;
-
-#define True	1
-#define False	0
-
-typedef struct _View View;
-typedef struct _List List;
-typedef struct _Subcompositor Subcompositor;
-
-#define TEST_STATIC static
-
-#endif
 
 /* This module implements a "subcompositor" that composites together
    the contents of hierarchies of "views", each of which have attached
@@ -178,8 +160,6 @@ enum
 #define IsTargetAttached(subcompositor)				\
   ((subcompositor)->state & SubcompositorIsTargetAttached)
 
-#ifndef TEST
-
 enum
   {
     /* This means that the view and all its inferiors should be
@@ -226,8 +206,6 @@ enum
 #define ClearPreviouslyTransformed(view)		\
   ((view)->flags &= ~ViewIsPreviouslyTransformed)
 
-#endif
-
 struct _List
 {
   /* Pointer to the next element of this list.
@@ -270,7 +248,6 @@ struct _View
 
   /* Buffer data.  */
 
-#ifndef TEST
   /* Width and height of the view.  Not valid until
      ViewAfterSizeUpdate!  */
   int width, height;
@@ -317,10 +294,6 @@ struct _View
   /* Fractional offset applied to the view contents and damage during
      compositing.  */
   double fract_x, fract_y;
-#else
-  /* Label used during tests.  */
-  const char *label;
-#endif
 };
 
 struct _Subcompositor
@@ -331,7 +304,6 @@ struct _Subcompositor
   /* Toplevel children of this subcompositor.  */
   List *children, *last_children;
 
-#ifndef TEST
   /* Target this subcompositor draws to.  */
   RenderTarget target;
 
@@ -388,13 +360,10 @@ struct _Subcompositor
 
   /* An additional offset to apply when drawing to the target.  */
   int tx, ty;
-#endif
 
   /* Various flags describing the state of this subcompositor.  */
   int state;
 };
-
-#ifndef TEST
 
 enum
   {
@@ -404,8 +373,6 @@ enum
     DoMaxY = (1 << 3),
     DoAll  = 0xf,
   };
-
-#endif
 
 /* "Four corners" damage simplification algorithm.  If the number of
    rectangles in the damage exceeds some preset number, then the
@@ -581,7 +548,7 @@ ListUnlink (List *start, List *end)
   end->next = start;
 }
 
-TEST_STATIC Subcompositor *
+Subcompositor *
 MakeSubcompositor (void)
 {
   Subcompositor *subcompositor;
@@ -603,7 +570,7 @@ MakeSubcompositor (void)
   return subcompositor;
 }
 
-TEST_STATIC View *
+View *
 MakeView (void)
 {
   View *view;
@@ -624,7 +591,6 @@ MakeView (void)
   view->children = ListInit (NULL);
   view->children_last = view->children;
 
-#ifndef TEST
   view->buffer = NULL;
 
   pixman_region32_init (&view->damage);
@@ -632,12 +598,9 @@ MakeView (void)
   pixman_region32_init (&view->input);
 
   view->transform = Normal;
-#endif
 
   return view;
 }
-
-#ifndef TEST
 
 static int
 ViewMaxX (View *view)
@@ -780,10 +743,6 @@ SubcompositorUpdateBoundsForInsert (Subcompositor *subcompositor,
     subcompositor->max_y = ViewMaxY (view);
 }
 
-#endif
-
-#ifndef TEST
-
 void
 SubcompositorSetTarget (Subcompositor *compositor,
 			RenderTarget *target_in)
@@ -800,8 +759,6 @@ SubcompositorSetTarget (Subcompositor *compositor,
      over.  */
   SetGarbaged (compositor);
 }
-
-#endif
 
 #define SkipSlug(list, view, next)				\
   {								\
@@ -898,7 +855,7 @@ DamageIncludingInferiors (View *parent)
     }
 }
 
-TEST_STATIC void
+void
 SubcompositorInsert (Subcompositor *compositor, View *view)
 {
   /* Link view into the list of children.  */
@@ -908,7 +865,6 @@ SubcompositorInsert (Subcompositor *compositor, View *view)
   ListRelinkBefore (view->link, view->inferior,
 		    compositor->last);
 
-#ifndef TEST
   /* And update bounds.  */
   SubcompositorUpdateBoundsForInsert (compositor, view);
 
@@ -916,10 +872,9 @@ SubcompositorInsert (Subcompositor *compositor, View *view)
      inferior of the view.  */
   if (!IsGarbaged (compositor))
     DamageIncludingInferiors (view);
-#endif
 }
 
-TEST_STATIC void
+void
 SubcompositorInsertBefore (Subcompositor *compositor, View *view,
 			   View *sibling)
 {
@@ -930,7 +885,6 @@ SubcompositorInsertBefore (Subcompositor *compositor, View *view,
   /* Make view's inferiors part of the compositor.  */
   ListRelinkBefore (view->link, view->inferior, sibling->link);
 
-#ifndef TEST
   /* And update bounds.  */
   SubcompositorUpdateBoundsForInsert (compositor, view);
 
@@ -938,10 +892,9 @@ SubcompositorInsertBefore (Subcompositor *compositor, View *view,
      inferior of the view.  */
   if (!IsGarbaged (compositor))
     DamageIncludingInferiors (view);
-#endif
 }
 
-TEST_STATIC void
+void
 SubcompositorInsertAfter (Subcompositor *compositor, View *view,
 			  View *sibling)
 {
@@ -951,7 +904,6 @@ SubcompositorInsertAfter (Subcompositor *compositor, View *view,
   /* Make view's inferiors part of the compositor.  */
   ListRelinkAfter (view->link, view->inferior, sibling->inferior);
 
-#ifndef TEST
   /* And update bounds.  */
   SubcompositorUpdateBoundsForInsert (compositor, view);
 
@@ -959,10 +911,8 @@ SubcompositorInsertAfter (Subcompositor *compositor, View *view,
      inferior of the view.  */
   if (!IsGarbaged (compositor))
     DamageIncludingInferiors (view);
-#endif
 }
 
-#ifndef TEST
 
 static Bool
 ViewVisibilityState (View *view, Bool *mapped)
@@ -1076,9 +1026,7 @@ ViewUpdateBoundsForInsert (View *view)
 					view);
 }
 
-#endif
-
-TEST_STATIC void
+void
 ViewInsert (View *view, View *child)
 {
   View *parent;
@@ -1109,7 +1057,6 @@ ViewInsert (View *view, View *child)
   /* Now that the view hierarchy has been changed, garbage the
      subcompositor.  */
 
-#ifndef TEST
   /* Also update the absolute positions of the child.  */
   child->abs_x = view->abs_x + child->x;
   child->abs_y = view->abs_y + child->y;
@@ -1123,10 +1070,9 @@ ViewInsert (View *view, View *child)
   if (view->subcompositor
       && !IsGarbaged (view->subcompositor))
     DamageIncludingInferiors (view);
-#endif
 }
 
-TEST_STATIC void
+void
 ViewInsertAfter (View *view, View *child, View *sibling)
 {
   View *parent;
@@ -1161,7 +1107,6 @@ ViewInsertAfter (View *view, View *child, View *sibling)
 	}
     }
 
-#ifndef TEST
   /* Also update the absolute positions of the child.  */
   child->abs_x = view->abs_x + child->x;
   child->abs_y = view->abs_y + child->y;
@@ -1175,10 +1120,9 @@ ViewInsertAfter (View *view, View *child, View *sibling)
   if (view->subcompositor
       && !IsGarbaged (view->subcompositor))
     DamageIncludingInferiors (view);
-#endif
 }
 
-TEST_STATIC void
+void
 ViewInsertBefore (View *view, View *child, View *sibling)
 {
   /* Make child's parent view.  */
@@ -1191,7 +1135,6 @@ ViewInsertBefore (View *view, View *child, View *sibling)
   ListRelinkBefore (child->link, child->inferior,
 		    sibling->link);
 
-#ifndef TEST
   /* Also update the absolute positions of the child.  */
   child->abs_x = view->abs_x + child->x;
   child->abs_y = view->abs_y + child->y;
@@ -1206,13 +1149,12 @@ ViewInsertBefore (View *view, View *child, View *sibling)
   if (view->subcompositor
       && !IsGarbaged (view->subcompositor))
     DamageIncludingInferiors (view);
-#endif
 
   /* Inserting inferiors before a sibling can never bump the inferior
      pointer.  */
 }
 
-TEST_STATIC void
+void
 ViewInsertStart (View *view, View *child)
 {
   /* If view has no children, just call ViewInsert.  Note that
@@ -1225,7 +1167,7 @@ ViewInsertStart (View *view, View *child)
 		      view->children->next->view);
 }
 
-TEST_STATIC void
+void
 ViewUnparent (View *child)
 {
   View *parent;
@@ -1275,12 +1217,10 @@ ViewUnparent (View *child)
      children.  This is done after unlinking, because
      ViewRecomputeChildren will otherwise try to operate on the
      subcompositor.  */
-#ifndef TEST
   child->abs_x = child->x;
   child->abs_y = child->y;
 
   ViewRecomputeChildren (child, NULL);
-#endif
 
   /* Now that the view hierarchy has been changed, garbage the
      subcompositor.  TODO: an optimization for removing views would be
@@ -1288,7 +1228,6 @@ ViewUnparent (View *child)
      view bounds did not change.  */
   if (child->subcompositor)
     {
-#ifndef TEST
       /* Update the bounds of the subcompositor.  */
       SubcompositorUpdateBounds (child->subcompositor, DoAll);
 
@@ -1298,7 +1237,6 @@ ViewUnparent (View *child)
 	pixman_region32_union (&child->subcompositor->additional_damage,
 			       &child->subcompositor->additional_damage,
 			       &damage);
-#endif
     }
 
   if (attached && child->subcompositor)
@@ -1306,7 +1244,7 @@ ViewUnparent (View *child)
     pixman_region32_fini (&damage);
 }
 
-TEST_STATIC void
+void
 ViewSetSubcompositor (View *view, Subcompositor *subcompositor)
 {
   List *list;
@@ -1326,199 +1264,7 @@ ViewSetSubcompositor (View *view, Subcompositor *subcompositor)
   while (list != view->link);
 }
 
-#ifdef TEST
-
-/* The depth of the current view being printed.  */
-
-static int print_level;
-
-static void
-PrintView (View *view)
-{
-  List *list;
-
-  printf ("%*c%s\n", print_level * 2, ' ',
-	  view->label);
-
-  print_level++;
-  list = view->children;
-  do
-    {
-      if (list->view)
-	PrintView (list->view);
-      list = list->next;
-    }
-  while (list != view->children);
-  print_level--;
-}
-
-static void
-PrintSubcompositor (Subcompositor *compositor)
-{
-  List *list;
-
-  list = compositor->children;
-  do
-    {
-      if (list->view)
-	PrintView (list->view);
-      list = list->next;
-    }
-  while (list != compositor->children);
-
-  list = compositor->inferiors;
-  do
-    {
-      if (list->view)
-	printf ("[%s], ", list->view->label);
-      list = list->next;
-      fflush (stdout);
-    }
-  while (list != compositor->inferiors);
-
-  fflush (stdout);
-  printf ("\n");
-  fflush (stdout);
-
-  for (list = compositor->last->last;
-       list != compositor->last; list = list->last)
-    {
-      if (list->view)
-	printf ("(%s), ", list->view->label);
-      fflush (stdout);
-    }
-  printf ("\n");
-  fflush (stdout);
-}
-
-static View *
-TestView (Subcompositor *compositor, const char *label)
-{
-  View *view;
-
-  view = MakeView ();
-  view->label = label;
-
-  ViewSetSubcompositor (view, compositor);
-
-  return view;
-}
-
-static void
-TestSubcompositor (void)
-{
-  Subcompositor *compositor;
-  View *a, *b, *c, *d, *e, *f, *g, *h, *i, *j;
-  View *k, *l, *m, *n, *o, *p;
-
-  compositor = MakeSubcompositor ();
-  a = TestView (compositor, "A");
-  b = TestView (compositor, "B");
-  c = TestView (compositor, "C");
-  d = TestView (compositor, "D");
-  e = TestView (compositor, "E");
-  f = TestView (compositor, "F");
-  g = TestView (compositor, "G");
-  h = TestView (compositor, "H");
-  i = TestView (compositor, "I");
-  j = TestView (compositor, "J");
-  k = TestView (compositor, "K");
-  l = TestView (compositor, "L");
-  m = TestView (compositor, "M");
-  n = TestView (compositor, "N");
-  o = TestView (compositor, "O");
-  p = TestView (compositor, "P");
-
-  printf ("SubcompositorInsert (COMPOSITOR, A)\n");
-  SubcompositorInsert (compositor, a);
-  PrintSubcompositor (compositor);
-  printf ("ViewInsert (A, D)\n");
-  ViewInsert (a, d);
-  PrintSubcompositor (compositor);
-  printf ("ViewInsert (A, E)\n");
-  ViewInsert (a, e);
-  PrintSubcompositor (compositor);
-  printf ("ViewInsert (B, F)\n");
-  ViewInsert (b, f);
-  printf ("ViewInsert (B, G)\n");
-  ViewInsert (b, g);
-  printf ("SubcompositorInsert (COMPOSITOR, B)\n");
-  SubcompositorInsert (compositor, b);
-  PrintSubcompositor (compositor);
-  printf ("ViewInsert (C, H)\n");
-  ViewInsert (c, h);
-  printf ("SubcompositorInsert (COMPOSITOR, C)\n");
-  SubcompositorInsert (compositor, c);
-  PrintSubcompositor (compositor);
-  printf ("ViewInsert (C, I)\n");
-  ViewInsert (c, i);
-  PrintSubcompositor (compositor);
-
-  printf ("ViewInsert (A, J)\n");
-  ViewInsert (a, j);
-  PrintSubcompositor (compositor);
-
-  printf ("ViewUnparent (A)\n");
-  ViewUnparent (a);
-  PrintSubcompositor (compositor);
-
-  printf ("ViewUnparent (C)\n");
-  ViewUnparent (c);
-  PrintSubcompositor (compositor);
-
-  printf ("ViewUnparent (G)\n");
-  ViewUnparent (g);
-  printf ("ViewUnparent (J)\n");
-  ViewUnparent (j);
-  printf ("ViewInsert (G, J)\n");
-  ViewInsert (g, j);
-  printf ("SubcompositorInsert (COMPOSITOR, G)\n");
-  SubcompositorInsert (compositor, g);
-  PrintSubcompositor (compositor);
-
-  printf ("ViewInsertBefore (G, C, J)\n");
-  ViewInsertBefore (g, c, j);
-  PrintSubcompositor (compositor);
-
-  printf ("ViewInsertAfter (C, A, H)\n");
-  ViewInsertAfter (c, a, h);
-  PrintSubcompositor (compositor);
-
-  printf ("ViewInsert (K, L)\n");
-  ViewInsert (k, l);
-
-  printf ("SubcompositorInsertBefore (COMPOSITOR, K, G)\n");
-  SubcompositorInsertBefore (compositor, k, g);
-  PrintSubcompositor (compositor);
-
-  printf ("SubcompositorInsertAfter (COMPOSITOR, M, B)\n");
-  SubcompositorInsertAfter (compositor, m, b);
-  PrintSubcompositor (compositor);
-
-  printf ("ViewInsert (M, N)\n");
-  ViewInsert (m, n);
-  PrintSubcompositor (compositor);
-
-  printf ("ViewInsertStart (M, O)\n");
-  ViewInsertStart (m, o);
-  PrintSubcompositor (compositor);
-
-  printf ("ViewInsertStart (L, P)\n");
-  ViewInsertStart (l, p);
-  PrintSubcompositor (compositor);
-}
-
-int
-main (int argc, char **argv)
-{
-  TestSubcompositor ();
-}
-
-#endif
-
 
-
-#ifndef TEST
 
 /* Notice that VIEW's size has changed, while VIEW itself has not
    moved.  Recompute the max_x, min_x, min_y, and max_y of its
@@ -3513,5 +3259,3 @@ SubcompositorHeight (Subcompositor *subcompositor)
 {
   return subcompositor->max_y - subcompositor->min_y + 1;
 }
-
-#endif
