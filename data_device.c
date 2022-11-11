@@ -1005,7 +1005,11 @@ SetSelection (struct wl_client *client, struct wl_resource *resource,
 	     client, wl_resource_get_id (source_resource), serial);
 #endif
 
-  if (serial < last_selection_change_serial)
+  /* Note that both serial and last_selection_change_serial are
+     unsigned.  Remember two's complement arithmetic.  -1 is
+     0xffffffff, while -4294967295 overflows twice and is
+     0x00000001.  */
+  if (serial - last_selection_change_serial > UINT32_MAX / 2)
     {
 #ifdef DEBUG
       fprintf (stderr, "wl_client@%p could not set the selection, "

@@ -512,7 +512,9 @@ SetSelection (struct wl_client *client, struct wl_resource *resource,
     /* This device is inert, since the seat has been deleted.  */
     return;
 
-  if (serial < last_change_serial)
+  /* Note that both serial and last_change_serial are unsigned.
+     Remember two's complement arithmetic.  */
+  if (serial - last_change_serial > UINT32_MAX / 2)
     /* This change is out of date.  Do nothing.  */
     return;
 
