@@ -32,6 +32,7 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "text-input-unstable-v3.h"
 
 #include <X11/extensions/XInput2.h>
+#include <X11/XKBlib.h>
 
 /* X Input Method (XIM) support.
 
@@ -94,7 +95,7 @@ typedef struct _TextInput TextInput;
 typedef struct _TextInputState TextInputState;
 typedef struct _TextPosition TextPosition;
 typedef struct _PreeditBuffer PreeditBuffer;
-typedef struct _KeysymMap KeysymMap;
+typedef struct _KeycodeMap KeycodeMap;
 
 typedef enum _XimStyleKind XimStyleKind;
 
@@ -114,15 +115,17 @@ enum
     PendingSurroundingText = (1 << 2),
   };
 
-struct _KeysymMap
+struct _KeycodeMap
 {
-  /* Packed map between keycodes and keysyms.  */
+  /* Packed map between keycodes specified in KeyPress events and
+     keycodes that were actually sent to applications.  */
   KeyCode *keycodes;
 
-  /* The keysyms.  */
-  KeySym *keysyms;
+  /* The keycodes that were computed from keysyms and actually sent to
+     applications.  */
+  KeyCode *keysyms;
 
-  /* The number of keycodes and keysyms in this map.  */
+  /* The number of keycodes and used keycodes in this map.  */
   int key_count;
 };
 
@@ -204,7 +207,7 @@ struct _TextInput
 
   /* Map between keys currently held down and keysyms they looked up
      to.  */
-  KeysymMap keysym_map;
+  KeycodeMap keysym_map;
 };
 
 /* Structure describing a list of TextInput resources associated with
@@ -261,7 +264,7 @@ static XimStyleKind xim_style_order[5];
 
 
 static void
-ClearKeysymMap (KeysymMap *map)
+ClearKeycodeMap (KeycodeMap *map)
 {
   XLFree (map->keycodes);
   XLFree (map->keysyms);
@@ -271,18 +274,18 @@ ClearKeysymMap (KeysymMap *map)
 }
 
 static void
-InsertKeysym (KeysymMap *map, KeyCode keycode, KeySym keysym)
+InsertKeycode (KeycodeMap *map, KeyCode keycode, KeyCode keycode_used)
 {
   int i;
 
-  /* Insert keysym into map, under keycode.  See if map already
+  /* Insert keycode_used into map, under keycode.  See if map already
      contains the given keycode.  */
 
   for (i = 0; i < map->key_count; ++i)
     {
       if (map->keycodes[i] == keycode)
 	{
-	  map->keysyms[i] = keysym;
+	  map->keysyms[i] = keycode_used;
 	  return;
 	}
     }
@@ -296,11 +299,11 @@ InsertKeysym (KeysymMap *map, KeyCode keycode, KeySym keysym)
     = XLRealloc (map->keysyms,
 		 map->key_count * sizeof *map->keysyms);
   map->keycodes[map->key_count - 1] = keycode;
-  map->keysyms[map->key_count - 1] = keysym;
+  map->keysyms[map->key_count - 1] = keycode_used;
 }
 
 static void
-RemoveKeysym (KeysymMap *map, KeyCode keycode)
+RemoveKeysym (KeycodeMap *map, KeyCode keycode)
 {
   int i;
 
@@ -329,8 +332,8 @@ RemoveKeysym (KeysymMap *map, KeyCode keycode)
     }
 }
 
-static KeySym
-GetKeysym (KeysymMap *map, KeyCode keycode)
+static KeyCode
+GetKeycode (KeycodeMap *map, KeyCode keycode)
 {
   int i;
 
@@ -1033,10 +1036,10 @@ InputDoLeave (TextInput *input, Surface *old_surface)
   if (input->current_state.surrounding_text)
     XLFree (input->current_state.surrounding_text);
 
-  /* Clear the keysym-keycode table.  Correlating key release with key
-     press events is no longer important, as a leave event has been
-     sent to the seat.  */
-  ClearKeysymMap (&input->keysym_map);
+  /* Clear the keycode-keycode table.  Correlating key release with
+     key press events is no longer important, as a leave event has
+     been sent to the seat.  */
+  ClearKeycodeMap (&input->keysym_map);
 
   memset (&input->current_state, 0, sizeof input->current_state);
 }
@@ -1095,8 +1098,8 @@ HandleResourceDestroy (struct wl_resource *resource)
   if (input->buffer)
     FreePreeditBuffer (input->buffer);
 
-  /* Destroy the map of pressed keycodes to keysyms.  */
-  ClearKeysymMap (&input->keysym_map);
+  /* Destroy the map of pressed keycodes to keycodes.  */
+  ClearKeycodeMap (&input->keysym_map);
 
   /* Free the text input itself.  */
   XLFree (input);
@@ -1854,7 +1857,7 @@ ScanForwardWord (const char *string, size_t string_size,
       caret.charpos++;
       caret.bytepos++;
     }
-  
+
   while (start < string + string_size)
     {
       punct_found = False;
@@ -2021,7 +2024,7 @@ ScanBackwardWord (const char *string, size_t string_size,
 	  return caret_before;
 	}
     }
-  
+
   return caret;
 }
 
@@ -3357,6 +3360,35 @@ static TextInputFuncs input_funcs =
     .filter_input = FilterInputCallback,
   };
 
+static KeyCode
+CalculateKeycodeForEvent (XEvent *event, KeySym keysym)
+{
+  KeySym sym_return;
+  unsigned int mods_return;
+
+  /* Calculate the keycode to actually send clients along with an
+     event, given the keysym specified by the input method.  Return 0
+     if no special treatment is required.  */
+
+  if (!keysym)
+    return 0;
+
+  /* If looking up the event keycode also results in the keysym,
+     then just use the keycode specified in the event.  This is
+     because French keyboard layouts have multiple keycodes that
+     decode to the same keysym, which causes problems later on
+     when Wayland clients keep repeating the "a" key, as a keysym
+     was looked up for the key press but not for the corresponding
+     key release.  */
+  if (XkbLookupKeySym (compositor.display, event->xkey.keycode,
+		       event->xkey.state, &mods_return, &sym_return)
+      && keysym == sym_return)
+    return 0;
+
+  /* Otherwise, convert the keysym to a keycode and use that.  */
+  return XLKeysymToKeycode (keysym, event);
+}
+
 void
 XLTextInputDispatchCoreEvent (Surface *surface, XEvent *event)
 {
@@ -3364,6 +3396,7 @@ XLTextInputDispatchCoreEvent (Surface *surface, XEvent *event)
   TextInputClientInfo *info;
   TextInput *input;
   KeySym keysym;
+  KeyCode effective_keycode;
 
   DebugPrint ("dispatching core event to surface %p:\n"
 	      "\ttype: %d\n"
@@ -3429,23 +3462,31 @@ XLTextInputDispatchCoreEvent (Surface *surface, XEvent *event)
 	      DebugPrint ("lookup failed; dispatching event to seat; "
 			  "keysym is: %lu", keysym);
 
+	      /* First, clear effective_keycode.  */
+	      effective_keycode = 0;
+
 	      /* If the event is a KeyPress event and a keysym was
-		 looked up, record the keysym in the text input's
-		 keycode-keysym table, so the correct keycode can be
-		 looked up upon the next KeyRelease event.  X input
-		 methods tend not to filter the KeyRelease events, so
-		 the KeyRelease event for an event that changed the
-		 keysym will be sent with the wrong keycode, which
-		 does not matter much with X programs, but leads to
-		 Wayland programs constantly autorepeating the keycode
-		 for which a KeyPress event was sent.  */
+		 looked up, calculate a keycode for the keysym, and
+		 record in the text input's keycode-keycode table, so
+		 the correct keycode can be looked up upon the next
+		 KeyRelease event.  X input methods tend not to filter
+		 the KeyRelease events, so the KeyRelease event for an
+		 event that changed the keysym will be sent with the
+		 wrong keycode, which does not matter much with X
+		 programs, but leads to Wayland programs constantly
+		 autorepeating the keycode for which a KeyPress event
+		 was sent.  */
 
 	      if (event->xkey.type == KeyPress && keysym)
 		{
-		  DebugPrint ("inserting keysym %lu into map under %u",
-			      keysym, event->xkey.keycode);
-		  InsertKeysym (&input->keysym_map, event->xkey.keycode,
-				keysym);
+		  /* Compute the keycode.  */
+		  effective_keycode
+		    = CalculateKeycodeForEvent (event, keysym);
+
+		  DebugPrint ("inserting keycode %lu into map under %u",
+			      effective_keycode, event->xkey.keycode);
+		  InsertKeycode (&input->keysym_map, event->xkey.keycode,
+				 effective_keycode);
 		}
 	      else if (event->xkey.type == KeyRelease)
 		{
@@ -3454,23 +3495,35 @@ XLTextInputDispatchCoreEvent (Surface *surface, XEvent *event)
 		     event for the keycode.  Otherwise, the input
 		     method probably knows better than us, so use the
 		     keysym provided by the input method.  */
+
 		  if (!keysym)
 		    {
-		      keysym = GetKeysym (&input->keysym_map,
-					  event->xkey.keycode);
-		      DebugPrint ("obtained keysym %lu for keycode %u"
+		      effective_keycode
+			= GetKeycode (&input->keysym_map,
+				      event->xkey.keycode);
+		      DebugPrint ("obtained keycode %lu for keycode %u"
 				  " while processing KeyRelease event",
 				  keysym, event->xkey.keycode);
 		    }
+		  else
+		    effective_keycode
+		      = CalculateKeycodeForEvent (event, keysym);
 
 		  DebugPrint ("removing keycode %u from map",
 			      event->xkey.keycode);
 
-		  /* Remove the keycode from the keysym map.  */
+		  /* Remove the keycode from the keycode-keysym
+		     map.  */
 		  RemoveKeysym (&input->keysym_map, event->xkey.keycode);
 		}
 
-	      XLSeatDispatchCoreKeyEvent (im_seat, surface, event, keysym);
+	      /* Finally, if an effective keycode was calculated,
+		 replace the keycode in the event with it.  */
+
+	      if (effective_keycode)
+		event->xkey.keycode = effective_keycode;
+
+	      XLSeatDispatchCoreKeyEvent (im_seat, surface, event);
 	    }
 	}
     }
@@ -3556,7 +3609,7 @@ InitInputStyles (void)
       string = value.addr;
       end = string + strlen (string);
       i = 0;
-      
+
       while (string < end)
 	{
 	  /* Find the next comma.  */

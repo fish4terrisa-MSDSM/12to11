@@ -1595,8 +1595,7 @@ extern void XLSeatSetTextInputFuncs (TextInputFuncs *);
 extern int XLSeatGetKeyboardDevice (Seat *);
 extern int XLSeatGetPointerDevice (Seat *);
 extern Seat *XLSeatGetInputMethodSeat (void);
-extern void XLSeatDispatchCoreKeyEvent (Seat *, Surface *, XEvent *,
-					KeySym);
+extern void XLSeatDispatchCoreKeyEvent (Seat *, Surface *, XEvent *);
 extern Seat *XLPointerGetSeat (Pointer *);
 extern void XLSeatGetMouseData (Seat *, Surface **, double *, double *,
 				double *, double *);
@@ -1610,6 +1609,7 @@ extern SwipeGesture *XLSeatGetSwipeGesture (Seat *, struct wl_resource *);
 extern PinchGesture *XLSeatGetPinchGesture (Seat *, struct wl_resource *);
 extern void XLSeatDestroySwipeGesture (SwipeGesture *);
 extern void XLSeatDestroyPinchGesture (PinchGesture *);
+extern KeyCode XLKeysymToKeycode (KeySym, XEvent *);
 
 extern Cursor InitDefaultCursor (void);
 
