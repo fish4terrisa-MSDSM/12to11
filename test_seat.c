@@ -1102,6 +1102,33 @@ GetDeviceController (struct wl_client *client, struct wl_resource *resource,
 				  HandleTestDeviceControllerDestroy);
 }
 
+static void
+SetLastUserTime (struct wl_client *client, struct wl_resource *resource,
+		 uint32_t months, uint32_t milliseconds)
+{
+  Timestamp timestamp;
+  TestSeatController *controller;
+
+  timestamp.months = months;
+  timestamp.milliseconds = milliseconds;
+  controller = wl_resource_get_user_data (resource);
+
+  if (TimestampIs (timestamp, Earlier,
+		   controller->seat->last_user_time))
+    {
+      wl_resource_post_error (resource, TEST_MANAGER_ERROR_INVALID_USER_TIME,
+			      "the specified user time (%"PRIu32":%"PRIu32
+			      ") lies in the past.  the current time is %u:%u",
+			      months, milliseconds,
+			      controller->seat->last_user_time.months,
+			      controller->seat->last_user_time.milliseconds);
+      return;
+    }
+
+  controller->seat->last_user_time.months = months;
+  controller->seat->last_user_time.milliseconds = milliseconds;
+}
+
 static const struct test_seat_controller_interface seat_controller_impl =
   {
     .destroy = DestroySeatController,
@@ -1115,6 +1142,7 @@ static const struct test_seat_controller_interface seat_controller_impl =
     .dispatch_XI_ButtonPress = DispatchXIButtonPress,
     .dispatch_XI_ButtonRelease = DispatchXIButtonRelease,
     .get_device_controller = GetDeviceController,
+    .set_last_user_time = SetLastUserTime,
   };
 
 static void

@@ -56,7 +56,7 @@ struct _PropertyAtom
 struct _SelectionOwnerInfo
 {
   /* When this selection was last owned.  */
-  Time time;
+  Timestamp time;
 
   /* The targets of this atom.  */
   Atom *targets;
@@ -1421,7 +1421,10 @@ HandleSelectionRequest (XEvent *event)
 
   if (!info
       || !info->get_transfer_function
-      || event->xselectionrequest.time < info->time
+      /* The ICCCM prohibits clients from using CurrentTime, but some
+	 do anyway.  */
+      || (event->xselectionrequest.time != CurrentTime
+	  && TimeIs (event->xselectionrequest.time, Earlier, info->time))
       || !CanConvertTarget (info, event->xselectionrequest.target))
     {
       DebugPrint ("Couldn't convert selection due to simple reason\n");
@@ -1805,7 +1808,7 @@ CompleteDelayedTransfer (ReadTransfer *transfer)
 }
 
 Bool
-OwnSelection (Time time, Atom selection,
+OwnSelection (Timestamp time, Atom selection,
 	      GetDataFunc (*hook) (WriteTransfer *transfer,
 				   Atom, Atom *),
 	      Atom *targets, int ntargets)
@@ -1815,15 +1818,13 @@ OwnSelection (Time time, Atom selection,
 
   info = XLLookUpAssoc (selection_owner_info, selection);
 
-  if (time == CurrentTime)
-    time = XLGetServerTimeRoundtrip ();
-
-  if (info && time < info->time)
+  if (info && TimestampIs (time, Earlier, info->time))
     /* The timestamp is out of date.  */
     return False;
 
   XSetSelectionOwner (compositor.display, selection,
-		      selection_transfer_window, time);
+		      selection_transfer_window,
+		      time.milliseconds);
 
   /* Check if selection ownership was actually set.  */
   owner = XGetSelectionOwner (compositor.display, selection);
@@ -1863,7 +1864,7 @@ DisownSelection (Atom selection)
   if (info && info->get_transfer_function)
     {
       XSetSelectionOwner (compositor.display, selection,
-			  None, info->time);
+			  None, info->time.milliseconds);
 
       /* Also free info->targets.  */
       XLFree (info->targets);

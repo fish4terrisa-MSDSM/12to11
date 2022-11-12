@@ -858,8 +858,14 @@ SendDataOffers (void)
 static void
 DestroyReference (DataDeviceReference *reference)
 {
-  reference->next->last = reference->last;
-  reference->last->next = reference->next;
+  /* If reference->device is NULL, then the data device itself has
+     been destroyed.  */
+
+  if (reference->device)
+    {
+      reference->next->last = reference->last;
+      reference->last->next = reference->next;
+    }
 
   XLFree (reference);
 }

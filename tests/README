@@ -20,5 +20,7 @@ would be ``integration tests''.
 Most likely, you do not want to run these tests manually, as the
 `run_tests.sh' script does all the setup for you.
 
-Please note that the EGL renderer currently does not pass the
-viewporter test, which is expected behavior.
+Please note that the EGL renderer currently does not pass some
+graphics tests, which is expected behavior, and that `select_test'
+must be run with no clipboard manager (or any other clients, for that
+matter) running.

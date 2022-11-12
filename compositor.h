@@ -1544,8 +1544,8 @@ struct _TextInputFuncs
   void (*focus_in) (Seat *, Surface *);
   void (*focus_out) (Seat *);
 
-  /* The last argument is actually an XIDeviceEvent *.  */
-  Bool (*filter_input) (Seat *, Surface *, void *, KeySym *);
+  /* The second-last argument is actually an XIDeviceEvent *.  */
+  Bool (*filter_input) (Seat *, Surface *, void *, KeyCode *);
 };
 
 extern void XLTextInputDispatchCoreEvent (Surface *, XEvent *);
@@ -1654,8 +1654,8 @@ extern unsigned char *ReadChunk (ReadTransfer *, int, ptrdiff_t *,
 extern void SkipChunk (ReadTransfer *);
 extern void CompleteDelayedTransfer (ReadTransfer *);
 
-extern Bool OwnSelection (Time, Atom, GetDataFunc (*) (WriteTransfer *,
-						       Atom, Atom *),
+extern Bool OwnSelection (Timestamp, Atom, GetDataFunc (*) (WriteTransfer *,
+							    Atom, Atom *),
 			  Atom *, int);
 extern void DisownSelection (Atom);
 

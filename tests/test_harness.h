@@ -87,6 +87,9 @@ struct test_display
 
   /* The number of such interfaces.  */
   int num_test_interfaces;
+
+  /* Internal field used by test_get_serial.  */
+  uint32_t serial;
 };
 
 struct test_interface
@@ -152,6 +155,7 @@ extern void test_init (void);
 extern void test_complete (void) __attribute__ ((noreturn));
 extern void test_set_scale (struct test_display *, int);
 extern void test_init_seat (struct test_display *);
+extern uint32_t test_get_serial (struct test_display *);
 
 #define ARRAYELTS(arr) (sizeof (arr) / sizeof (arr)[0])
 

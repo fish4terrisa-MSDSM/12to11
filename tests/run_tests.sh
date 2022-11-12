@@ -45,4 +45,6 @@ do
     fi
 done
 
+# TODO: figure out how to run some tests under Xvfb.
+
 popd

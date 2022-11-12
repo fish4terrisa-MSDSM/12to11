@@ -1201,20 +1201,20 @@ static void
 SelectSelectionInput (Atom selection)
 {
   int mask;
+  Time time;
 
   /* If the selection already exists, announce it to Wayland clients
-     as well.  Use CurrentTime (even though the ICCCM says this is a
-     bad idea); any XFixesSelectionNotify event that arrives later
-     will clear up our (incorrect) view of the selection change
-     time.  */
+     as well.  Use the current time.  */
+
+  time = XLGetServerTimeRoundtrip ();
 
   if (selection == CLIPBOARD
       && XGetSelectionOwner (compositor.display, CLIPBOARD) != None)
-    NoticeClipboardChanged (CurrentTime);
+    NoticeClipboardChanged (time);
 
   if (selection == XA_PRIMARY
       && XGetSelectionOwner (compositor.display, XA_PRIMARY) != None)
-    NoticePrimaryChanged (CurrentTime);
+    NoticePrimaryChanged (time);
 
   mask = XFixesSetSelectionOwnerNotifyMask;
   mask |= XFixesSelectionWindowDestroyNotifyMask;
@@ -1995,7 +1995,8 @@ XLOwnDragSelection (Time time, DataSource *source)
   /* Own the selection.  */
   drag_data_source = source;
 
-  rc = OwnSelection (time, XdndSelection, GetDragCallback,
+  rc = OwnSelection (TimestampFromClientTime (time),
+		     XdndSelection, GetDragCallback,
 		     targets, ntargets);
   XLFree (targets);
 
@@ -2135,7 +2136,7 @@ FindTargetInArray (Atom *targets, int ntargets, Atom atom)
   /* And own the selection.  */									\
   field = source;										\
 												\
-  rc = OwnSelection (time.milliseconds, atom, callback, targets, ntargets);			\
+  rc = OwnSelection (time, atom, callback, targets, ntargets);					\
   XLFree (targets);										\
   return rc											\
 

@@ -61,9 +61,20 @@ handle_test_manager_display_string (void *data, struct test_manager *manager,
 			  &display->num_pixmap_formats);
 }
 
+static void
+handle_test_manager_serial (void *data, struct test_manager *manager,
+			    uint32_t serial)
+{
+  struct test_display *display;
+
+  display = data;
+  display->serial = serial;
+}
+
 static const struct test_manager_listener test_manager_listener =
   {
     handle_test_manager_display_string,
+    handle_test_manager_serial,
   };
 
 static bool
@@ -220,6 +231,7 @@ open_test_display (struct test_interface *interfaces, int num_interfaces)
   if (!display->scale_lock)
     goto error_4;
 
+  display->seat = NULL;
   return display;
 
  error_4:
@@ -900,4 +912,13 @@ test_complete (void)
 {
   test_log ("test ran successfully");
   exit_with_code (0);
+}
+
+uint32_t
+test_get_serial (struct test_display *display)
+{
+  test_manager_get_serial (display->test_manager);
+  wl_display_roundtrip (display->display);
+
+  return display->serial;
 }

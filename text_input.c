@@ -2488,7 +2488,8 @@ CreateIC (TextInput *input)
 
   XLAssert (!input->xic);
 
-  DebugPrint ("creating XIC for text input %p", input);
+  DebugPrint ("creating XIC for text input %p and window 0x%lx", input,
+	      window);
 
   status_attr = NULL;
   preedit_attr = NULL;
@@ -3301,16 +3302,47 @@ LookupString (TextInput *input, XEvent *event, KeySym *keysym_return)
   return True;
 }
 
+static KeyCode
+CalculateKeycodeForEvent (XEvent *event, KeySym keysym)
+{
+  KeySym sym_return;
+  unsigned int mods_return;
+
+  /* Calculate the keycode to actually send clients along with an
+     event, given the keysym specified by the input method.  Return 0
+     if no special treatment is required.  */
+
+  if (!keysym)
+    return 0;
+
+  /* If looking up the event keycode also results in the keysym,
+     then just use the keycode specified in the event.  This is
+     because French keyboard layouts have multiple keycodes that
+     decode to the same keysym, which causes problems later on
+     when Wayland clients keep repeating the "a" key, as a keysym
+     was looked up for the key press but not for the corresponding
+     key release.  */
+  if (XkbLookupKeySym (compositor.display, event->xkey.keycode,
+		       event->xkey.state, &mods_return, &sym_return)
+      && keysym == sym_return)
+    return 0;
+
+  /* Otherwise, convert the keysym to a keycode and use that.  */
+  return XLKeysymToKeycode (keysym, event);
+}
+
 static Bool
 FilterInputCallback (Seat *seat, Surface *surface, void *event,
-		     KeySym *keysym)
+		     KeyCode *keycode)
 {
   XIDeviceEvent *xev;
   XEvent xkey;
   TextInputClientInfo *info;
   TextInput *input;
+  KeySym keysym;
 
   xev = event;
+  keysym = 0;
 
   DebugPrint ("seat %p, surface %p, detail: %d, event: %lx",
 	      seat, surface, xev->detail, xev->event);
@@ -3342,7 +3374,19 @@ FilterInputCallback (Seat *seat, Surface *surface, void *event,
 	  /* Otherwise, call XmbLookupString.  If a keysym is
 	     returned, return False.  Otherwise, commit the string
 	     looked up and return True.  */
-	  return LookupString (input, &xkey, keysym);
+	  if (LookupString (input, &xkey, &keysym))
+	    return True;
+
+	  /* Look up the right keycode for the event.  */
+
+	  if (!keysym && xev->type == XI_KeyRelease)
+	    *keycode = GetKeycode (&input->keysym_map, xev->detail);
+	  else
+	    *keycode = CalculateKeycodeForEvent (&xkey, keysym);
+
+	  if (xev->type == XI_KeyRelease)
+	    /* Remove the keycode from the keycode-keysym map.  */
+	    RemoveKeysym (&input->keysym_map, xev->detail);
 	}
     }
 
@@ -3359,35 +3403,6 @@ static TextInputFuncs input_funcs =
     .focus_out = FocusOutCallback,
     .filter_input = FilterInputCallback,
   };
-
-static KeyCode
-CalculateKeycodeForEvent (XEvent *event, KeySym keysym)
-{
-  KeySym sym_return;
-  unsigned int mods_return;
-
-  /* Calculate the keycode to actually send clients along with an
-     event, given the keysym specified by the input method.  Return 0
-     if no special treatment is required.  */
-
-  if (!keysym)
-    return 0;
-
-  /* If looking up the event keycode also results in the keysym,
-     then just use the keycode specified in the event.  This is
-     because French keyboard layouts have multiple keycodes that
-     decode to the same keysym, which causes problems later on
-     when Wayland clients keep repeating the "a" key, as a keysym
-     was looked up for the key press but not for the corresponding
-     key release.  */
-  if (XkbLookupKeySym (compositor.display, event->xkey.keycode,
-		       event->xkey.state, &mods_return, &sym_return)
-      && keysym == sym_return)
-    return 0;
-
-  /* Otherwise, convert the keysym to a keycode and use that.  */
-  return XLKeysymToKeycode (keysym, event);
-}
 
 void
 XLTextInputDispatchCoreEvent (Surface *surface, XEvent *event)
@@ -3436,8 +3451,12 @@ XLTextInputDispatchCoreEvent (Surface *surface, XEvent *event)
     return;
 
   if (info->focus_surface != surface)
-    /* The surface is no longer focused.  */
-    return;
+    {
+      /* The surface is no longer focused.  */
+      DebugPrint ("incorrect focus surface (focus surface is %p, "
+		  "surface is %p)", info->focus_surface, surface);
+      return;
+    }
 
   if (info)
     {

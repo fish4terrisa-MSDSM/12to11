@@ -53,6 +53,8 @@
 	     summary="the specified artifical device already exists"/>
       <entry name="invalid_label" value="11"
 	     summary="the specified label is invalid"/>
+      <entry name="invalid_user_time" value="12"
+	     summary="the specified user time lies in the past"/>
     </enum>
 
     <request name="get_test_surface">
@@ -102,6 +104,12 @@
       <arg name="id" type="new_id" interface="test_seat_controller"/>
     </request>
 
+    <request name="get_serial">
+      <description summary="obtain serial">
+	Send a serial event with the next serial of the display.
+      </description>
+    </request>
+
     <event name="display_string">
       <description summary="X server name">
 	The display_string event sends the name of the X display to
@@ -109,6 +117,14 @@
 	test_manager object.
       </description>
       <arg name="name" type="string"/>
+    </event>
+
+    <event name="serial">
+      <description summary="display serial">
+	The serial event is sent in reply to the get_serial request.
+	It provides the next serial that will be used by the display.
+      </description>
+      <arg name="serial" type="uint"/>
     </event>
   </interface>
 
@@ -579,6 +595,21 @@
       </description>
 
       <arg name="id" type="new_id" interface="test_device_controller"/>
+    </request>
+
+    <request name="set_last_user_time">
+      <description summary="set seat user time">
+	Set the user time of the specified seat to the specified time.
+	If the last user time is greater than the specified time,
+	raise an invalid_user_time error.
+
+	The month describes the number of times the millisecond
+	counter has wrapped around, and milliseconds specifies the X
+	server time.  (This representation is also internally used in
+	the X sample server.)
+      </description>
+      <arg name="months" type="uint"/>
+      <arg name="milliseconds" type="uint"/>
     </request>
 
     <event name="device_id">

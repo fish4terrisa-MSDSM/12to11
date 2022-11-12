@@ -552,11 +552,22 @@ GetTestSeat (struct wl_client *client, struct wl_resource *resource,
   XLGetTestSeat (client, resource, id);
 }
 
+static void
+GetSerial (struct wl_client *client, struct wl_resource *resource)
+{
+  uint32_t serial;
+
+  /* Send the display's next serial to the client.  */
+  serial = wl_display_next_serial (compositor.wl_display);
+  test_manager_send_serial (resource, serial);
+}
+
 static const struct test_manager_interface test_manager_impl =
   {
     .get_test_surface = GetTestSurface,
     .get_scale_lock = GetScaleLock,
     .get_test_seat = GetTestSeat,
+    .get_serial = GetSerial,
   };
 
 

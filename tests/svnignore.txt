@@ -9,6 +9,8 @@ subsurface_test
 scale_test
 seat_test
 dmabuf_test
+select_test
+select_helper
 imgview
 reject.dump
 Makefile
