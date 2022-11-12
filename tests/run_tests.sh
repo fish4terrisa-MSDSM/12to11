@@ -45,6 +45,31 @@ do
     fi
 done
 
-# TODO: figure out how to run some tests under Xvfb.
+echo "Starting Xvfb at :27"
+
+Xvfb :27 &
+sleep 1
+exec 4< <(DISPLAY=:27 stdbuf -oL ../12to11 -printsocket)
+read -u 4 WAYLAND_DISPLAY
+export WAYLAND_DISPLAY
+
+declare -a vfb_tests=(
+    select_test
+)
+
+echo "Compositor for vfb tests started at ${WAYLAND_DISPLAY}"
+
+for test_executable in "${vfb_tests[@]}"
+do
+    echo "Running test ${test_executable}"
+
+    if ./${test_executable}; then
+	echo "${test_executable} completed successfully"
+    else
+	echo "${test_executable} failed; see its output for more details"
+    fi
+done
 
 popd
+
+trap 'jobs -p | xargs kill' EXIT
