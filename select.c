@@ -23,9 +23,6 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include "compositor.h"
 
-/* Caveat: the MULTIPLE target implementation is completely untested
-   and probably doesn't work.  */
-
 typedef struct _PropertyAtom PropertyAtom;
 typedef struct _SelectInputData SelectInputData;
 typedef struct _SelectionOwnerInfo SelectionOwnerInfo;
@@ -808,8 +805,8 @@ SignalConversionPerformed (WriteTransfer *transfer)
 	 are still pending.  If there are no more pending conversions,
 	 send the SelectionNotify event and return.  */
 
-      DebugPrint ("Conversion complete; %d conversions are still pending\n",
-		  transfer->record->pending);
+      DebugPrint ("Conversion complete; %d conversion(s) are still pending\n",
+		  transfer->record->pending - 1);
 
       if (!(--transfer->record->pending))
 	{
@@ -1327,8 +1324,8 @@ ConvertSelectionMultiple (SelectionOwnerInfo *info, XEvent *event,
       transfer->last = &write_transfers;
       transfer->requestor = event->xselectionrequest.requestor;
       transfer->selection = event->xselectionrequest.selection;
-      transfer->target = event->xselectionrequest.target;
-      transfer->property = atoms[1];
+      transfer->target = atoms[i + 0];
+      transfer->property = atoms[i + 1];
       transfer->time = event->xselectionrequest.time;
       transfer->buffer = XLMalloc (quantum);
       transfer->size = quantum;
@@ -1425,7 +1422,10 @@ HandleSelectionRequest (XEvent *event)
 	 do anyway.  */
       || (event->xselectionrequest.time != CurrentTime
 	  && TimeIs (event->xselectionrequest.time, Earlier, info->time))
-      || !CanConvertTarget (info, event->xselectionrequest.target))
+      || (!CanConvertTarget (info, event->xselectionrequest.target)
+	  /* CanConvertTarget itself does not understand MULTIPLE,
+	     because it itself is called while handling MULTIPLE.  */
+	  && event->xselectionrequest.target != MULTIPLE))
     {
       DebugPrint ("Couldn't convert selection due to simple reason\n");
 

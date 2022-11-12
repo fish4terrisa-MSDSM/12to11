@@ -50,7 +50,9 @@ ScannerTarget(linux-dmabuf-unstable-v1)
          OBJS10 = $(COMMONSRCS) select_test.o
 	 SRCS11 = select_helper.c
 	 OBJS11 = select_helper.o
-       PROGRAMS = imgview simple_test damage_test transform_test viewporter_test subsurface_test scale_test seat_test dmabuf_test select_test select_helper
+	 SRCS12 = select_helper_multiple.c
+	 OBJS12 = select_helper_multiple.o
+       PROGRAMS = imgview simple_test damage_test transform_test viewporter_test subsurface_test scale_test seat_test dmabuf_test select_test select_helper select_helper_multiple
 
 /* Make all objects depend on HEADER.  */
 $(OBJS1): $(HEADER)
@@ -69,10 +71,11 @@ NormalProgramTarget(seat_test,$(OBJS8),NullParameter,$(LOCAL_LIBRARIES),NullPara
 NormalProgramTarget(dmabuf_test,$(OBJS9),NullParameter,$(LOCAL_LIBRARIES) $(GBM) $(DRM),NullParameter);
 NormalProgramTarget(select_test,$(OBJS10),NullParameter,$(LOCAL_LIBRARIES) ThreadsLibraries,NullParameter);
 NormalProgramTarget(select_helper,$(OBJS11),NullParameter,$(XLIB),NullParameter);
+NormalProgramTarget(select_helper_multiple,$(OBJS12),NullParameter,$(XLIB),NullParameter);
 DependTarget3($(SRCS1),$(SRCS2),$(SRCS3))
 DependTarget3($(SRCS4),$(SRCS5),$(SRCS6))
 DependTarget3($(SRCS7),$(SRCS8),$(SRCS9))
-DependTarget3($(SRCS10),$(SRCS11),NullParameter)
+DependTarget3($(SRCS10),$(SRCS11),$(SRCS12))
 
 all:: $(PROGRAMS)
 

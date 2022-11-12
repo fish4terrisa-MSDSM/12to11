@@ -246,6 +246,79 @@ verify_sample_text (Time time)
   close (pipefds[1]);
 }
 
+static void
+verify_sample_text_multiple (Time time)
+{
+  int pipefds[2], wstatus;
+  pid_t pid;
+  char *display_string;
+  char time_buffer[45], buffer[sizeof SAMPLE_TEXT];
+  ssize_t bytes_read;
+  const char *sample_text_buffer;
+
+  /* Run select_helper with the specified timestamp.  Wait until
+     handle_data_source_send is called, and then begin reading from
+     the pipe.  */
+
+  if (pipe (pipefds) < 0)
+    die ("pipe");
+
+  display_string = DisplayString (display->x_display);
+  time = sprintf (time_buffer, "%lu", time);
+  pid = fork ();
+
+  if (pid == -1)
+    die ("fork");
+  else if (!pid)
+    {
+      close (pipefds[0]);
+
+      if (!dup2 (pipefds[1], 1))
+	exit (1);
+
+      execlp ("./select_helper_multiple", "./select_helper",
+	      display_string, time_buffer, "STRING", "UTF8_STRING",
+	      NULL);
+      exit (1);
+    }
+
+  send_called = false;
+
+  while (!send_called)
+    {
+      if (wl_display_dispatch (display->display) == -1)
+        die ("wl_display_dispatch");
+    }
+
+  /* Now, start reading from the pipe and comparing the contents.  */
+  sample_text_buffer = SAMPLE_TEXT;
+  bytes_read = read (pipefds[0], buffer, sizeof SAMPLE_TEXT - 1);
+
+  if (bytes_read != sizeof SAMPLE_TEXT - 1)
+    report_test_failure ("wanted %zu bytes, but got %zd",
+			 sizeof SAMPLE_TEXT - 1, bytes_read);
+
+  /* Now compare the text.  */
+  if (memcmp (buffer, sample_text_buffer, bytes_read))
+    report_test_failure ("read text differs from sample text!");
+
+  /* Compare the text again for the second target.  */
+  bytes_read = read (pipefds[0], buffer, sizeof SAMPLE_TEXT - 1);
+
+  if (bytes_read != sizeof SAMPLE_TEXT - 1)
+    report_test_failure ("wanted %zu bytes, but got %zd",
+			 sizeof SAMPLE_TEXT - 1, bytes_read);
+
+  waitpid (pid, &wstatus, 0);
+
+  if (WEXITSTATUS (wstatus))
+    report_test_failure ("child exited with failure: %d",
+			 WEXITSTATUS (wstatus));
+
+  close (pipefds[0]);
+  close (pipefds[1]);
+}
+
 
 
 static void
@@ -271,7 +344,12 @@ test_single_step (enum test_kind kind)
       wl_display_roundtrip (display->display);
 
       /* Now, verify the selection contents.  */
+      test_log ("verifying sample text normally");
       verify_sample_text (time);
+
+      /* And verify the selection contents for MULTIPLE.  */
+      test_log ("verifying sample text via MULTIPLE");
+      verify_sample_text_multiple (time);
       break;
     }
 

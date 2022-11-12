@@ -11,6 +11,7 @@ seat_test
 dmabuf_test
 select_test
 select_helper
+select_helper_multiple
 imgview
 reject.dump
 Makefile

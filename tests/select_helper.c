@@ -31,7 +31,6 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
    There must be three arguments: the name of the display, the
    timestamp at which the selection was acquired, and the target.  */
 
-
 /* The display connected to.  */
 static Display *display;
 
@@ -130,7 +129,7 @@ main (int argc, char **argv)
 
   atom_names[0] = argv[3];
   atom_names[1] = (char *) "CLIPBOARD";
-  atom_names[2] = (char *) "CLIPBOARD";
+  atom_names[2] = (char *) "INCR";
   XInternAtoms (display, atom_names, 3, False, atoms);
   target_atom = atoms[0];
   CLIPBOARD = atoms[1];
