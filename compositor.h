@@ -455,8 +455,9 @@ struct _BufferFuncs
      0 formats if nothing is supported.  */
   DrmFormat *(*get_drm_formats) (int *);
 
-  /* Get the DRM device node.  */
-  dev_t (*get_render_device) (Bool *);
+  /* Get a list of DRM device nodes for each provider.  Return NULL if
+     the provider list could not be initialized.  */
+  dev_t *(*get_render_devices) (int *);
 
   /* Get SHM formats supported by this renderer.  */
   ShmFormat *(*get_shm_formats) (int *);
@@ -570,7 +571,7 @@ extern PresentCompletionKey RenderPresentToWindow (RenderTarget, RenderBuffer,
 extern void RenderCancelPresentationCallback (PresentCompletionKey);
 
 extern DrmFormat *RenderGetDrmFormats (int *);
-extern dev_t RenderGetRenderDevice (Bool *);
+extern dev_t *RenderGetRenderDevices (int *);
 extern ShmFormat *RenderGetShmFormats (int *);
 extern RenderBuffer RenderBufferFromDmaBuf (DmaBufAttributes *, Bool *);
 extern void RenderBufferFromDmaBufAsync (DmaBufAttributes *, DmaBufSuccessFunc,

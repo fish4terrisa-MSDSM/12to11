@@ -230,10 +230,10 @@ RenderGetDrmFormats (int *n_formats)
   return buffer_funcs.get_drm_formats (n_formats);
 }
 
-dev_t
-RenderGetRenderDevice (Bool *error)
+dev_t *
+RenderGetRenderDevices (int *num_devices)
 {
-  return buffer_funcs.get_render_device (error);
+  return buffer_funcs.get_render_devices (num_devices);
 }
 
 ShmFormat *

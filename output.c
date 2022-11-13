@@ -1192,7 +1192,7 @@ XLInitRROutputs (void)
 
   if (compositor.rr_major < 1
       || (compositor.rr_major == 1
-	  && compositor.rr_minor < 3))
+	  && compositor.rr_minor < 4))
     {
       fprintf (stderr, "Display '%s' does not support a"
 	       " sufficiently new version of the RandR extension\n",
@@ -1216,21 +1216,13 @@ XLInitRROutputs (void)
   scale_callbacks.next = &scale_callbacks;
   scale_callbacks.last = &scale_callbacks;
 
-  if (compositor.rr_major > 1
-      && (compositor.rr_major == 1
-	  && compositor.rr_minor >= 4))
-    XRRSelectInput (compositor.display,
-		    DefaultRootWindow (compositor.display),
-		    (RRCrtcChangeNotifyMask
-		     | RROutputChangeNotifyMask
-		     | RROutputPropertyNotifyMask
-		     | RRResourceChangeNotifyMask));
-  else
-    XRRSelectInput (compositor.display,
-		    DefaultRootWindow (compositor.display),
-		    (RRCrtcChangeNotifyMask
-		     | RROutputChangeNotifyMask
-		     | RROutputPropertyNotifyMask));
+  /* Select for various kinds of required input.  */
+  XRRSelectInput (compositor.display,
+		  DefaultRootWindow (compositor.display),
+		  (RRCrtcChangeNotifyMask
+		   | RROutputChangeNotifyMask
+		   | RROutputPropertyNotifyMask
+		   | RRResourceChangeNotifyMask));
 
   all_outputs = BuildOutputTree ();
   MakeGlobalsForOutputTree (all_outputs);

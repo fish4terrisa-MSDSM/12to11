@@ -1720,11 +1720,17 @@ GetDrmFormats (int *num_formats)
   return drm_formats;
 }
 
-static dev_t
-GetRenderDevice (Bool *error)
+static dev_t *
+GetRenderDevices (int *num_devices)
 {
-  *error = !drm_device_available;
-  return drm_device;
+  if (!drm_device_available)
+    {
+      *num_devices = 0;
+      return NULL;
+    }
+
+  *num_devices = 1;
+  return &drm_device;
 }
 
 static ShmFormat *
@@ -2559,7 +2565,7 @@ IsBufferOpaque (RenderBuffer buffer)
 static BufferFuncs egl_buffer_funcs =
   {
     .get_drm_formats = GetDrmFormats,
-    .get_render_device = GetRenderDevice,
+    .get_render_devices = GetRenderDevices,
     .get_shm_formats = GetShmFormats,
     .buffer_from_dma_buf = BufferFromDmaBuf,
     .buffer_from_dma_buf_async = BufferFromDmaBufAsync,

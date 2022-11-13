@@ -29,6 +29,7 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "drm_modifiers.h"
 
 #include <xcb/dri3.h>
+#include <xcb/randr.h>
 
 #include <X11/Xmd.h>
 #include <X11/extensions/dri3proto.h>
@@ -452,6 +453,12 @@ static PresentCompletionCallback all_completion_callbacks;
 
 /* Whether or not direct presentation should be used.  */
 static Bool use_direct_presentation;
+
+/* The device nodes of each provider.  */
+static dev_t *render_devices;
+
+/* The number of device nodes.  */
+static int num_render_devices;
 
 /* XRender, DRI3 and XPresent-based renderer.  A RenderTarget is just
    a Picture.  Here is a rough explanation of how the buffer release
@@ -2287,60 +2294,117 @@ GetDrmFormats (int *num_formats)
 }
 
 static dev_t
-GetRenderDevice (Bool *error)
+GetRenderDevice (xcb_dri3_open_reply_t *reply, Bool *error)
 {
-  xcb_dri3_open_cookie_t cookie;
-  xcb_dri3_open_reply_t *reply;
   int *fds, fd;
   struct stat dev_stat;
-
-  cookie = xcb_dri3_open (compositor.conn,
-			  DefaultRootWindow (compositor.display),
-			  None);
-  reply = xcb_dri3_open_reply (compositor.conn, cookie, NULL);
-
-  if (!reply)
-    {
-      *error = True;
-      return (dev_t) 0;
-    }
 
   fds = xcb_dri3_open_reply_fds (compositor.conn, reply);
 
   if (!fds)
     {
-      free (reply);
       *error = True;
-
       return (dev_t) 0;
     }
 
   fd = fds[0];
 
-  XLAddFdFlag (fd, FD_CLOEXEC, True);
-
   if (fstat (fd, &dev_stat) != 0)
     {
       close (fd);
-      free (reply);
       *error = True;
-
-      return (dev_t) 0;
-    }
-
-  if (!dev_stat.st_rdev)
-    {
-      close (fd);
-      free (reply);
-      *error = True;
-
       return (dev_t) 0;
     }
 
   close (fd);
+  return dev_stat.st_rdev;
+}
+
+static dev_t *
+GetRenderDevices (int *num_devices)
+{
+  Window root;
+  xcb_randr_get_providers_cookie_t cookie;
+  xcb_randr_get_providers_reply_t *reply;
+  xcb_randr_provider_t *providers;
+  int nproviders;
+  xcb_dri3_open_cookie_t *open_cookies;
+  xcb_dri3_open_reply_t *open_reply;
+  xcb_generic_error_t *error;
+  int ndevices, i;
+  dev_t *devices;
+  Bool error_experienced;
+
+  if (render_devices)
+    {
+      *num_devices = num_render_devices;
+      return render_devices;
+    }
+
+  root = DefaultRootWindow (compositor.display);
+
+  /* Get a list of all providers on the default screen.  */
+  cookie = xcb_randr_get_providers (compositor.conn,
+				    root);
+  reply = xcb_randr_get_providers_reply (compositor.conn,
+					 cookie, NULL);
+
+  if (!reply)
+    return NULL;
+
+  providers = xcb_randr_get_providers_providers (reply);
+  nproviders = xcb_randr_get_providers_providers_length (reply);
+
+  /* Now, open each and every provider.  */
+  open_cookies = alloca (nproviders * sizeof *open_cookies);
+
+  for (i = 0; i < nproviders; ++i)
+    open_cookies[i] = xcb_dri3_open (compositor.conn, root,
+				     providers[i]);
+
+  /* Free the provider list and wait for replies from the X server.
+     Also, allocate an array large enough to hold each device.  */
+
   free (reply);
 
-  return dev_stat.st_rdev;
+  /* Allocate 1 extra provider so that render_devices is not set to
+     NULL if there are no providers.  */
+  devices = XLCalloc (nproviders + 1, sizeof *devices);
+  ndevices = 0;
+
+  for (i = 0; i < nproviders; ++i)
+    {
+      open_reply = xcb_dri3_open_reply (compositor.conn, open_cookies[i],
+					&error);
+
+      if (error || !open_reply)
+	{
+	  if (error)
+	    free (error);
+
+	  continue;
+	}
+
+      /* Now obtain the device node associated with the opened DRM
+	 node.  */
+      error_experienced = False;
+      devices[ndevices] = GetRenderDevice (open_reply, &error_experienced);
+      free (open_reply);
+
+      if (error_experienced)
+	/* An error occured.  */
+	continue;
+
+      /* Otherwise, increment ndevices.  */
+      ndevices++;
+    }
+
+  num_render_devices = ndevices;
+  render_devices = devices;
+
+  /* Return the device list.  */
+  *num_devices = ndevices;
+  return devices;
 }
 
 static ShmFormat *
@@ -3242,7 +3306,7 @@ IsBufferOpaque (RenderBuffer buffer)
 static BufferFuncs picture_buffer_funcs =
   {
     .get_drm_formats = GetDrmFormats,
-    .get_render_device = GetRenderDevice,
+    .get_render_devices = GetRenderDevices,
     .get_shm_formats = GetShmFormats,
     .buffer_from_dma_buf = BufferFromDmaBuf,
     .buffer_from_dma_buf_async = BufferFromDmaBufAsync,

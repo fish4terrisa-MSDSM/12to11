@@ -111,9 +111,11 @@ static int format_table_fd;
 /* Size of the format table.  */
 static ssize_t format_table_size;
 
-/* Device node of the DRM device.  TODO: make this
-   output-specific.  */
-static dev_t drm_device_node;
+/* Device nodes of the DRM device.  */
+static dev_t *drm_device_nodes;
+
+/* The number of DRM device nodes present.  */
+static int num_device_nodes;
 
 /* DRM formats supported by the renderer.  */
 static DrmFormat *supported_formats;
@@ -836,31 +838,27 @@ static struct zwp_linux_dmabuf_feedback_v1_interface zld_feedback_v1_impl =
     .destroy = Destroy,
   };
 
-/* TODO: dynamically switch tranche for surface feedbacks based on the
-   provider of the crtc the surface is in.  */
-
 static void
 MakeFeedback (struct wl_client *client, struct wl_resource *resource,
 	      uint32_t id)
 {
-  struct wl_resource *feedback_resource;
-  struct wl_array main_device_array, format_array;
-  int i;
+  struct wl_resource *feedback;
+  struct wl_array main_device_array, format_array, array;
+  int i, provider;
   ptrdiff_t format_array_size;
   uint16_t *format_array_data;
 
-  feedback_resource = wl_resource_create (client,
-					  &zwp_linux_dmabuf_feedback_v1_interface,
-					  wl_resource_get_version (resource), id);
+  feedback = wl_resource_create (client,
+				 &zwp_linux_dmabuf_feedback_v1_interface,
+				 wl_resource_get_version (resource), id);
 
-  if (!resource)
+  if (!feedback)
     {
       wl_resource_post_no_memory (resource);
       return;
     }
 
-  wl_resource_set_implementation (feedback_resource,
-				  &zld_feedback_v1_impl,
+  wl_resource_set_implementation (feedback, &zld_feedback_v1_impl,
 				  NULL, NULL);
 
   /* Now, send the relevant information.  This should eventually be
@@ -868,50 +866,56 @@ MakeFeedback (struct wl_client *client, struct wl_resource *resource,
 
   /* First, send the format table.  */
 
-  zwp_linux_dmabuf_feedback_v1_send_format_table (feedback_resource,
+  zwp_linux_dmabuf_feedback_v1_send_format_table (feedback,
 						  format_table_fd,
 						  format_table_size);
 
-  /* Next, send the main device.  */
+  /* Next, send the main device.  The first provider returned by
+     RRGetProviders is considered to be the main device.  */
 
-  main_device_array.size = sizeof drm_device_node;
-  main_device_array.data = &drm_device_node;
-
+  main_device_array.size = sizeof drm_device_nodes[0];
+  main_device_array.data = &drm_device_nodes[0];
   main_device_array.alloc = main_device_array.size;
-  zwp_linux_dmabuf_feedback_v1_send_main_device (feedback_resource,
+
+  zwp_linux_dmabuf_feedback_v1_send_main_device (feedback,
 						 &main_device_array);
 
-  /* Then, send the first tranche.  Right now, the only tranche
-     contains the formats supported by the default provider.  */
+  /* Then, send the one tranche for each device.  */
+  for (provider = 0; provider < num_device_nodes; ++provider)
+    {
+      array.size = sizeof drm_device_nodes[provider];
+      array.data = &drm_device_nodes[provider];
+      array.alloc = array.size;
 
-  zwp_linux_dmabuf_feedback_v1_send_tranche_target_device (feedback_resource,
-							   &main_device_array);
+      zwp_linux_dmabuf_feedback_v1_send_tranche_target_device (feedback,
+							       &array);
 
-  /* Populate the formats array with the contents of the format
-     table, and send it to the client.  */
+      /* Populate the formats array with the contents of the format
+	 table, and send it to the client.  */
 
-  format_array_size = format_table_size / sizeof (FormatModifierPair);
-  format_array.size = format_array_size * sizeof (uint16_t);
-  format_array.data = format_array_data = alloca (format_array.size);
+      format_array_size = format_table_size / sizeof (FormatModifierPair);
+      format_array.size = format_array_size * sizeof (uint16_t);
+      format_array.data = format_array_data = alloca (format_array.size);
 
-  /* This must be reset too.  */
-  format_array.alloc = format_array.size;
+      /* This must be reset too.  */
+      format_array.alloc = format_array.size;
 
-  /* Simply announce every format to the client.  */
-  for (i = 0; i < format_array_size; ++i)
-    format_array_data[i] = i;
+      /* Simply announce every format to the client.  */
+      for (i = 0; i < format_array_size; ++i)
+	format_array_data[i] = i;
 
-  zwp_linux_dmabuf_feedback_v1_send_tranche_formats (feedback_resource,
-						     &format_array);
+      zwp_linux_dmabuf_feedback_v1_send_tranche_formats (feedback,
+							 &format_array);
 
-  /* Send flags.  We don't currently support direct scanout, so send
-     nothing.  */
+      /* Send flags.  We don't currently support direct scanout, so send
+	 nothing.  */
 
-  zwp_linux_dmabuf_feedback_v1_send_tranche_flags (feedback_resource, 0);
+      zwp_linux_dmabuf_feedback_v1_send_tranche_flags (feedback, 0);
 
-  /* Mark the end of the tranche.  */
+      /* Mark the end of the tranche.  */
 
-  zwp_linux_dmabuf_feedback_v1_send_tranche_done (feedback_resource);
+      zwp_linux_dmabuf_feedback_v1_send_tranche_done (feedback);
+    }
 }
 
 static void
@@ -991,15 +995,12 @@ HandleBind (struct wl_client *client, void *data,
 }
 
 static Bool
-InitDrmDevice (void)
+InitDrmDevices (void)
 {
-  Bool error;
+  /* These can either be master nodes or render nodes.  */
+  drm_device_nodes = RenderGetRenderDevices (&num_device_nodes);
 
-  error = False;
-
-  /* This can either be a master node or a render node.  */
-  drm_device_node = RenderGetRenderDevice (&error);
-  return !error;
+  return num_device_nodes > 0;
 }
 
 static ssize_t
@@ -1011,7 +1012,7 @@ WriteFormatTable (void)
 
   /* Before writing the format table, make sure the DRM device node
      can be obtained.  */
-  if (!InitDrmDevice ())
+  if (!InitDrmDevices ())
     {
       fprintf (stderr, "Failed to get direct rendering device node. "
 	       "Hardware acceleration will probably be unavailable.\n");
