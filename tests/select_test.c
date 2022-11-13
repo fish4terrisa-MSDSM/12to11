@@ -198,7 +198,7 @@ verify_sample_text (Time time)
     die ("pipe");
 
   display_string = DisplayString (display->x_display);
-  time = sprintf (time_buffer, "%lu", time);
+  sprintf (time_buffer, "%lu", time);
   pid = fork ();
 
   if (pid == -1)
@@ -264,7 +264,7 @@ verify_sample_text_multiple (Time time)
     die ("pipe");
 
   display_string = DisplayString (display->x_display);
-  time = sprintf (time_buffer, "%lu", time);
+  sprintf (time_buffer, "%lu", time);
   pid = fork ();
 
   if (pid == -1)

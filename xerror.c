@@ -229,6 +229,8 @@ CategorizeClients (struct wl_list *client_list,
 	  clients[i - 1] = client;
 	}
     }
+
+  XLAssert (i == wl_list_length (client_list));
 }
 
 static void

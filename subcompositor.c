@@ -2852,11 +2852,11 @@ SubcompositorComposite1 (Subcompositor *subcompositor,
 	}
 
       /* This goes down the XCopyArea code path, unless presentation
-	 happened, in which case it does nothing.  */
+	 happened, in which case it does nothing.  No key must be
+	 returned, as the given callback is NULL.  */
       pixman_region32_translate (damage, -subcompositor->min_x,
 				 -subcompositor->min_y);
-      key = RenderFinishRender (subcompositor->target, &copy, NULL,
-				NULL);
+      RenderFinishRender (subcompositor->target, &copy, NULL, NULL);
       pixman_region32_fini (&copy);
     }
 
