@@ -98,7 +98,7 @@ main (int argc, char **argv)
 {
   XSetWindowAttributes attrs;
   unsigned long flags, timestamp;
-  char *atom_names[2];
+  char *atom_names[3];
   Atom atoms[3], actual_type, property;
   XEvent event;
   int actual_format;
