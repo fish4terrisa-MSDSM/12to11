@@ -1790,6 +1790,7 @@ MakeSeatForDevicePair (int master_keyboard, int master_pointer,
 {
   Seat *seat;
   XkbStateRec state;
+  unsigned long mask;
 
   seat = XLCalloc (1, sizeof *seat);
   seat->master_keyboard = master_keyboard;
@@ -1811,7 +1812,16 @@ MakeSeatForDevicePair (int master_keyboard, int master_pointer,
   live_seats = XLListPrepend (live_seats, seat);
 
   /* Now update the seat state from the X server.  */
-  XkbGetState (compositor.display, XkbUseCoreKbd, &state);
+  CatchXErrors ();
+
+  XkbGetState (compositor.display, master_keyboard, &state);
+
+  if (UncatchXErrors (NULL))
+    /* If the device was disabled or removed, a HierarchyChange event
+       will be sent shortly afterwards, causing the seat to be
+       destroyed.  In that case, not selecting for modifier changes
+       will be inconsequential.  */
+    return;
 
   seat->base = state.base_mods;
   seat->locked = state.locked_mods;
@@ -1820,6 +1830,27 @@ MakeSeatForDevicePair (int master_keyboard, int master_pointer,
   seat->locked_group = state.locked_group;
   seat->latched_group = state.latched_group;
   seat->effective_group = state.group;
+
+  /* And select for XKB events from the master keyboard device.  If
+     the server does not support accessing input extension devices
+     with Xkb, an error will result.  */
+
+  mask = 0;
+
+  mask |= XkbModifierStateMask;
+  mask |= XkbModifierBaseMask;
+  mask |= XkbModifierLatchMask;
+  mask |= XkbModifierLockMask;
+  mask |= XkbGroupStateMask;
+  mask |= XkbGroupBaseMask;
+  mask |= XkbGroupLatchMask;
+  mask |= XkbGroupLockMask;
+
+  CatchXErrors ();
+  XkbSelectEventDetails (compositor.display, master_keyboard,
+			 /* Now enable everything in that mask.  */
+			 XkbStateNotify, mask, mask);
+  UncatchXErrors (NULL);
 
   UpdateValuators (seat, pointer_info);
   RetainSeat (seat);
@@ -2873,32 +2904,21 @@ SendUpdatedModifiers (Seat *seat)
 }
 
 static void
-UpdateModifiersForSeats (unsigned int base, unsigned int locked,
-			 unsigned int latched, int base_group,
-			 int locked_group, int latched_group,
-			 int effective_group)
+UpdateModifiersForSeat (Seat *seat,
+			unsigned int base, unsigned int locked,
+			unsigned int latched, int base_group,
+			int locked_group, int latched_group,
+			int effective_group)
 {
-  Seat *seat;
-  XLList *tem;
+  seat->base = base;
+  seat->locked = locked;
+  seat->latched = latched;
+  seat->base_group = base_group;
+  seat->locked_group = locked_group;
+  seat->latched_group = latched_group;
+  seat->effective_group = effective_group;
 
-  for (tem = live_seats; tem; tem = tem->next)
-    {
-      seat = tem->data;
-
-      /* If the seat is a test seat, ignore.  */
-      if (seat->flags & IsTestSeat)
-	continue;
-
-      seat->base = base;
-      seat->locked = locked;
-      seat->latched = latched;
-      seat->base_group = base_group;
-      seat->locked_group = locked_group;
-      seat->latched_group = latched_group;
-      seat->effective_group = effective_group;
-
-      SendUpdatedModifiers (seat);
-    }
+  SendUpdatedModifiers (seat);
 }
 
 static void
@@ -4833,7 +4853,7 @@ UpdateKeymapInfo (void)
 static void
 SetupKeymap (void)
 {
-  int xkb_major, xkb_minor, xkb_op, xkb_error_code, mask;
+  int xkb_major, xkb_minor, xkb_op, xkb_error_code;
   xkb_major = XkbMajorVersion;
   xkb_minor = XkbMinorVersion;
 
@@ -4861,29 +4881,14 @@ SetupKeymap (void)
   XkbSelectEvents (compositor.display, XkbUseCoreKbd,
 		   XkbMapNotifyMask | XkbNewKeyboardNotifyMask,
 		   XkbMapNotifyMask | XkbNewKeyboardNotifyMask);
-
-  /* Select for keyboard state changes too.  */
-  mask = 0;
-
-  mask |= XkbModifierStateMask;
-  mask |= XkbModifierBaseMask;
-  mask |= XkbModifierLatchMask;
-  mask |= XkbModifierLockMask;
-  mask |= XkbGroupStateMask;
-  mask |= XkbGroupBaseMask;
-  mask |= XkbGroupLatchMask;
-  mask |= XkbGroupLockMask;
-
-  XkbSelectEventDetails (compositor.display, XkbUseCoreKbd,
-			 /* Now enable everything in that mask.  */
-			 XkbStateNotify, mask, mask);
-
   UpdateKeymapInfo ();
 }
 
 static Bool
 HandleXkbEvent (XkbEvent *event)
 {
+  Seat *seat;
+
   if (event->any.xkb_type == XkbMapNotify
       || event->any.xkb_type == XkbNewKeyboardNotify)
     {
@@ -4909,13 +4914,19 @@ HandleXkbEvent (XkbEvent *event)
     }
   else if (event->any.xkb_type == XkbStateNotify)
     {
-      UpdateModifiersForSeats (event->state.base_mods,
-			       event->state.locked_mods,
-			       event->state.latched_mods,
-			       event->state.base_group,
-			       event->state.locked_group,
-			       event->state.latched_group,
-			       event->state.group);
+      /* Look up the seat to which this event corresponds.  */
+      seat = XLLookUpAssoc (seats, event->state.device);
+
+      /* And update the modifiers for that seat.  */
+      if (seat)
+	UpdateModifiersForSeat (seat,
+				event->state.base_mods,
+				event->state.locked_mods,
+				event->state.latched_mods,
+				event->state.base_group,
+				event->state.locked_group,
+				event->state.latched_group,
+				event->state.group);
       return True;
     }
 
