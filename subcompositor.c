@@ -296,6 +296,18 @@ struct _View
   double fract_x, fract_y;
 };
 
+struct _SubcompositorDestroyCallback
+{
+  /* Function run upon the subcompositor being destroyed.  */
+  void (*destroy_func) (void *);
+
+  /* Data for that function.  */
+  void *data;
+
+  /* The next and last callbacks.  */
+  SubcompositorDestroyCallback *next, *last;
+};
+
 struct _Subcompositor
 {
   /* List of all inferiors in compositing order.  */
@@ -303,6 +315,9 @@ struct _Subcompositor
 
   /* Toplevel children of this subcompositor.  */
   List *children, *last_children;
+
+  /* List of destroy callbacks.  */
+  SubcompositorDestroyCallback destroy_callbacks;
 
   /* Target this subcompositor draws to.  */
   RenderTarget target;
@@ -559,6 +574,12 @@ MakeSubcompositor (void)
 
   subcompositor->last = subcompositor->inferiors;
   subcompositor->last_children = subcompositor->children;
+
+  /* Initialize the list of destroy callbacks.  */
+  subcompositor->destroy_callbacks.next
+    = &subcompositor->destroy_callbacks;
+  subcompositor->destroy_callbacks.last
+    = &subcompositor->destroy_callbacks;
 
   /* Initialize the buffers used to store previous damage.  */
   pixman_region32_init (&subcompositor->prior_damage[0]);
@@ -3115,6 +3136,8 @@ SubcompositorSetProjectiveTransform (Subcompositor *subcompositor,
 void
 SubcompositorFree (Subcompositor *subcompositor)
 {
+  SubcompositorDestroyCallback *next, *last;
+
   /* It isn't valid to call this function with children attached.  */
   XLAssert (subcompositor->children->next
 	    == subcompositor->children);
@@ -3123,6 +3146,19 @@ SubcompositorFree (Subcompositor *subcompositor)
 
   XLFree (subcompositor->children);
   XLFree (subcompositor->inferiors);
+
+  /* Run each destroy callback.  */
+
+  next = subcompositor->destroy_callbacks.next;
+  while (next != &subcompositor->destroy_callbacks)
+    {
+      last = next;
+      next = next->next;
+
+      /* Call the function and free the callback.  */
+      last->destroy_func (last->data);
+      XLFree (last);
+    }
 
   /* Finalize the buffers used to store previous damage.  */
   pixman_region32_fini (&subcompositor->prior_damage[0]);
@@ -3258,4 +3294,34 @@ int
 SubcompositorHeight (Subcompositor *subcompositor)
 {
   return subcompositor->max_y - subcompositor->min_y + 1;
+}
+
+SubcompositorDestroyCallback *
+SubcompositorOnDestroy (Subcompositor *subcompositor,
+			void (*destroy_func) (void *), void *data)
+{
+  SubcompositorDestroyCallback *callback;
+
+  callback = XLCalloc (1, sizeof *callback);
+
+  /* Link the callback onto the subcompositor.  */
+  callback->next = subcompositor->destroy_callbacks.next;
+  callback->last = &subcompositor->destroy_callbacks;
+  subcompositor->destroy_callbacks.next->last = callback;
+  subcompositor->destroy_callbacks.next = callback;
+
+  /* Add the func and data.  */
+  callback->destroy_func = destroy_func;
+  callback->data = data;
+
+  return callback;
+}
+
+void
+SubcompositorRemoveDestroyCallback (SubcompositorDestroyCallback *callback)
+{
+  callback->last->next = callback->next;
+  callback->next->last = callback->last;
+
+  XLFree (callback);
 }

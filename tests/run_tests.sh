@@ -57,6 +57,8 @@ declare -a vfb_tests=(
     select_test
 )
 
+make -C . "${vfb_tests[@]}" select_helper select_helper_multiple
+
 echo "Compositor for vfb tests started at ${WAYLAND_DISPLAY}"
 
 for test_executable in "${vfb_tests[@]}"

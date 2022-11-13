@@ -276,7 +276,7 @@ verify_sample_text_multiple (Time time)
       if (!dup2 (pipefds[1], 1))
 	exit (1);
 
-      execlp ("./select_helper_multiple", "./select_helper",
+      execlp ("./select_helper_multiple", "./select_helper_multiple",
 	      display_string, time_buffer, "STRING", "UTF8_STRING",
 	      NULL);
       exit (1);

@@ -308,8 +308,16 @@ CreateInhibitor (struct wl_client *client, struct wl_resource *resource,
 				  inhibitor, HandleResourceDestroy);
 }
 
+static void
+DestroyIdleInhibitManager (struct wl_client *client,
+			   struct wl_resource *resource)
+{
+  wl_resource_destroy (resource);
+}
+
 static struct zwp_idle_inhibit_manager_v1_interface idle_inhibit_manager_impl =
   {
+    .destroy = DestroyIdleInhibitManager,
     .create_inhibitor = CreateInhibitor,
   };
 

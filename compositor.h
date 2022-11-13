@@ -757,6 +757,7 @@ extern void XLInitShm (void);
 typedef struct _View View;
 typedef struct _List List;
 typedef struct _Subcompositor Subcompositor;
+typedef struct _SubcompositorDestroyCallback SubcompositorDestroyCallback;
 
 typedef enum _FrameMode FrameMode;
 
@@ -812,6 +813,10 @@ extern void SubcompositorFree (Subcompositor *);
 
 extern void SubcompositorFreeze (Subcompositor *);
 extern void SubcompositorUnfreeze (Subcompositor *);
+extern SubcompositorDestroyCallback *SubcompositorOnDestroy (Subcompositor *,
+							     void (*) (void *),
+							     void *);
+extern void SubcompositorRemoveDestroyCallback (SubcompositorDestroyCallback *);
 
 extern void ViewSetSubcompositor (View *, Subcompositor *);
 
