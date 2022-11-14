@@ -12,6 +12,7 @@ dmabuf_test
 select_test
 select_helper
 select_helper_multiple
+xdg_activation_test
 imgview
 reject.dump
 Makefile

@@ -1145,6 +1145,7 @@ struct _RoleFuncs
   void (*select_extra_events) (Surface *, Role *, unsigned long);
   void (*note_focus) (Surface *, Role *, FocusMode);
   void (*outputs_changed) (Surface *, Role *);
+  void (*activate) (Surface *, Role *, int, Timestamp);
 };
 
 struct _Role
@@ -1238,7 +1239,8 @@ extern Atom _NET_WM_OPAQUE_REGION, _XL_BUFFER_RELEASE,
   XdndProxy, XdndEnter, XdndPosition, XdndStatus, XdndLeave, XdndDrop,
   XdndFinished, _NET_WM_FRAME_TIMINGS, _NET_WM_BYPASS_COMPOSITOR, WM_STATE,
   _NET_WM_WINDOW_TYPE, _NET_WM_WINDOW_TYPE_MENU, _NET_WM_WINDOW_TYPE_DND,
-  CONNECTOR_ID, _NET_WM_PID, _NET_WM_PING, libinput_Scrolling_Pixel_Distance;
+  CONNECTOR_ID, _NET_WM_PID, _NET_WM_PING, libinput_Scrolling_Pixel_Distance,
+  _NET_ACTIVE_WINDOW;
 
 extern XrmQuark resource_quark, app_quark, QString;
 
@@ -1340,6 +1342,7 @@ struct _XdgRoleImplementationFuncs
   void (*note_focus) (Role *, XdgRoleImplementation *, FocusMode);
   void (*outputs_changed) (Role *, XdgRoleImplementation *);
   void (*after_commit) (Role *, Surface *, XdgRoleImplementation *);
+  void (*activate) (Role *, XdgRoleImplementation *, int, Time);
 };
 
 struct _XdgRoleImplementation
@@ -1616,6 +1619,7 @@ extern PinchGesture *XLSeatGetPinchGesture (Seat *, struct wl_resource *);
 extern void XLSeatDestroySwipeGesture (SwipeGesture *);
 extern void XLSeatDestroyPinchGesture (PinchGesture *);
 extern KeyCode XLKeysymToKeycode (KeySym, XEvent *);
+extern Bool XLSeatCheckActivationSerial (Seat *, uint32_t);
 
 extern Cursor InitDefaultCursor (void);
 
@@ -1856,6 +1860,10 @@ extern void ReleaseBufferWithHelper (BufferReleaseHelper *, ExtBuffer *,
 
 extern void XLGetTestSeat (struct wl_client *, struct wl_resource *,
 			   uint32_t);
+
+/* Defined in xdg_activation.c.  */
+
+extern void XLInitXdgActivation (void);
 
 /* Utility functions that don't belong in a specific file.  */
 

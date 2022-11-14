@@ -18,8 +18,8 @@ MakeSubdirs($(SUBDIRS))
 DependSubdirs($(SUBDIRS))
 #endif
 
-             SRCS = 12to11.c run.c alloc.c fns.c output.c compositor.c surface.c region.c shm.c atoms.c subcompositor.c positioner.c xdg_wm.c xdg_surface.c xdg_toplevel.c frame_clock.c xerror.c ewmh.c timer.c subsurface.c seat.c data_device.c xdg_popup.c dmabuf.c buffer.c select.c xdata.c xsettings.c dnd.c icon_surface.c primary_selection.c renderer.c picture_renderer.c explicit_synchronization.c transform.c wp_viewporter.c decoration.c text_input.c single_pixel_buffer.c drm_lease.c pointer_constraints.c time.c relative_pointer.c keyboard_shortcuts_inhibit.c idle_inhibit.c process.c fence_ring.c pointer_gestures.c test.c buffer_release.c
-             OBJS = 12to11.o run.o alloc.o fns.o output.o compositor.o surface.o region.o shm.o atoms.o subcompositor.o positioner.o xdg_wm.o xdg_surface.o xdg_toplevel.o frame_clock.o xerror.o ewmh.o timer.o subsurface.o seat.o data_device.o xdg_popup.o dmabuf.o buffer.o select.o xdata.o xsettings.o dnd.o icon_surface.o primary_selection.o renderer.o picture_renderer.o explicit_synchronization.o transform.o wp_viewporter.o decoration.o text_input.o single_pixel_buffer.o drm_lease.o pointer_constraints.o time.o relative_pointer.o keyboard_shortcuts_inhibit.o idle_inhibit.o process.o fence_ring.o pointer_gestures.o test.o buffer_release.o
+             SRCS = 12to11.c run.c alloc.c fns.c output.c compositor.c surface.c region.c shm.c atoms.c subcompositor.c positioner.c xdg_wm.c xdg_surface.c xdg_toplevel.c frame_clock.c xerror.c ewmh.c timer.c subsurface.c seat.c data_device.c xdg_popup.c dmabuf.c buffer.c select.c xdata.c xsettings.c dnd.c icon_surface.c primary_selection.c renderer.c picture_renderer.c explicit_synchronization.c transform.c wp_viewporter.c decoration.c text_input.c single_pixel_buffer.c drm_lease.c pointer_constraints.c time.c relative_pointer.c keyboard_shortcuts_inhibit.c idle_inhibit.c process.c fence_ring.c pointer_gestures.c test.c buffer_release.c xdg_activation.c
+             OBJS = 12to11.o run.o alloc.o fns.o output.o compositor.o surface.o region.o shm.o atoms.o subcompositor.o positioner.o xdg_wm.o xdg_surface.o xdg_toplevel.o frame_clock.o xerror.o ewmh.o timer.o subsurface.o seat.o data_device.o xdg_popup.o dmabuf.o buffer.o select.o xdata.o xsettings.o dnd.o icon_surface.o primary_selection.o renderer.o picture_renderer.o explicit_synchronization.o transform.o wp_viewporter.o decoration.o text_input.o single_pixel_buffer.o drm_lease.o pointer_constraints.o time.o relative_pointer.o keyboard_shortcuts_inhibit.o idle_inhibit.o process.o fence_ring.o pointer_gestures.o test.o buffer_release.o xdg_activation.o
        GENHEADERS = transfer_atoms.h drm_modifiers.h
            HEADER = $(GENHEADERS) compositor.h
 
@@ -105,6 +105,7 @@ ScannerTarget(keyboard-shortcuts-inhibit-unstable-v1)
 ScannerTarget(idle-inhibit-unstable-v1)
 ScannerTarget(pointer-gestures-unstable-v1)
 ScannerTarget(12to11-test)
+ScannerTarget(xdg-activation-v1)
 
 /* Make seat.o depend on test_seat.c, as it includes that.  Both files
    are rather special.  */

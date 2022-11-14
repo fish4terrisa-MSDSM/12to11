@@ -1392,6 +1392,20 @@ OutputsChanged (Surface *surface, Role *role)
     xdg_role->impl->funcs.outputs_changed (role, xdg_role->impl);
 }
 
+static void
+Activate (Surface *surface, Role *role, int deviceid,
+	  Timestamp timestamp)
+{
+  XdgRole *xdg_role;
+
+  xdg_role = XdgRoleFromRole (role);
+
+  if (xdg_role->impl && xdg_role->impl->funcs.activate)
+    xdg_role->impl->funcs.activate (role, xdg_role->impl,
+				    deviceid,
+				    timestamp.milliseconds);
+}
+
 void
 XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
 		 uint32_t id, struct wl_resource *surface_resource)
@@ -1464,6 +1478,7 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
   role->role.funcs.select_extra_events = SelectExtraEvents;
   role->role.funcs.note_focus = NoteFocus;
   role->role.funcs.outputs_changed = OutputsChanged;
+  role->role.funcs.activate = Activate;
 
   attrs.colormap = compositor.colormap;
   attrs.border_pixel = border_pixel;

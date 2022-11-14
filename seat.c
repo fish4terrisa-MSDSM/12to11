@@ -6387,6 +6387,20 @@ XLKeysymToKeycode (KeySym keysym, XEvent *event)
   return 0;
 }
 
+Bool
+XLSeatCheckActivationSerial (Seat *seat, uint32_t serial)
+{
+  /* Check if the specified serial can be used to activate surfaces on
+     behalf of seat.  */
+
+  return ((seat->last_button_press_serial
+	   && serial >= seat->last_button_press_serial)
+	  || (seat->last_button_serial
+	      && serial >= seat->last_button_press_serial)
+	  || (seat->last_keyboard_serial
+	      && serial >= seat->last_keyboard_serial));
+}
+
 /* This is a particularly ugly hack, but there is no other way to
    expose all the internals needed by test_seat.c.  */
 

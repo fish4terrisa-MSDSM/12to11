@@ -31,6 +31,8 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "xdg-shell.h"
 #include "xdg-decoration-unstable-v1.h"
 
+#include <X11/extensions/XInput2.h>
+
 #define ToplevelFromRoleImpl(impl) ((XdgToplevel *) (impl))
 
 typedef struct _XdgToplevel XdgToplevel;
@@ -2253,6 +2255,49 @@ OutputsChanged (Role *role, XdgRoleImplementation *impl)
     }
 }
 
+static void
+Activate (Role *role, XdgRoleImplementation *impl, int deviceid,
+	  Time time)
+{
+  XEvent message;
+  XdgToplevel *toplevel;
+  Window window;
+
+  toplevel = ToplevelFromRoleImpl (impl);
+  window = XLWindowFromXdgRole (toplevel->role);
+
+  if (XLWmSupportsHint (_NET_ACTIVE_WINDOW))
+    {
+      /* Use a _NET_ACTIVE_WINDOW request.  */
+      message.xclient.type = ClientMessage;
+      message.xclient.window = window;
+      message.xclient.message_type = _NET_ACTIVE_WINDOW;
+      message.xclient.format = 32;
+      message.xclient.data.l[0] = 1;
+      message.xclient.data.l[1] = time;
+      message.xclient.data.l[2] = None;
+      message.xclient.data.l[3] = 0;
+      message.xclient.data.l[4] = 0;
+
+      fprintf (stderr, "activate at: %d\n", (int) time);
+
+      XSendEvent (compositor.display,
+		  DefaultRootWindow (compositor.display),
+		  False, (SubstructureRedirectMask
+			  | SubstructureNotifyMask),
+		  &message);
+    }
+  else
+    {
+      /* Catch errors as we cannot be sure that the window is viewable
+	 or that the device still exists.  */
+      CatchXErrors ();
+      XISetFocus (compositor.display, deviceid,
+		  window, time);
+      UncatchXErrors (NULL);
+    }
+}
+
 static const struct xdg_toplevel_interface xdg_toplevel_impl =
   {
     .destroy = Destroy,
@@ -2319,6 +2364,7 @@ XLGetXdgToplevel (struct wl_client *client, struct wl_resource *resource,
   toplevel->impl.funcs.is_window_mapped = IsWindowMapped;
   toplevel->impl.funcs.outputs_changed = OutputsChanged;
   toplevel->impl.funcs.after_commit = AfterCommit;
+  toplevel->impl.funcs.activate = Activate;
 
   if (!XLWmSupportsHint (_NET_WM_STATE_FOCUSED))
     /* If _NET_WM_STATE_FOCUSED is unsupported, fall back to utilizing

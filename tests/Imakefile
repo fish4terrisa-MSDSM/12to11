@@ -26,6 +26,7 @@ name.c: $(12TO11ROOT)/name.xml name.h                         @@\
 ScannerTarget(12to11-test)
 ScannerTarget(viewporter)
 ScannerTarget(linux-dmabuf-unstable-v1)
+ScannerTarget(xdg-activation-v1)
 
           /* Not actually a test.  */
           SRCS1 = $(COMMONSRCS) imgview.c
@@ -52,7 +53,9 @@ ScannerTarget(linux-dmabuf-unstable-v1)
 	 OBJS11 = select_helper.o
 	 SRCS12 = select_helper_multiple.c
 	 OBJS12 = select_helper_multiple.o
-       PROGRAMS = imgview simple_test damage_test transform_test viewporter_test subsurface_test scale_test seat_test dmabuf_test select_test select_helper select_helper_multiple
+	 SRCS13 = $(COMMONSRCS) xdg_activation_test.c
+	 OBJS13 = $(COMMONSRCS) xdg_activation_test.o
+       PROGRAMS = imgview simple_test damage_test transform_test viewporter_test subsurface_test scale_test seat_test dmabuf_test select_test select_helper select_helper_multiple xdg_activation_test
 
 /* Make all objects depend on HEADER.  */
 $(OBJS1): $(HEADER)
@@ -72,10 +75,12 @@ NormalProgramTarget(dmabuf_test,$(OBJS9),NullParameter,$(LOCAL_LIBRARIES) $(GBM)
 NormalProgramTarget(select_test,$(OBJS10),NullParameter,$(LOCAL_LIBRARIES) ThreadsLibraries,NullParameter);
 NormalProgramTarget(select_helper,$(OBJS11),NullParameter,$(XLIB),NullParameter);
 NormalProgramTarget(select_helper_multiple,$(OBJS12),NullParameter,$(XLIB),NullParameter);
+NormalProgramTarget(xdg_activation_test,$(OBJS13),NullParameter,$(LOCAL_LIBRARIES),NullParameter)
 DependTarget3($(SRCS1),$(SRCS2),$(SRCS3))
 DependTarget3($(SRCS4),$(SRCS5),$(SRCS6))
 DependTarget3($(SRCS7),$(SRCS8),$(SRCS9))
 DependTarget3($(SRCS10),$(SRCS11),$(SRCS12))
+DependTarget3($(SRCS13),NullParameter,NullParameter)
 
 all:: $(PROGRAMS)
 

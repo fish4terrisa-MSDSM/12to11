@@ -336,6 +336,20 @@ GetWindow (Surface *surface, Role *role)
   return test->window;
 }
 
+static void
+Activate (Surface *surface, Role *role, int deviceid,
+	  Timestamp timestamp)
+{
+  TestSurface *test;
+
+  test = TestSurfaceFromRole (role);
+
+  if (test->role.resource)
+    test_surface_send_activated (test->role.resource,
+				 timestamp.months,
+				 timestamp.milliseconds);
+}
+
 static const struct test_surface_interface test_surface_impl =
   {
     .destroy = Destroy,
@@ -489,6 +503,7 @@ GetTestSurface (struct wl_client *client, struct wl_resource *resource,
   test->role.funcs.release_buffer = ReleaseBuffer;
   test->role.funcs.subsurface_update = SubsurfaceUpdate;
   test->role.funcs.get_window = GetWindow;
+  test->role.funcs.activate = Activate;
 
   /* Add the resource implementation.  */
   wl_resource_set_implementation (test->role.resource, &test_surface_impl,

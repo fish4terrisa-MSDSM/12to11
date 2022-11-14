@@ -159,6 +159,17 @@
       <arg name="xid" type="uint"/>
       <arg name="display_string" type="string"/>
     </event>
+
+    <event name="activated">
+      <description summary="role activated">
+	The activated is sent when the xdg_activation protocol causes
+	the surface associated with the role to be activated.  Its
+	parameters constitute the timestamp at which the activation
+	occurred.
+      </description>
+      <arg name="months" type="uint"/>
+      <arg name="milliseconds" type="uint"/>
+    </event>
   </interface>
 
   <interface name="test_scale_lock" version="1">
