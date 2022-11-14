@@ -445,8 +445,7 @@ NoticeTransferWritable (int fd, void *data, WriteFd *writefd)
   transfer = data;
   info = GetTransferData (transfer);
 
-  /* Start by reading at most this many bytes from the property.
-     TODO: take into account sizeof (long) == 8.  */
+  /* Start by reading at most this many bytes from the property.  */
   quantum = SelectionQuantum () / 4 * 4;
 
   if (!info->chunk)

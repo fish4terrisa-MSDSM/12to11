@@ -1244,9 +1244,7 @@ ViewUnparent (View *child)
   ViewRecomputeChildren (child, NULL);
 
   /* Now that the view hierarchy has been changed, garbage the
-     subcompositor.  TODO: an optimization for removing views would be
-     to damage each intersecting view before child->link instead, if
-     view bounds did not change.  */
+     subcompositor.  */
   if (child->subcompositor)
     {
       /* Update the bounds of the subcompositor.  */

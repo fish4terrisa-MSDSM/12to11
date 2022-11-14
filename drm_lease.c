@@ -50,8 +50,6 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
    named "outputs".  This file uses a mix of both the the X
    terminology and the KMS/DRM terminology.  */
 
-/* TODO: dynamic output updating.  */
-
 typedef struct _DrmLeaseDevice DrmLeaseDevice;
 typedef struct _DrmLeaseDeviceRef DrmLeaseDeviceRef;
 typedef struct _DrmLeaseConnector DrmLeaseConnector;
