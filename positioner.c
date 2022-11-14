@@ -61,26 +61,6 @@ enum _AnchorGravity
     AnchorGravityBottomRight,
   };
 
-struct _Positioner
-{
-  /* The fields below mean what they do in the xdg_shell protocol
-     spec.  */
-  int width, height;
-  int anchor_x, anchor_y;
-  int anchor_width, anchor_height;
-  unsigned int anchor, gravity, constraint;
-  int offset_x, offset_y;
-  Bool reactive;
-  int parent_width, parent_height;
-  uint32_t constraint_adjustment;
-
-  /* The wl_resource corresponding to this positioner.  */
-  struct wl_resource *resource;
-
-  /* The number of references to this positioner.  */
-  int refcount;
-};
-
 /* Surface used to handle scaling during constraint adjustment
    calculation.  */
 static double scale_adjustment_factor;
@@ -227,27 +207,12 @@ static const struct xdg_positioner_interface xdg_positioner_impl =
   };
 
 static void
-RetainPositioner (Positioner *positioner)
-{
-  positioner->refcount++;
-}
-
-static void
-ReleasePositioner (Positioner *positioner)
-{
-  if (--positioner->refcount)
-    return;
-
-  XLFree (positioner);
-}
-
-static void
 HandleResourceDestroy (struct wl_resource *resource)
 {
   Positioner *positioner;
 
   positioner = wl_resource_get_user_data (resource);
-  ReleasePositioner (positioner);
+  XLFree (positioner);
 }
 
 static void
@@ -920,25 +885,6 @@ XLCreateXdgPositioner (struct wl_client *client, struct wl_resource *resource,
 				  &xdg_positioner_impl,
 				  positioner,
 				  HandleResourceDestroy);
-  RetainPositioner (positioner);
-}
-
-void
-XLRetainPositioner (Positioner *positioner)
-{
-  RetainPositioner (positioner);
-}
-
-void
-XLReleasePositioner (Positioner *positioner)
-{
-  ReleasePositioner (positioner);
-}
-
-Bool
-XLPositionerIsReactive (Positioner *positioner)
-{
-  return positioner->reactive;
 }
 
 void

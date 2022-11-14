@@ -77,7 +77,7 @@ struct _XdgPopup
   uint32_t conf_serial, position_serial;
 
   /* The associated positioner.  */
-  Positioner *positioner;
+  Positioner positioner;
 
   /* Any pending seat on which a grab should be asserted.  */
   Seat *pending_grab_seat;
@@ -138,8 +138,7 @@ DestroyBacking (XdgPopup *popup)
   if (popup->pending_callback_key)
     XLSeatCancelDestroyListener (popup->pending_callback_key);
 
-  /* Release the positioner and free the popup.  */
-  XLReleasePositioner (popup->positioner);
+  /* Free the popup.  */
   XLFree (popup);
 }
 
@@ -449,7 +448,7 @@ InternalReposition (XdgPopup *popup)
   if (!popup->role || !popup->parent)
     return;
 
-  XLPositionerCalculateGeometry (popup->positioner,
+  XLPositionerCalculateGeometry (&popup->positioner,
 				 popup->parent, &x, &y,
 				 &width, &height);
 
@@ -664,16 +663,17 @@ Reposition (struct wl_client *client, struct wl_resource *resource,
 	    struct wl_resource *positioner_resource, uint32_t token)
 {
   XdgPopup *popup;
+  Positioner *positioner;
 
   popup = wl_resource_get_user_data (resource);
 
-  XLReleasePositioner (popup->positioner);
-  popup->positioner
-    = wl_resource_get_user_data (positioner_resource);
-  XLRetainPositioner (popup->positioner);
-
   /* Make sure that the positioner is complete.  */
-  XLCheckPositionerComplete (popup->positioner);
+  positioner = wl_resource_get_user_data (positioner_resource);
+  XLCheckPositionerComplete (positioner);
+
+  /* Copy the positioner to the popup.  */
+  popup->positioner = *positioner;
+  popup->positioner.resource = NULL;
 
   xdg_popup_send_repositioned (resource, token);
   InternalReposition (popup);
@@ -750,7 +750,7 @@ HandleParentConfigure (void *data, XEvent *xevent)
 
   popup = data;
 
-  if (XLPositionerIsReactive (popup->positioner))
+  if (popup->positioner.reactive)
     InternalReposition (popup);
 }
 
@@ -761,7 +761,7 @@ HandleParentResize (void *data)
 
   popup = data;
 
-  if (XLPositionerIsReactive (popup->positioner))
+  if (popup->positioner.reactive)
     InternalReposition (popup);
 }
 
@@ -784,11 +784,12 @@ static const struct xdg_popup_interface xdg_popup_impl =
 void
 XLGetXdgPopup (struct wl_client *client, struct wl_resource *resource,
 	       uint32_t id, struct wl_resource *parent_resource,
-	       struct wl_resource *positioner)
+	       struct wl_resource *positioner_resource)
 {
   XdgPopup *popup;
   Role *role, *parent;
   void *key;
+  Positioner *positioner;
 
   popup = XLSafeMalloc (sizeof *popup);
   role = wl_resource_get_user_data (resource);
@@ -831,11 +832,19 @@ XLGetXdgPopup (struct wl_client *client, struct wl_resource *resource,
       popup->reconstrain_callback_key = key;
     }
 
-  popup->positioner = wl_resource_get_user_data (positioner);
-  XLRetainPositioner (popup->positioner);
-
   /* Make sure that the positioner is complete.  */
-  XLCheckPositionerComplete (popup->positioner);
+  positioner = wl_resource_get_user_data (positioner_resource);
+  XLCheckPositionerComplete (positioner);
+
+  /* Save the positioner into the popup.  The spec says:
+
+      At the time of the request, the compositor makes a copy of the
+      rules specified by the xdg_positioner. Thus, after the request
+      is complete the xdg_positioner object can be destroyed or
+      reused; further changes to the object will have no effect on
+      previous usages.  */
+  popup->positioner = *positioner;
+  popup->positioner.resource = NULL;
 
   wl_resource_set_implementation (popup->resource, &xdg_popup_impl,
 				  popup, HandleResourceDestroy);

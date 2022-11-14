@@ -1395,13 +1395,31 @@ extern void XLXdgRoleReplyPing (Role *);
 
 typedef struct _Positioner Positioner;
 
+/* This structure is public because positioners must be copied into
+   xdg_popups.  */
+
+struct _Positioner
+{
+  /* The fields below mean what they do in the xdg_shell protocol
+     spec.  */
+  int width, height;
+  int anchor_x, anchor_y;
+  int anchor_width, anchor_height;
+  unsigned int anchor, gravity, constraint;
+  int offset_x, offset_y;
+  Bool reactive;
+  int parent_width, parent_height;
+  uint32_t constraint_adjustment;
+
+  /* The wl_resource corresponding to this positioner.  Not valid when
+     embedded in i.e. an xdg_popup.  */
+  struct wl_resource *resource;
+};
+
 extern void XLCreateXdgPositioner (struct wl_client *, struct wl_resource *,
 				   uint32_t);
 extern void XLPositionerCalculateGeometry (Positioner *, Role *, int *, int *,
 					   int *, int *);
-extern void XLRetainPositioner (Positioner *);
-extern void XLReleasePositioner (Positioner *);
-extern Bool XLPositionerIsReactive (Positioner *);
 extern void XLCheckPositionerComplete (Positioner *);
 
 /* Defined in xdg_toplevel.c.  */
