@@ -1241,6 +1241,9 @@ SendOutputBounds (XdgToplevel *toplevel)
 				      y_max - y_min + 1);
 }
 
+/* Forward declaration.  */
+static void PostResize1 (XdgToplevel *, int, int, int, int);
+
 static void
 Commit (Role *role, Surface *surface, XdgRoleImplementation *impl)
 {
@@ -1319,6 +1322,38 @@ Commit (Role *role, Surface *surface, XdgRoleImplementation *impl)
 }
 
 static void
+AfterCommit (Role *role, Surface *surface, XdgRoleImplementation *impl)
+{
+  XdgToplevel *toplevel;
+
+  toplevel = ToplevelFromRoleImpl (impl);
+
+  /* Apply any pending movement if there is.  This must come after
+     Commit is called: otherwise, any pending movement will cause any
+     future configure event to be called before NoteBounds, which
+     causes window resize to be constantly postponed.  */
+
+  if (!toplevel->conf_reply
+      && toplevel->state & StatePendingAckMovement)
+    {
+      XLXdgRoleMoveBy (role, toplevel->ack_west,
+		       toplevel->ack_north);
+
+      toplevel->ack_west = 0;
+      toplevel->ack_north = 0;
+      toplevel->state &= ~StatePendingAckMovement;
+
+      /* This pending movement has completed.  Apply postponed state,
+	 if there is any.  */
+      if (toplevel->state & StatePendingResize)
+	PostResize1 (toplevel, toplevel->resize_west,
+		     toplevel->resize_north,
+		     toplevel->resize_width,
+		     toplevel->resize_height);
+    }
+}
+
+static void
 PostResize1 (XdgToplevel *toplevel, int west_motion, int north_motion,
 	     int new_width, int new_height)
 {
@@ -1376,33 +1411,6 @@ PostResize1 (XdgToplevel *toplevel, int west_motion, int north_motion,
       toplevel->resize_north += north_motion;
       toplevel->resize_width = new_width;
       toplevel->resize_height = new_height;
-    }
-}
-
-static void
-CommitInsideFrame (Role *role, XdgRoleImplementation *impl)
-{
-  XdgToplevel *toplevel;
-
-  toplevel = ToplevelFromRoleImpl (impl);
-
-  if (!toplevel->conf_reply
-      && toplevel->state & StatePendingAckMovement)
-    {
-      XLXdgRoleMoveBy (role, toplevel->ack_west,
-		       toplevel->ack_north);
-
-      toplevel->ack_west = 0;
-      toplevel->ack_north = 0;
-      toplevel->state &= ~StatePendingAckMovement;
-
-      /* This pending movement has completed.  Apply postponed state,
-	 if there is any.  */
-      if (toplevel->state & StatePendingResize)
-	PostResize1 (toplevel, toplevel->resize_west,
-		     toplevel->resize_north,
-		     toplevel->resize_width,
-		     toplevel->resize_height);
     }
 }
 
@@ -2308,9 +2316,9 @@ XLGetXdgToplevel (struct wl_client *client, struct wl_resource *resource,
   toplevel->impl.funcs.note_window_pre_resize = NoteWindowPreResize;
   toplevel->impl.funcs.handle_geometry_change = HandleGeometryChange;
   toplevel->impl.funcs.post_resize = PostResize;
-  toplevel->impl.funcs.commit_inside_frame = CommitInsideFrame;
   toplevel->impl.funcs.is_window_mapped = IsWindowMapped;
   toplevel->impl.funcs.outputs_changed = OutputsChanged;
+  toplevel->impl.funcs.after_commit = AfterCommit;
 
   if (!XLWmSupportsHint (_NET_WM_STATE_FOCUSED))
     /* If _NET_WM_STATE_FOCUSED is unsupported, fall back to utilizing

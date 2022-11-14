@@ -665,7 +665,7 @@ Commit (Surface *surface, Role *role)
   if (!CheckFrame (xdg_role))
     /* The frame cannot be drawn, because the compositor has not yet
        drawn a previous frame.  */
-    return;
+    goto after_commit;
 
   /* The frame can be drawn, so update the window contents now.  */
   SubcompositorUpdate (xdg_role->subcompositor);
@@ -673,6 +673,15 @@ Commit (Surface *surface, Role *role)
   /* Do not end frames explicitly.  Instead, wait for the
      NoteFrameCallback to end the frame.  */
 
+ after_commit:
+
+  /* Run the after_commit function of the role implementation, which
+     peforms actions such as posting pending configure events for
+     built-in resize.  */
+
+  if (xdg_role->impl->funcs.after_commit)
+    xdg_role->impl->funcs.after_commit (role, surface,
+					xdg_role->impl);
   return;
 }
 
@@ -1183,10 +1192,6 @@ NoteFrame (FrameMode mode, uint64_t id, void *data)
 	    role->state |= StateFrameStarted;
 	}
 
-      /* Also run role "commit inside frame" hook.  */
-      if (role->impl && role->impl->funcs.commit_inside_frame)
-	role->impl->funcs.commit_inside_frame (&role->role,
-					       role->impl);
       break;
 
     case ModeNotifyDisablePresent:

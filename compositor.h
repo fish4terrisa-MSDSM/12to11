@@ -1336,10 +1336,10 @@ struct _XdgRoleImplementationFuncs
   void (*note_window_resized) (Role *, XdgRoleImplementation *, int, int);
   void (*handle_geometry_change) (Role *, XdgRoleImplementation *);
   void (*post_resize) (Role *, XdgRoleImplementation *, int, int, int, int);
-  void (*commit_inside_frame) (Role *, XdgRoleImplementation *);
   Bool (*is_window_mapped) (Role *, XdgRoleImplementation *);
   void (*note_focus) (Role *, XdgRoleImplementation *, FocusMode);
   void (*outputs_changed) (Role *, XdgRoleImplementation *);
+  void (*after_commit) (Role *, Surface *, XdgRoleImplementation *);
 };
 
 struct _XdgRoleImplementation
