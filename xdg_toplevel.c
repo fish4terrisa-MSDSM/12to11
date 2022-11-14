@@ -2279,8 +2279,6 @@ Activate (Role *role, XdgRoleImplementation *impl, int deviceid,
       message.xclient.data.l[3] = 0;
       message.xclient.data.l[4] = 0;
 
-      fprintf (stderr, "activate at: %d\n", (int) time);
-
       XSendEvent (compositor.display,
 		  DefaultRootWindow (compositor.display),
 		  False, (SubstructureRedirectMask
