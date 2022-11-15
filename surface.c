@@ -116,12 +116,15 @@ RunCommitCallbacks (Surface *surface)
   CommitCallback *callback;
 
   /* first is a sentinel node.  */
-  callback = surface->commit_callbacks.next;
+  callback = surface->commit_callbacks.last;
 
+  /* Run commit callbacks in the order that they were created in.  The
+     subsurface code relies on this for subsurfaces to be confirmed in
+     the right order.  */
   while (callback != &surface->commit_callbacks)
     {
       callback->commit (surface, callback->data);
-      callback = callback->next;
+      callback = callback->last;
     }
 }
 
@@ -1374,8 +1377,9 @@ NotifySubsurfaceDestroyed (void *data)
 
   surface = data;
 
-  if (surface->role)
-    XLSubsurfaceParentDestroyed (surface->role);
+  /* If a surface is in the subsurfaces list, it must have a role.  */
+  XLAssert (surface->role != NULL);
+  XLSubsurfaceParentDestroyed (surface->role);
 }
 
 static void
@@ -1386,6 +1390,12 @@ HandleSurfaceDestroy (struct wl_resource *resource)
 
   surface = wl_resource_get_user_data (resource);
 
+  /* Free all subsurfaces.  This must come before the subcompositor is
+     destroyed.  */
+  XLListFree (surface->subsurfaces,
+	      NotifySubsurfaceDestroyed);
+  surface->subsurfaces = NULL;
+
   if (surface->role)
     XLSurfaceReleaseRole (surface, surface->role);
 
@@ -1393,10 +1403,6 @@ HandleSurfaceDestroy (struct wl_resource *resource)
      code (such as dnd.c) assumes that surface->resource will always
      be available in unmap callbacks.  */
   surface->resource = NULL;
-
-  /* First, free all subsurfaces.  */
-  XLListFree (surface->subsurfaces,
-	      NotifySubsurfaceDestroyed);
 
   /* Then release all client data.  */
   data = surface->client_data;

@@ -102,6 +102,10 @@ struct _Subsurface
   /* Whether or not this subsurface is mapped.  */
   Bool mapped;
 
+  /* Whether or not this subsurface was just added to a parent that
+     has not yet committed.  */
+  Bool pending;
+
   /* The last dimensions and position that were used to update this
      surface's outputs.  */
   int output_x, output_y, output_width, output_height;
@@ -714,12 +718,27 @@ AfterParentCommit (Surface *surface, void *data)
       MoveFractional (subsurface);
     }
 
-  /* Mark the subsurface as unskipped.  (IOW, make it visible).  This
-     must come before XLCommitSurface, as doing so will apply the
-     pending state, which will fail to update the subcompositor bounds
-     if the subsurface is skipped.  */
-  ViewUnskip (subsurface->role.surface->view);
-  ViewUnskip (subsurface->role.surface->under);
+  /* Attach the views to the subcompositor if they have not yet been
+     attached, as the parent's state has been applied.  This must come
+     before XLCommitSurface, as doing so will apply the pending state,
+     which will fail to update the subcompositor bounds if the
+     subsurface is not present.  */
+
+  if (subsurface->pending)
+    {
+      /* Set the subcompositor here.  If the role providing the
+	 subcompositor hasn't been attached to the parent, then when
+	 it is it will call ViewSetSubcompositor on the parent's
+	 view.  */
+
+      ViewSetSubcompositor (subsurface->role.surface->under,
+			    ViewGetSubcompositor (surface->view));
+      ViewInsert (surface->view, subsurface->role.surface->under);
+      ViewSetSubcompositor (subsurface->role.surface->view,
+			    ViewGetSubcompositor (surface->view));
+      ViewInsert (surface->view, subsurface->role.surface->view);
+      subsurface->pending = False;
+    }
 
   /* And any cached surface state too.  */
   if (subsurface->pending_commit)
@@ -820,7 +839,6 @@ static Bool
 Setup (Surface *surface, Role *role)
 {
   Subsurface *subsurface;
-  View *parent_view;
 
   surface->role_type = SubsurfaceType;
 
@@ -830,17 +848,6 @@ Setup (Surface *surface, Role *role)
   subsurface->output_x = INT_MIN;
   subsurface->output_y = INT_MIN;
   role->surface = surface;
-  parent_view = subsurface->parent->view;
-
-  /* Set the subcompositor here.  If the role providing the
-     subcompositor hasn't been attached to the parent, then when it is
-     it will call ViewSetSubcompositor on the parent's view.  */
-  ViewSetSubcompositor (surface->under,
-			ViewGetSubcompositor (parent_view));
-  ViewInsert (parent_view, surface->under);
-  ViewSetSubcompositor (surface->view,
-			ViewGetSubcompositor (parent_view));
-  ViewInsert (parent_view, surface->view);
 
   /* Now move the subsurface to its initial location (0, 0) */
   MoveFractional (subsurface);
@@ -850,21 +857,18 @@ Setup (Surface *surface, Role *role)
     = XLListPrepend (subsurface->parent->subsurfaces,
 		     surface);
 
-  /* And mark the view as "skipped"; this differs from unmapping,
-     which we cannot simply use, in that children remain visible, as
-     the specification says the following:
+  /* And mark the subsurface as pending.  A pending subsurface is not
+     inserted into any subcompositor, but will be inserted upon the
+     parent commit callback being run.
 
-       Adding sub-surfaces to a parent is a double-buffered operation
-       on the parent (see wl_surface.commit).  The effect of adding a
-       sub-surface becomes visible on the next time the state of the
-       parent surface is applied.
+     The specification states that the "effect of adding a subsurface"
+     will take effect after its parent is applied.
 
-    So if a child is added to a desynchronized subsurface whose parent
-    toplevel has not yet committed, and commit is called on the
-    desynchronized subsurface, the child should become indirectly
-    visible on the parent toplevel through the child.  */
-  ViewSkip (surface->view);
-  ViewSkip (surface->under);
+     The interpretation previously used was that the the subsurface
+     would be made visible upon the parent's state being applied.  But
+     that interpretation led to ambiguities, and contradicted with
+     common sense and the implementation in Weston.  */
+  subsurface->pending = True;
 
   /* Subsurfaces are synchronous by default.  Make every child
      synchronous.  */
@@ -913,10 +917,19 @@ Teardown (Surface *surface, Role *role)
     {
       subcompositor = ViewGetSubcompositor (surface->view);
 
-      ViewUnparent (surface->view);
-      ViewSetSubcompositor (surface->view, NULL);
-      ViewUnparent (surface->under);
-      ViewSetSubcompositor (surface->under, NULL);
+      /* Assert that the subcompositor is NULL if the subsurface is
+	 pending.  */
+      XLAssert (!subsurface->pending || !subcompositor);
+
+      if (subcompositor)
+	{
+	  /* Detach the views if the subcompositor is set.  */
+
+	  ViewUnparent (surface->view);
+	  ViewSetSubcompositor (surface->view, NULL);
+	  ViewUnparent (surface->under);
+	  ViewSetSubcompositor (surface->under, NULL);
+	}
 
       client = XLSurfaceFindClientData (subsurface->parent,
 					SubsurfaceData);
@@ -1074,6 +1087,9 @@ GetSubsurface (struct wl_client *client, struct wl_resource *resource,
   subsurface->role.funcs.parent_rescale = ParentRescale;
 
   subsurface->parent = parent;
+
+  /* Note that for subsurfaces to be attached in the correct order,
+     commit callbacks must be run in the order they were created.  */
   subsurface->commit_callback
     = XLSurfaceRunAtCommit (parent, AfterParentCommit, subsurface);
   subsurface->synchronous = True;
@@ -1135,6 +1151,12 @@ XLSubsurfaceParentDestroyed (Role *role)
 
   if (subsurface->role.surface)
     {
+      /* Set the subcompositor to NULL, as it may no longer be
+	 present.  */
+      ViewSetSubcompositor (subsurface->role.surface->view,
+			    NULL);
+      ViewSetSubcompositor (subsurface->role.surface->under,
+			    NULL);
       ViewUnparent (subsurface->role.surface->view);
       ViewUnparent (subsurface->role.surface->under);
     }
@@ -1144,6 +1166,9 @@ void
 XLSubsurfaceHandleParentCommit (Surface *parent)
 {
   SurfaceActionClientData *client;
+
+  /* Note that these actions will also work for pending subsurfaces,
+     as they will be attached by the time this is called.  */
 
   client = XLSurfaceFindClientData (parent, SubsurfaceData);
 

@@ -165,17 +165,13 @@ enum
     /* This means that the view and all its inferiors should be
        skipped in bounds computation, input tracking, et cetera.  */
     ViewIsUnmapped		= 1,
-    /* This means that the view itself (not including its inferiors)
-       should be skipped for bounds computation and input
-       tracking, etc.  */
-    ViewIsSkipped		= 1 << 2,
     /* This means that the view has a viewport specifying its size,
        effectively decoupling its relation to the buffer width	and
        height.  */
-    ViewIsViewported		= 1 << 3,
+    ViewIsViewported		= 1 << 2,
     /* Whether or not damage can be trusted.  When set, non-buffer
        damage cannot be trusted, as the view transform changed.  */
-    ViewIsPreviouslyTransformed = 1 << 4,
+    ViewIsPreviouslyTransformed = 1 << 3,
   };
 
 #define IsViewUnmapped(view)			\
@@ -184,13 +180,6 @@ enum
   ((view)->flags |= ViewIsUnmapped)
 #define ClearUnmapped(view)			\
   ((view)->flags &= ~ViewIsUnmapped)
-
-#define IsSkipped(view)				\
-  ((view)->flags & ViewIsSkipped)
-#define SetSkipped(view)			\
-  ((view)->flags |= ViewIsSkipped)
-#define ClearSkipped(view)			\
-  ((view)->flags &= ~ViewIsSkipped)
 
 #define IsViewported(view)			\
   ((view)->flags & ViewIsViewported)
@@ -678,10 +667,6 @@ SubcompositorUpdateBounds (Subcompositor *subcompositor, int doflags)
 	      goto next;
 	    }
 
-	  if (IsSkipped (list->view))
-	    /* Skip past the view itself should it be skipped.  */
-	    goto next;
-
 	  if ((doflags & DoMinX) && min_x > list->view->abs_x)
 	    min_x = list->view->abs_x;
 
@@ -735,7 +720,7 @@ SubcompositorUpdateBoundsForInsert (Subcompositor *subcompositor,
 {
   XLAssert (view->subcompositor == subcompositor);
 
-  if (!ViewIsMapped (view) || IsSkipped (view))
+  if (!ViewIsMapped (view))
     /* If the view is unmapped, do nothing.  */
     return;
 
@@ -794,15 +779,6 @@ SubcompositorSetTarget (Subcompositor *compositor,
 	goto next;						\
       }								\
 								\
-    if (IsSkipped (list->view))					\
-      {								\
-	/* We must skip this view, as it represents (for	\
-	   instance) a subsurface that has been added, but not	\
-	   committed.  */					\
-	SetPartiallyMapped (subcompositor);			\
-	goto next;						\
-      }								\
-								\
     if (!list->view->buffer)					\
       goto next;						\
 								\
@@ -846,12 +822,13 @@ DamageIncludingInferiors (View *parent)
   View *view;
   Subcompositor *subcompositor;
 
-  if (parent->subcompositor)
+  if (!parent->subcompositor)
     /* No subcompositor is attached... */
     return;
 
-  pixman_region32_union_rect (&parent->damage, &parent->damage,
-			      0, 0, parent->width, parent->height);
+  /* Ignore unmapped views.  */
+  if (IsViewUnmapped (parent))
+    return;
 
   /* Now, damage each inferior.  */
   list = parent->link;
@@ -863,8 +840,7 @@ DamageIncludingInferiors (View *parent)
 
       /* Union the view damage with its bounds.  */
       pixman_region32_union_rect (&view->damage, &view->damage,
-				  view->abs_x, view->abs_y,
-				  view->width, view->height);
+				  0, 0, view->width, view->height);
 
     next:
 
@@ -886,6 +862,13 @@ SubcompositorInsert (Subcompositor *compositor, View *view)
   ListRelinkBefore (view->link, view->inferior,
 		    compositor->last);
 
+  /* We don't know whether or not the subcompositor is partially
+     mapped.  Set the IsPartiallyMapped flag if the view has children;
+     it will be cleared upon the next update if the subcompositor is
+     not partially mapped.  */
+  if (IsViewUnmapped (view) || view->link != view->inferior)
+    SetPartiallyMapped (compositor);
+
   /* And update bounds.  */
   SubcompositorUpdateBoundsForInsert (compositor, view);
 
@@ -906,6 +889,13 @@ SubcompositorInsertBefore (Subcompositor *compositor, View *view,
   /* Make view's inferiors part of the compositor.  */
   ListRelinkBefore (view->link, view->inferior, sibling->link);
 
+  /* We don't know whether or not the subcompositor is partially
+     mapped.  Set the IsPartiallyMapped flag if the view has children;
+     it will be cleared upon the next update if the subcompositor is
+     not partially mapped.  */
+  if (IsViewUnmapped (view) || view->link != view->inferior)
+    SetPartiallyMapped (compositor);
+
   /* And update bounds.  */
   SubcompositorUpdateBoundsForInsert (compositor, view);
 
@@ -924,6 +914,13 @@ SubcompositorInsertAfter (Subcompositor *compositor, View *view,
 
   /* Make view's inferiors part of the compositor.  */
   ListRelinkAfter (view->link, view->inferior, sibling->inferior);
+
+  /* We don't know whether or not the subcompositor is partially
+     mapped.  Set the IsPartiallyMapped flag if the view has children;
+     it will be cleared upon the next update if the subcompositor is
+     not partially mapped.  */
+  if (IsViewUnmapped (view) || view->link != view->inferior)
+    SetPartiallyMapped (compositor);
 
   /* And update bounds.  */
   SubcompositorUpdateBoundsForInsert (compositor, view);
@@ -963,9 +960,6 @@ ViewIsVisible (View *view)
   if (!ViewVisibilityState (view, &mapped))
     return False;
 
-  if (IsSkipped (view))
-    return False;
-
   return mapped;
 }
 
@@ -996,9 +990,7 @@ ViewRecomputeChildren (View *view, int *doflags)
 	      && attached
 	      /* Or if it isn't mapped, or none of its parents are
 		 mapped.  */
-	      && mapped
-	      /* Or if it is skipped.  */
-	      && !IsSkipped (view))
+	      && mapped)
 	    {
 	      if (child->abs_x < view->subcompositor->min_x)
 		{
@@ -1075,8 +1067,14 @@ ViewInsert (View *view, View *child)
 	parent->inferior = child->inferior;
     }
 
-  /* Now that the view hierarchy has been changed, garbage the
-     subcompositor.  */
+  /* We don't know whether or not the subcompositor is partially
+     mapped.  Set the IsPartiallyMapped flag if the view has children;
+     it will be cleared upon the next update if the subcompositor is
+     not partially mapped.  */
+  if (view->subcompositor
+      && (IsViewUnmapped (child)
+	  || child->link != child->inferior))
+    SetPartiallyMapped (view->subcompositor);
 
   /* Also update the absolute positions of the child.  */
   child->abs_x = view->abs_x + child->x;
@@ -1088,9 +1086,9 @@ ViewInsert (View *view, View *child)
 
   /* Now, if the subcompositor is still not garbaged, damage each
      inferior of the view.  */
-  if (view->subcompositor
-      && !IsGarbaged (view->subcompositor))
-    DamageIncludingInferiors (view);
+  if (child->subcompositor
+      && !IsGarbaged (child->subcompositor))
+    DamageIncludingInferiors (child);
 }
 
 void
@@ -1128,6 +1126,15 @@ ViewInsertAfter (View *view, View *child, View *sibling)
 	}
     }
 
+  /* We don't know whether or not the subcompositor is partially
+     mapped.  Set the IsPartiallyMapped flag if the view has children;
+     it will be cleared upon the next update if the subcompositor is
+     not partially mapped.  */
+  if (view->subcompositor
+      && (IsViewUnmapped (child)
+	  || child->link != child->inferior))
+    SetPartiallyMapped (view->subcompositor);
+
   /* Also update the absolute positions of the child.  */
   child->abs_x = view->abs_x + child->x;
   child->abs_y = view->abs_y + child->y;
@@ -1138,9 +1145,9 @@ ViewInsertAfter (View *view, View *child, View *sibling)
 
   /* Now, if the subcompositor is still not garbaged, damage each
      inferior of the view.  */
-  if (view->subcompositor
-      && !IsGarbaged (view->subcompositor))
-    DamageIncludingInferiors (view);
+  if (child->subcompositor
+      && !IsGarbaged (child->subcompositor))
+    DamageIncludingInferiors (child);
 }
 
 void
@@ -1156,6 +1163,15 @@ ViewInsertBefore (View *view, View *child, View *sibling)
   ListRelinkBefore (child->link, child->inferior,
 		    sibling->link);
 
+  /* We don't know whether or not the subcompositor is partially
+     mapped.  Set the IsPartiallyMapped flag if the view has children;
+     it will be cleared upon the next update if the subcompositor is
+     not partially mapped.  */
+  if (view->subcompositor
+      && (IsViewUnmapped (child)
+	  || child->link != child->inferior))
+    SetPartiallyMapped (view->subcompositor);
+
   /* Also update the absolute positions of the child.  */
   child->abs_x = view->abs_x + child->x;
   child->abs_y = view->abs_y + child->y;
@@ -1167,9 +1183,9 @@ ViewInsertBefore (View *view, View *child, View *sibling)
 
   /* Now, if the subcompositor is still not garbaged, damage each
      inferior of the view.  */
-  if (view->subcompositor
-      && !IsGarbaged (view->subcompositor))
-    DamageIncludingInferiors (view);
+  if (child->subcompositor
+      && !IsGarbaged (child->subcompositor))
+    DamageIncludingInferiors (child);
 
   /* Inserting inferiors before a sibling can never bump the inferior
      pointer.  */
@@ -1280,7 +1296,7 @@ ViewSetSubcompositor (View *view, Subcompositor *subcompositor)
 
       list = list->next;
     }
-  while (list != view->link);
+  while (list != view->inferior);
 }
 
 
@@ -1308,7 +1324,7 @@ ViewAfterSizeUpdate (View *view)
   view->height = ViewHeight (view);
 
   if (!view->subcompositor || !ViewVisibilityState (view, &mapped)
-      || !mapped || IsSkipped (view))
+      || !mapped)
     return;
 
   /* First, assume we will have to compute both max_x and max_y.  */
@@ -1433,7 +1449,7 @@ ViewMove (View *view, int x, int y)
       if (view->subcompositor && ViewVisibilityState (view, &mapped)
 	  /* If this view isn't mapped or is skipped, then do nothing.
 	     The bounds will be recomputed later.  */
-	  && mapped && !IsSkipped (view))
+	  && mapped)
 	{
 	  /* First assume everything will have to be updated.  */
 	  doflags |= DoMaxX | DoMaxY | DoMinY | DoMinX;
@@ -1611,50 +1627,6 @@ ViewUnmap (View *view)
 
   /* Finalize the damage region.  */
   pixman_region32_fini (&damage);
-}
-
-void
-ViewUnskip (View *view)
-{
-  if (!IsSkipped (view))
-    return;
-
-  ClearSkipped (view);
-
-  if (view->subcompositor && view->buffer)
-    /* Damage the whole view bounds.  */
-    pixman_region32_union_rect (&view->damage, &view->damage,
-				view->abs_x, view->abs_y,
-				view->width, view->height);
-}
-
-void
-ViewSkip (View *view)
-{
-  if (IsSkipped (view))
-    return;
-
-  /* Mark the view as skipped.  */
-  SetSkipped (view);
-
-  if (view->subcompositor)
-    {
-      /* Mark the subcompositor as having unmapped or skipped
-	 views.  */
-      SetPartiallyMapped (view->subcompositor);
-
-      /* If nothing is attached, the subcompositor need not be
-	 garbaged.  */
-      if (view->buffer)
-	{
-	  /* Recompute the bounds of the subcompositor.  */
-	  SubcompositorUpdateBounds (view->subcompositor,
-				     DoAll);
-
-	  /* Garbage the view's subcompositor.  */
-	  SetGarbaged (view->subcompositor);
-	}
-    }
 }
 
 void
@@ -2406,11 +2378,6 @@ DoCull (Subcompositor *subcompositor, pixman_region32_t *damage,
 
       if (AnyParentUnmapped (list->view, &list))
 	/* Skip the unmapped view.  */
-	goto last;
-
-      if (IsSkipped (list->view))
-	/* We must skip this view, as it represents (for instance) a
-	   subsurface that has been added, but not committed.  */
 	goto last;
 
       if (!list->view->buffer)
@@ -3197,14 +3164,6 @@ SubcompositorLookupView (Subcompositor *subcompositor, int x, int y,
       if (IsViewUnmapped (list->view))
 	{
 	  list = list->view->inferior;
-	  continue;
-	}
-
-      if (IsSkipped (list->view))
-	{
-	  /* We must skip this view, as it represents (for instance) a
-	     subsurface that has been added, but not committed.  */
-	  SetPartiallyMapped (subcompositor);
 	  continue;
 	}
 

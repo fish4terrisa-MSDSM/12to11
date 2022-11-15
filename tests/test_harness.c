@@ -570,6 +570,8 @@ load_png_image (struct test_display *display, const char *filename)
   /* Upload the image data.  */
   buffer = upload_image_data (display, (const char *) image_data,
 			      width, height, depth);
+  test_manager_set_buffer_label (display->test_manager, buffer,
+				 filename);
 
   /* Free the image data.  */
   free (image_data);

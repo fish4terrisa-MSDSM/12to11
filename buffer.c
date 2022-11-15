@@ -116,6 +116,9 @@ ExtBufferDestroy (ExtBuffer *buffer)
       item->func (buffer, item->data);
     }
 
+  /* Free the label if present.  */
+  XLFree (buffer->label);
+
   /* Not very efficient, since the list is followed through twice, but
      destroy listener lists should always be small.  */
   XLListFree (buffer->destroy_listeners, XLFree);

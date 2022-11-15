@@ -110,6 +110,15 @@
       </description>
     </request>
 
+    <request name="set_buffer_label">
+      <description summary="set buffer label">
+	Set the label of the given buffer to the specified string.
+	The label is used only for debugging purposes.
+      </description>
+      <arg name="buffer" type="object" interface="wl_buffer"/>
+      <arg name="label" type="string"/>
+    </request>
+
     <event name="display_string">
       <description summary="X server name">
 	The display_string event sends the name of the X display to

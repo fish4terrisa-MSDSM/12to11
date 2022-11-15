@@ -577,12 +577,25 @@ GetSerial (struct wl_client *client, struct wl_resource *resource)
   test_manager_send_serial (resource, serial);
 }
 
+static void
+SetBufferLabel (struct wl_client *client, struct wl_resource *resource,
+		struct wl_resource *buffer_resource, const char *label)
+{
+  ExtBuffer *buffer;
+
+  buffer = wl_resource_get_user_data (buffer_resource);
+
+  XLFree (buffer->label);
+  buffer->label = XLStrdup (label);
+}
+
 static const struct test_manager_interface test_manager_impl =
   {
     .get_test_surface = GetTestSurface,
     .get_scale_lock = GetScaleLock,
     .get_test_seat = GetTestSeat,
     .get_serial = GetSerial,
+    .set_buffer_label = SetBufferLabel,
   };
 
 

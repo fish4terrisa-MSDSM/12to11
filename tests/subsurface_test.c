@@ -35,6 +35,7 @@ enum test_kind
     SUBSURFACE_DESYNC_KIND,
     SUBSURFACE_COMPLEX_DAMAGE_KIND,
     SUBSURFACE_SCALE_KIND,
+    SUBSURFACE_REPARENT_KIND,
   };
 
 static const char *test_names[] =
@@ -50,6 +51,7 @@ static const char *test_names[] =
     "subsurface_desync",
     "subsurface_complex_damage",
     "subsurface_scale",
+    "subsurface_reparent",
   };
 
 struct test_subsurface
@@ -61,7 +63,7 @@ struct test_subsurface
   struct wl_surface *surface;
 };
 
-#define LAST_TEST       SUBSURFACE_SCALE_KIND
+#define LAST_TEST       SUBSURFACE_REPARENT_KIND
 
 /* The display.  */
 static struct test_display *display;
@@ -83,7 +85,7 @@ static struct test_surface *test_surface;
 static struct wl_surface *wayland_surface;
 
 /* Various subsurfaces.  */
-static struct test_subsurface *subsurfaces[9];
+static struct test_subsurface *subsurfaces[11];
 
 /* Various buffers.  */
 static struct wl_buffer *tiny_png;
@@ -98,6 +100,8 @@ static struct wl_buffer *big_png;
 static struct wl_buffer *small_png;
 static struct wl_buffer *subsurface_1_complex_png;
 static struct wl_buffer *subsurface_transparency_damage_png;
+static struct wl_buffer *subsurface_stack_1_png;
+static struct wl_buffer *subsurface_stack_2_png;
 
 /* The test image ID.  */
 static uint32_t current_test_image;
@@ -207,6 +211,26 @@ make_test_subsurface_with_parent (struct test_subsurface *parent)
   free (subsurface);
  error_1:
   return NULL;
+}
+
+static void
+delete_subsurface_role (struct test_subsurface *subsurface)
+{
+  wl_subsurface_destroy (subsurface->subsurface);
+  subsurface->subsurface = NULL;
+}
+
+static void
+recreate_subsurface (struct test_subsurface *subsurface,
+		     struct wl_surface *parent)
+{
+  subsurface->subsurface
+    = wl_subcompositor_get_subsurface (subcompositor,
+				       subsurface->surface,
+				       parent);
+
+  if (!subsurface->subsurface)
+    report_test_failure ("failed to recreate subsurface");
 }
 
 static void
@@ -731,6 +755,7 @@ test_single_step (enum test_kind kind)
       wl_surface_set_buffer_transform (subsurfaces[8]->surface,
 				       WL_OUTPUT_TRANSFORM_NORMAL);
       wl_surface_attach (subsurfaces[8]->surface, small_png, 0, 0);
+      wl_surface_damage (subsurfaces[8]->surface, 0, 0, 150, 150);
       wl_surface_commit (subsurfaces[8]->surface);
 
       /* Nothing should appear.  */
@@ -811,6 +836,88 @@ test_single_step (enum test_kind kind)
 	 run.  */
       sleep (1);
       sleep_or_verify ();
+
+      /* Reset the scale.  */
+      test_set_scale (display, 1);
+      wait_frame_callback (wayland_surface);
+
+      /* Sleep for 1 second to wait for the scale hooks to completely
+	 run.  */
+      sleep (1);
+
+      test_single_step (SUBSURFACE_REPARENT_KIND);
+      break;
+
+    case SUBSURFACE_REPARENT_KIND:
+      subsurface_stack_1_png
+	= load_png_image (display, "subsurface_stack_1.png");
+
+      if (!subsurface_stack_1_png)
+	report_test_failure ("failed to load subsurface_stack_1.png");
+
+      subsurface_stack_2_png
+	= load_png_image (display, "subsurface_stack_2.png");
+
+      if (!subsurface_stack_2_png)
+	report_test_failure ("failed to load subsurface_stack_2.png");
+
+      /* Delete subsurfaces[6].  Verify that after doing so,
+	 subsurfaces[7] and subsurfaces[8] disappear.  */
+      delete_subsurface_role (subsurfaces[6]);
+      wait_frame_callback (wayland_surface);
+      sleep_or_verify ();
+
+      /* Next, recreate the subsurface.  The children should not
+	 become visible, as subsurfaces[4] was not committed.  */
+      recreate_subsurface (subsurfaces[6],
+			   subsurfaces[4]->surface);
+      wait_frame_callback (wayland_surface);
+      sleep_or_verify ();
+
+      /* Finally, create two new subsurfaces.  Both are children of
+	 subsurfaces[6].  The first, subsurfaces[9] has
+	 subsurface_stack_1 applied, and is placed at 600, 600.  */
+      subsurfaces[9]
+	= make_test_subsurface_with_parent (subsurfaces[6]);
+
+      if (!subsurfaces[9])
+	report_test_failure ("failed to create subsurface");
+
+      wl_surface_attach (subsurfaces[9]->surface, subsurface_stack_1_png,
+			 0, 0);
+      wl_surface_damage (subsurfaces[9]->surface, 0, 0, 100, 100);
+      wl_surface_commit (subsurfaces[9]->surface);
+      wl_subsurface_set_position (subsurfaces[9]->subsurface, 600, 600);
+
+      /* The second, subsurfaces[10] is a child of subsurfaces[6].  It
+	 is also placed at 600, 600, on top of subsurfaces[9].  */
+      subsurfaces[10]
+	= make_test_subsurface_with_parent (subsurfaces[6]);
+
+      if (!subsurfaces[10])
+	report_test_failure ("failed to create subsurface");
+
+      wl_surface_attach (subsurfaces[10]->surface, subsurface_stack_2_png,
+			 0, 0);
+      wl_surface_damage (subsurfaces[10]->surface, 0, 0, 100, 100);
+      wl_surface_commit (subsurfaces[10]->surface);
+      wl_subsurface_set_position (subsurfaces[10]->subsurface, 600, 600);
+
+      /* Now, commit subsurfaces[6].  Nothing should become
+	 visible.  */
+      wl_surface_commit (subsurfaces[6]->surface);
+      wait_frame_callback (wayland_surface);
+      sleep_or_verify ();
+
+      /* Finally, commit subsurfaces[4] and then subsurfaces[0].
+	 Everything should now show up: a completely white W on top of
+	 a translucent red cube, partly obscuring small.png, at 600,
+	 600.  */
+      wl_surface_commit (subsurfaces[4]->surface);
+      wait_frame_callback (subsurfaces[0]->surface);
+      sleep_or_verify ();
+
+      break;
     }
 
   if (kind == LAST_TEST)
