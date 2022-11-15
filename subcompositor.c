@@ -1286,8 +1286,8 @@ ViewSetSubcompositor (View *view, Subcompositor *subcompositor)
 
   list = view->link;
 
-  /* Attach the subcompositor recursively for all of view's
-     inferiors.  */
+  /* Attach the subcompositor recursively for all of view's inferiors.
+     view should not be attached to a subcompositor.  */
 
   do
     {
@@ -1296,7 +1296,7 @@ ViewSetSubcompositor (View *view, Subcompositor *subcompositor)
 
       list = list->next;
     }
-  while (list != view->inferior);
+  while (list != view->link);
 }
 
 

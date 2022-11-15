@@ -917,6 +917,27 @@ test_single_step (enum test_kind kind)
       wait_frame_callback (subsurfaces[0]->surface);
       sleep_or_verify ();
 
+      /* Test that subsurface actions are applied in the right order
+	 for newly unparented (pending) subsurfaces.  Destroy and
+	 recreate subsurfaces[9] and subsurfaces[10].  */
+      delete_subsurface_role (subsurfaces[9]);
+      delete_subsurface_role (subsurfaces[10]);
+      recreate_subsurface (subsurfaces[9], subsurfaces[6]->surface);
+      recreate_subsurface (subsurfaces[10], subsurfaces[6]->surface);
+      wl_subsurface_set_position (subsurfaces[9]->subsurface, 600, 600);
+      wl_subsurface_set_position (subsurfaces[10]->subsurface, 600, 600);
+
+      /* Place subsurfaces[9] above subsurfaces[10].  At this point,
+	 the subsurfaces have not yet been confirmed.  */
+      wl_subsurface_place_above (subsurfaces[9]->subsurface,
+				 subsurfaces[10]->surface);
+
+      /* Commit the parents.  W should now be tinted red.  */
+      wl_surface_commit (subsurfaces[6]->surface);
+      wl_surface_commit (subsurfaces[4]->surface);
+      wait_frame_callback (subsurfaces[0]->surface);
+      sleep_or_verify ();
+
       break;
     }
 

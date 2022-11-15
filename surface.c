@@ -1390,14 +1390,15 @@ HandleSurfaceDestroy (struct wl_resource *resource)
 
   surface = wl_resource_get_user_data (resource);
 
-  /* Free all subsurfaces.  This must come before the subcompositor is
-     destroyed.  */
+  if (surface->role)
+    XLSurfaceReleaseRole (surface, surface->role);
+
+  /* Detach all subsurfaces from the parent.  This *must* be done
+     after the role is torn down, because that is where the toplevel
+     subcompositor is detached from the roles.  */
   XLListFree (surface->subsurfaces,
 	      NotifySubsurfaceDestroyed);
   surface->subsurfaces = NULL;
-
-  if (surface->role)
-    XLSurfaceReleaseRole (surface, surface->role);
 
   /* Keep surface->resource around until the role is released; some
      code (such as dnd.c) assumes that surface->resource will always

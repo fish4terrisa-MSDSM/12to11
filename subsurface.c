@@ -912,18 +912,15 @@ Teardown (Surface *surface, Role *role)
   NoteSubsurfaceTeardown (subsurface);
 
   role->surface = NULL;
+  subcompositor = NULL;
 
   if (subsurface->parent)
     {
-      subcompositor = ViewGetSubcompositor (surface->view);
-
-      /* Assert that the subcompositor is NULL if the subsurface is
-	 pending.  */
-      XLAssert (!subsurface->pending || !subcompositor);
-
-      if (subcompositor)
+      if (!subsurface->pending)
 	{
-	  /* Detach the views if the subcompositor is set.  */
+	  subcompositor = ViewGetSubcompositor (surface->view);
+
+	  /* Detach the views if the subsurface is not pending.  */
 
 	  ViewUnparent (surface->view);
 	  ViewSetSubcompositor (surface->view, NULL);
@@ -1144,22 +1141,19 @@ XLSubsurfaceParentDestroyed (Role *role)
   Subsurface *subsurface;
 
   subsurface = SubsurfaceFromRole (role);
-  subsurface->parent = NULL;
 
   /* The callback is freed with the parent.  */
   subsurface->commit_callback = NULL;
 
   if (subsurface->role.surface)
     {
-      /* Set the subcompositor to NULL, as it may no longer be
-	 present.  */
-      ViewSetSubcompositor (subsurface->role.surface->view,
-			    NULL);
-      ViewSetSubcompositor (subsurface->role.surface->under,
-			    NULL);
+      /* Unparent the view.  The parent is responsible for clearing
+	 the subcompositor.  */
       ViewUnparent (subsurface->role.surface->view);
       ViewUnparent (subsurface->role.surface->under);
     }
+
+  subsurface->parent = NULL;
 }
 
 void
