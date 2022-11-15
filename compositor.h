@@ -1344,6 +1344,7 @@ struct _XdgRoleImplementationFuncs
   void (*outputs_changed) (Role *, XdgRoleImplementation *);
   void (*after_commit) (Role *, Surface *, XdgRoleImplementation *);
   void (*activate) (Role *, XdgRoleImplementation *, int, Time);
+  void (*rescale) (Role *, XdgRoleImplementation *);
 };
 
 struct _XdgRoleImplementation

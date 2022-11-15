@@ -884,6 +884,11 @@ Rescale (Surface *surface, Role *role)
 
   subsurface = SubsurfaceFromRole (role);
 
+  /* If the parent has been detached, return immediately.  */
+
+  if (!subsurface->parent)
+    return;
+
   /* The scale factor changed; move the subsurface to the new correct
      position.  */
 

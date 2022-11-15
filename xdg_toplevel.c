@@ -1235,12 +1235,46 @@ AckConfigure (Role *role, XdgRoleImplementation *impl, uint32_t serial)
 static void
 SendOutputBounds (XdgToplevel *toplevel)
 {
-  int x_min, y_min, x_max, y_max;
+  int x_min, y_min, x_max, y_max, width, height;
 
   XLGetMaxOutputBounds (&x_min, &y_min, &x_max, &y_max);
+
+  if (!toplevel->role->surface || !toplevel->role->resource)
+    return;
+
+  /* Adjust these bounds by the scale factor of the surface.  The
+     bounds are specified in the window coordinate system, and have to
+     be converted to the surface ones.  */
+
+  TruncateScaleToSurface (toplevel->role->surface,
+			  x_max - x_min + 1,
+			  y_max - y_min + 1,
+			  &width, &height);
+
   xdg_toplevel_send_configure_bounds (toplevel->resource,
-				      x_max - x_min + 1,
-				      y_max - y_min + 1);
+				      width, height);
+}
+
+static void
+Rescale (Role *role, XdgRoleImplementation *impl)
+{
+  XdgToplevel *toplevel;
+  int width, height;
+
+  toplevel = ToplevelFromRoleImpl (impl);
+
+  if (!toplevel->resource)
+    return;
+
+  /* The scale changed.  Send the output bounds again if
+     necessary.  */
+
+  if (wl_resource_get_version (toplevel->resource) < 4)
+    return;
+
+  SendOutputBounds (toplevel);
+  CurrentWindowGeometry (toplevel, &width, &height);
+  SendConfigure (toplevel, width, height);
 }
 
 /* Forward declaration.  */
@@ -1971,7 +2005,8 @@ ShowWindowMenu (struct wl_client *client, struct wl_resource *resource,
   XLXdgRoleCurrentRootPosition (toplevel->role, &root_x, &root_y);
 
   XLSeatShowWindowMenu (seat, toplevel->role->surface,
-			root_x + x, root_y + y);
+			root_x + x * toplevel->role->surface->factor,
+			root_y + y * toplevel->role->surface->factor);
 }
 
 static void
@@ -2363,6 +2398,7 @@ XLGetXdgToplevel (struct wl_client *client, struct wl_resource *resource,
   toplevel->impl.funcs.outputs_changed = OutputsChanged;
   toplevel->impl.funcs.after_commit = AfterCommit;
   toplevel->impl.funcs.activate = Activate;
+  toplevel->impl.funcs.rescale = Rescale;
 
   if (!XLWmSupportsHint (_NET_WM_STATE_FOCUSED))
     /* If _NET_WM_STATE_FOCUSED is unsupported, fall back to utilizing

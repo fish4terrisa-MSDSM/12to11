@@ -1332,6 +1332,11 @@ Rescale (Surface *surface, Role *role)
 
   if (xdg_role->impl->funcs.handle_geometry_change)
     xdg_role->impl->funcs.handle_geometry_change (role, xdg_role->impl);
+
+  /* Also update the configure bounds if necessary.  */
+
+  if (xdg_role->impl->funcs.rescale)
+    xdg_role->impl->funcs.rescale (role, xdg_role->impl);
 }
 
 static void
