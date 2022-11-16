@@ -2292,7 +2292,7 @@ OutputsChanged (Role *role, XdgRoleImplementation *impl)
 
 static void
 Activate (Role *role, XdgRoleImplementation *impl, int deviceid,
-	  Time time)
+	  Time time, Surface *activator_surface)
 {
   XEvent message;
   XdgToplevel *toplevel;
@@ -2310,7 +2310,9 @@ Activate (Role *role, XdgRoleImplementation *impl, int deviceid,
       message.xclient.format = 32;
       message.xclient.data.l[0] = 1;
       message.xclient.data.l[1] = time;
-      message.xclient.data.l[2] = None;
+      message.xclient.data.l[2] = (activator_surface
+				   ? XLWindowFromSurface (activator_surface)
+				   : None);
       message.xclient.data.l[3] = 0;
       message.xclient.data.l[4] = 0;
 

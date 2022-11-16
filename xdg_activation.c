@@ -36,6 +36,12 @@ struct _XdgActivationToken
   /* The seat destroy callback.  */
   void *seat_destroy_callback;
 
+  /* The surface associated with this activation token.  */
+  Surface *surface;
+
+  /* The destroy callback associated with the surface.  */
+  DestroyCallback *destroy_callback;
+
   /* The serial associated with this activation token.  */
   uint32_t serial;
 };
@@ -46,11 +52,22 @@ static struct wl_global *xdg_activation_global;
 
 
 static void
+HandleSurfaceDestroyed (void *data)
+{
+  XdgActivationToken *token;
+
+  token = data;
+  token->destroy_callback = NULL;
+  token->surface = NULL;
+}
+
+static void
 HandleSeatDestroyed (void *data)
 {
   XdgActivationToken *token;
 
   token = data;
+  token->seat_destroy_callback = NULL;
   token->seat = NULL;
   token->serial = 0;
 }
@@ -106,7 +123,47 @@ static void
 SetSurface (struct wl_client *client, struct wl_resource *resource,
 	    struct wl_resource *surface_resource)
 {
-  /* This information is not useful.  */
+  XdgActivationToken *token;
+  Surface *surface;
+
+  token = wl_resource_get_user_data (resource);
+  surface = wl_resource_get_user_data (surface_resource);
+
+  if (token->surface)
+    XLSurfaceCancelRunOnFree (token->destroy_callback);
+
+  /* The surface specified here is used by window managers to decide
+     whether or not to transfer focus.  It should be the surface that
+     the client thinks is currently focused.  */
+
+  token->surface = surface;
+  token->destroy_callback
+    = XLSurfaceRunOnFree (surface, HandleSurfaceDestroyed,
+			  token);
+}
+
+static unsigned int
+GetIdForSurface (Surface *surface)
+{
+  unsigned int *data;
+  static unsigned int id;
+
+  /* Given a surface, return a unique identifier for that surface.  */
+  data = XLSurfaceGetClientData (surface, XdgActivationData,
+				 sizeof *data, NULL);
+
+  /* If data is 0, then initialize it with a unique id.  */
+
+  if (!*data)
+    {
+      id++;
+      if (!id)
+	id++;
+      *data = id;
+    }
+
+  /* Return the surface's id.  */
+  return *data;
 }
 
 static void
@@ -115,6 +172,7 @@ Commit (struct wl_client *client, struct wl_resource *resource)
   XdgActivationToken *token;
   Timestamp last_user_time;
   char buffer[80];
+  unsigned int id;
 
   token = wl_resource_get_user_data (resource);
 
@@ -139,18 +197,31 @@ Commit (struct wl_client *client, struct wl_resource *resource)
       goto finish;
     }
 
-  /* Send the last user time as the activation token.  */
+  /* Send the last user time as the activation token, along with the
+     surface id (if set).  */
+
   last_user_time = XLSeatGetLastUserTime (token->seat);
-  sprintf (buffer, "%"PRIu32".%"PRIu32".%d",
+
+  if (token->surface)
+    id = GetIdForSurface (token->surface);
+  else
+    id = 0;
+
+  sprintf (buffer, "%"PRIu32".%"PRIu32".%d.%u",
 	   last_user_time.months,
 	   last_user_time.milliseconds,
-	   XLSeatGetPointerDevice (token->seat));
+	   XLSeatGetPointerDevice (token->seat),
+	   /* If id is 0, then a surface was not specified.  */
+	   id);
   xdg_activation_token_v1_send_done (token->resource, buffer);
 
   /* Free the token.  */
  finish:
   if (token->seat_destroy_callback)
     XLSeatCancelDestroyListener (token->seat_destroy_callback);
+
+  if (token->destroy_callback)
+    XLSurfaceCancelRunOnFree (token->destroy_callback);
 
   XLFree (token);
 }
@@ -183,6 +254,9 @@ HandleResourceDestroy (struct wl_resource *resource)
 
   if (token->seat_destroy_callback)
     XLSeatCancelDestroyListener (token->seat_destroy_callback);
+
+  if (token->destroy_callback)
+    XLSurfaceCancelRunOnFree (token->destroy_callback);
 
   XLFree (token);
 }
@@ -226,16 +300,37 @@ GetActivationToken (struct wl_client *client, struct wl_resource *resource,
 				  token, HandleResourceDestroy);
 }
 
+static Surface *
+GetSurfaceForId (unsigned int id)
+{
+  Surface *surface;
+  unsigned int *data;
+
+  surface = all_surfaces.next;
+  while (surface != &all_surfaces)
+    {
+      data = XLSurfaceFindClientData (surface, XdgActivationData);
+
+      if (data && *data == id)
+	return surface;
+
+      surface = surface->next;
+    }
+
+  return NULL;
+}
+
 static void
 Activate (struct wl_client *client, struct wl_resource *resource,
 	  const char *token, struct wl_resource *surface_resource)
 {
   Timestamp timestamp;
-  Surface *surface;
+  Surface *surface, *activator_surface;
   int deviceid;
+  unsigned int surface_id;
 
-  if (sscanf (token, "%"SCNu32".%"SCNu32".%d", &timestamp.months,
-	      &timestamp.milliseconds, &deviceid) != 3)
+  if (sscanf (token, "%"SCNu32".%"SCNu32".%d.%u", &timestamp.months,
+	      &timestamp.milliseconds, &deviceid, &surface_id) != 4)
     /* The activation token is invalid.  */
     return;
 
@@ -243,9 +338,19 @@ Activate (struct wl_client *client, struct wl_resource *resource,
 
   surface = wl_resource_get_user_data (surface_resource);
 
+  /* If a surface ID was specified, try to find the surface
+     inside.  */
+
+  if (surface_id)
+    /* Try to obtain the surface associated with this ID.  */
+    activator_surface = GetSurfaceForId (surface_id);
+  else
+    activator_surface = NULL;
+
   if (surface->role->funcs.activate)
     surface->role->funcs.activate (surface, surface->role,
-				   deviceid, timestamp);
+				   deviceid, timestamp,
+				   activator_surface);
 }
 
 static const struct xdg_activation_v1_interface xdg_activation_impl =

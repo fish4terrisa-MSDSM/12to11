@@ -338,16 +338,29 @@ GetWindow (Surface *surface, Role *role)
 
 static void
 Activate (Surface *surface, Role *role, int deviceid,
-	  Timestamp timestamp)
+	  Timestamp timestamp, Surface *activator_surface)
 {
+  struct wl_resource *resource;
   TestSurface *test;
 
   test = TestSurfaceFromRole (role);
 
   if (test->role.resource)
-    test_surface_send_activated (test->role.resource,
-				 timestamp.months,
-				 timestamp.milliseconds);
+    {
+      /* If the activator surface belongs to the same client as the
+	 client who created the test surface, set the resource to the
+	 activator surface.  */
+      if (wl_resource_get_client (activator_surface->resource)
+	  == wl_resource_get_client (test->role.resource))
+	resource = activator_surface->resource;
+      else
+	resource = NULL;
+
+      test_surface_send_activated (test->role.resource,
+				   timestamp.months,
+				   timestamp.milliseconds,
+				   resource);
+    }
 }
 
 static const struct test_surface_interface test_surface_impl =

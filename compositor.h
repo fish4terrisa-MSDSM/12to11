@@ -985,6 +985,7 @@ enum _ClientDataType
     ShortcutInhibitData,
     IdleInhibitData,
     MaxClientData,
+    XdgActivationData,
   };
 
 struct _DestroyCallback
@@ -1146,7 +1147,8 @@ struct _RoleFuncs
   void (*select_extra_events) (Surface *, Role *, unsigned long);
   void (*note_focus) (Surface *, Role *, FocusMode);
   void (*outputs_changed) (Surface *, Role *);
-  void (*activate) (Surface *, Role *, int, Timestamp);
+  void (*activate) (Surface *, Role *, int, Timestamp,
+		    Surface *);
 };
 
 struct _Role
@@ -1343,7 +1345,8 @@ struct _XdgRoleImplementationFuncs
   void (*note_focus) (Role *, XdgRoleImplementation *, FocusMode);
   void (*outputs_changed) (Role *, XdgRoleImplementation *);
   void (*after_commit) (Role *, Surface *, XdgRoleImplementation *);
-  void (*activate) (Role *, XdgRoleImplementation *, int, Time);
+  void (*activate) (Role *, XdgRoleImplementation *, int, Time,
+		    Surface *);
   void (*rescale) (Role *, XdgRoleImplementation *);
 };
 

@@ -1410,8 +1410,10 @@ HandleSurfaceDestroy (struct wl_resource *resource)
 
   while (data)
     {
-      /* Free the client data.  */
-      data->free_function (data->data);
+      if (data->free_function)
+	/* Free the client data.  */
+	data->free_function (data->data);
+
       XLFree (data->data);
 
       /* And its record.  */

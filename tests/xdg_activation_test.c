@@ -58,6 +58,9 @@ static struct wl_surface *wayland_surface;
 static uint32_t last_activation_months;
 static uint32_t last_activation_milliseconds;
 
+/* The last activation surface.  */
+static struct wl_surface *last_activation_surface;
+
 
 
 /* Forward declarations.  */
@@ -149,6 +152,10 @@ check_activation_with_serial (uint32_t serial, bool expect_success)
 	  || last_activation_milliseconds != 1001)
 	report_test_failure ("activation failed, wrong time or event not"
 			     " received");
+
+      if (last_activation_surface != wayland_surface)
+	report_test_failure ("activation succeeded, but the activator"
+			     " surface was wrong");
     }
   else if (last_activation_months || last_activation_milliseconds)
     report_test_failure ("activation succeeded unexpectedly");
@@ -172,7 +179,7 @@ test_single_step (enum test_kind kind)
 	report_test_failure ("failed to load tiny.png");
 
       wl_surface_attach (wayland_surface, buffer, 0, 0);
-      submit_surface_damage (wayland_surface, 0, 0, 500, 500);
+      submit_surface_damage (wayland_surface, 0, 0, 4, 4);
       wl_surface_commit (wayland_surface);
       wait_for_map ();
 
@@ -290,10 +297,12 @@ handle_test_surface_mapped (void *data, struct test_surface *test_surface,
 
 static void
 handle_test_surface_activated (void *data, struct test_surface *test_surface,
-			       uint32_t months, uint32_t milliseconds)
+			       uint32_t months, uint32_t milliseconds,
+			       struct wl_surface *activator_surface)
 {
   last_activation_months = months;
   last_activation_milliseconds = milliseconds;
+  last_activation_surface = activator_surface;
 }
 
 static const struct test_surface_listener test_surface_listener =

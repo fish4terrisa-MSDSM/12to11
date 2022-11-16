@@ -1399,7 +1399,7 @@ OutputsChanged (Surface *surface, Role *role)
 
 static void
 Activate (Surface *surface, Role *role, int deviceid,
-	  Timestamp timestamp)
+	  Timestamp timestamp, Surface *activator_surface)
 {
   XdgRole *xdg_role;
 
@@ -1408,7 +1408,8 @@ Activate (Surface *surface, Role *role, int deviceid,
   if (xdg_role->impl && xdg_role->impl->funcs.activate)
     xdg_role->impl->funcs.activate (role, xdg_role->impl,
 				    deviceid,
-				    timestamp.milliseconds);
+				    timestamp.milliseconds,
+				    activator_surface);
 }
 
 void

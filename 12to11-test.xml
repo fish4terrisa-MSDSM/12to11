@@ -175,9 +175,17 @@
 	the surface associated with the role to be activated.  Its
 	parameters constitute the timestamp at which the activation
 	occurred.
+
+	If the surface that created the activation token used to
+	activate this test surface belongs to the same client that
+	created the test surface, then it will be sent as the
+	activator_surface argument to this event.  Otherwise, the
+	argument is left unspecified.
       </description>
       <arg name="months" type="uint"/>
       <arg name="milliseconds" type="uint"/>
+      <arg name="activator_surface" type="object" interface="wl_surface"
+	   allow-null="true"/>
     </event>
   </interface>
 

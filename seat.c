@@ -567,6 +567,9 @@ struct _Seat
   /* The serial of the last key event sent.  */
   uint32_t last_keyboard_serial;
 
+  /* The serial of the last keyboard enter event sent.  */
+  uint32_t last_enter_serial;
+
   /* Whether or not a resize is in progress.  */
   Bool resize_in_progress;
 
@@ -2836,6 +2839,11 @@ SendKeyboardEnter (Seat *seat, Surface *enter)
 
   if (!info)
     return;
+
+  /* For some reason Firefox doesn't use the serial of the user event
+     (key or button press) that triggered the activation, but the
+     serial of the last keyboard entry event on the seat.  */
+  seat->last_enter_serial = serial;
 
   keyboard = info->keyboards.next;
 
@@ -6403,9 +6411,13 @@ XLSeatCheckActivationSerial (Seat *seat, uint32_t serial)
   return ((seat->last_button_press_serial
 	   && serial >= seat->last_button_press_serial)
 	  || (seat->last_button_serial
-	      && serial >= seat->last_button_press_serial)
+	      && serial >= seat->last_button_serial)
 	  || (seat->last_keyboard_serial
-	      && serial >= seat->last_keyboard_serial));
+	      && serial >= seat->last_keyboard_serial)
+	  /* Also allow using the serial at which the focus last
+	     changed, if there currently is a keyboard focus.  */
+	  || (serial == seat->last_enter_serial
+	      && seat->focus_surface));
 }
 
 /* This is a particularly ugly hack, but there is no other way to
