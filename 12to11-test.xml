@@ -276,6 +276,10 @@
 	state.  If the value already exists, post a value_exists
 	error.  If the valuator is more than 65535 or 0, post an
 	invalid_valuator error.
+
+	If this valuator is passed to a request that generates events
+	with raw valuators, the value specified will be used as the
+	raw value for the valuator as well.
       </description>
 
       <arg name="valuator" type="uint"/>
@@ -630,6 +634,130 @@
       </description>
       <arg name="months" type="uint"/>
       <arg name="milliseconds" type="uint"/>
+    </request>
+
+    <request name="dispatch_XI_FocusIn">
+      <description summary="dispatch focus in event">
+	Dispatch a focus in event to the seat.
+      </description>
+      <arg name="time" type="uint"/>
+      <arg name="sourceid" type="int"/>
+      <arg name="detail" type="int"/>
+      <arg name="root" type="uint"/>
+      <arg name="event" type="uint"/>
+      <arg name="child" type="uint"/>
+      <arg name="root_x" type="fixed"/>
+      <arg name="root_y" type="fixed"/>
+      <arg name="event_x" type="fixed"/>
+      <arg name="event_y" type="fixed"/>
+      <arg name="mode" type="int"/>
+      <arg name="focus" type="int"/>
+      <arg name="same_screen" type="int"/>
+      <arg name="buttons" type="object" interface="test_XIButtonState"
+	   allow-null="true"/>
+      <arg name="mods" type="object" interface="test_XIModifierState"
+	   allow-null="true"/>
+      <arg name="group" type="object" interface="test_XIModifierState"
+	   allow-null="true"/>
+    </request>
+
+    <request name="dispatch_XI_FocusOut">
+      <description summary="dispatch focus out event">
+	Dispatch a focus out event to the seat.
+      </description>
+      <arg name="time" type="uint"/>
+      <arg name="sourceid" type="int"/>
+      <arg name="detail" type="int"/>
+      <arg name="root" type="uint"/>
+      <arg name="event" type="uint"/>
+      <arg name="child" type="uint"/>
+      <arg name="root_x" type="fixed"/>
+      <arg name="root_y" type="fixed"/>
+      <arg name="event_x" type="fixed"/>
+      <arg name="event_y" type="fixed"/>
+      <arg name="mode" type="int"/>
+      <arg name="focus" type="int"/>
+      <arg name="same_screen" type="int"/>
+      <arg name="buttons" type="object" interface="test_XIButtonState"
+	   allow-null="true"/>
+      <arg name="mods" type="object" interface="test_XIModifierState"
+	   allow-null="true"/>
+      <arg name="group" type="object" interface="test_XIModifierState"
+	   allow-null="true"/>
+    </request>
+
+    <request name="dispatch_XI_RawKeyPress">
+      <description summary="dispatch raw event">
+	Dispatch a raw key press event to the seat.
+      </description>
+      <arg name="time" type="uint"/>
+      <arg name="sourceid" type="int"/>
+      <arg name="detail" type="int"/>
+      <arg name="flags" type="int"/>
+      <arg name="valuators" type="object" interface="test_XIValuatorState"
+	   allow-null="true"/>
+    </request>
+
+    <request name="dispatch_XI_RawKeyRelease">
+      <description summary="dispatch raw event">
+	Dispatch a raw key release event to the seat.
+      </description>
+      <arg name="time" type="uint"/>
+      <arg name="sourceid" type="int"/>
+      <arg name="detail" type="int"/>
+      <arg name="flags" type="int"/>
+      <arg name="valuators" type="object" interface="test_XIValuatorState"
+	   allow-null="true"/>
+    </request>
+
+    <request name="dispatch_XI_KeyPress">
+      <description summary="dispatch key press event">
+	Dispatch a regular key press event to the seat.
+      </description>
+      <arg name="time" type="uint"/>
+      <arg name="sourceid" type="int"/>
+      <arg name="detail" type="int"/>
+      <arg name="root" type="uint"/>
+      <arg name="event" type="uint"/>
+      <arg name="child" type="uint"/>
+      <arg name="root_x" type="fixed"/>
+      <arg name="root_y" type="fixed"/>
+      <arg name="event_x" type="fixed"/>
+      <arg name="event_y" type="fixed"/>
+      <arg name="flags" type="int"/>
+      <arg name="buttons" type="object" interface="test_XIButtonState"
+	   allow-null="true"/>
+      <arg name="valuators" type="object" interface="test_XIValuatorState"
+	   allow-null="true"/>
+      <arg name="mods" type="object" interface="test_XIModifierState"
+	   allow-null="true"/>
+      <arg name="group" type="object" interface="test_XIModifierState"
+	   allow-null="true"/>
+    </request>
+
+    <request name="dispatch_XI_KeyRelease">
+      <description summary="dispatch key release event">
+	Dispatch a regular key release event to the seat.
+      </description>
+      <arg name="time" type="uint"/>
+      <arg name="sourceid" type="int"/>
+      <arg name="detail" type="int"/>
+      <arg name="root" type="uint"/>
+      <arg name="event" type="uint"/>
+      <arg name="child" type="uint"/>
+      <arg name="root_x" type="fixed"/>
+      <arg name="root_y" type="fixed"/>
+      <arg name="event_x" type="fixed"/>
+      <arg name="event_y" type="fixed"/>
+      <arg name="flags" type="int"/>
+      <arg name="buttons" type="object" interface="test_XIButtonState"
+	   allow-null="true"/>
+      <arg name="valuators" type="object" interface="test_XIValuatorState"
+	   allow-null="true"/>
+      <arg name="mods" type="object" interface="test_XIModifierState"
+	   allow-null="true"/>
+      <arg name="group" type="object" interface="test_XIModifierState"
+	   allow-null="true"/>
     </request>
 
     <event name="device_id">

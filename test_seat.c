@@ -1129,6 +1129,135 @@ SetLastUserTime (struct wl_client *client, struct wl_resource *resource,
   controller->seat->last_user_time.milliseconds = milliseconds;
 }
 
+static void
+DispatchXIFocusIn (struct wl_client *client, struct wl_resource *resource,
+		   uint32_t time, int32_t sourceid, int32_t detail,
+		   uint32_t root, uint32_t event, uint32_t child,
+		   wl_fixed_t root_x, wl_fixed_t root_y,
+		   wl_fixed_t event_x, wl_fixed_t event_y, int32_t mode,
+		   int32_t focus, int32_t same_screen,
+		   struct wl_resource *buttons_resource,
+		   struct wl_resource *mods_resource,
+		   struct wl_resource *group_resource)
+{
+  TestSeatController *controller;
+  XIFocusInEvent test_event;
+
+  controller = wl_resource_get_user_data (resource);
+  GenerateCrossingEvent (XI_FocusIn, controller, test_event);
+
+  /* Now dispatch the event.  */
+  DispatchTestEvent (controller, event, (XIEvent *) &test_event);
+}
+
+static void
+DispatchXIFocusOut (struct wl_client *client, struct wl_resource *resource,
+		    uint32_t time, int32_t sourceid, int32_t detail,
+		    uint32_t root, uint32_t event, uint32_t child,
+		    wl_fixed_t root_x, wl_fixed_t root_y,
+		    wl_fixed_t event_x, wl_fixed_t event_y, int32_t mode,
+		    int32_t focus, int32_t same_screen,
+		    struct wl_resource *buttons_resource,
+		    struct wl_resource *mods_resource,
+		    struct wl_resource *group_resource)
+{
+  TestSeatController *controller;
+  XIFocusInEvent test_event;
+
+  controller = wl_resource_get_user_data (resource);
+  GenerateCrossingEvent (XI_FocusOut, controller, test_event);
+
+  /* Now dispatch the event.  */
+  DispatchTestEvent (controller, event, (XIEvent *) &test_event);
+}
+
+#define GenerateRawEvent(event_type, controller, test_event)		\
+  test_event.type = GenericEvent;					\
+  test_event.serial = request_serial_counter++;				\
+  test_event.send_event = True;						\
+  test_event.display = compositor.display;				\
+  test_event.extension = xi2_opcode;					\
+  test_event.evtype = event_type;					\
+  test_event.time = time;						\
+  test_event.deviceid = controller->seat->master_pointer;		\
+  test_event.sourceid = sourceid;					\
+  test_event.detail = detail;						\
+  test_event.flags = flags;						\
+  TranslateTestValuators (valuators_resource, &test_event.valuators);	\
+  test_event.raw_values = test_event.valuators.values;
+
+static void
+DispatchXIRawKeyPress (struct wl_client *client, struct wl_resource *resource,
+		       uint32_t time, int32_t sourceid, int32_t detail,
+		       int32_t flags, struct wl_resource *valuators_resource)
+{
+  TestSeatController *controller;
+  XIRawEvent test_event;
+
+  controller = wl_resource_get_user_data (resource);
+  GenerateRawEvent (XI_RawKeyPress, controller, test_event);
+
+  /* Now dispatch the event.  */
+  HandleRawKey (&test_event);
+}
+
+static void
+DispatchXIRawKeyRelease (struct wl_client *client, struct wl_resource *resource,
+			 uint32_t time, int32_t sourceid, int32_t detail,
+			 int32_t flags, struct wl_resource *valuators_resource)
+{
+  TestSeatController *controller;
+  XIRawEvent test_event;
+
+  controller = wl_resource_get_user_data (resource);
+  GenerateRawEvent (XI_RawKeyRelease, controller, test_event);
+
+  /* Now dispatch the event.  */
+  HandleRawKey (&test_event);
+}
+
+static void
+DispatchXIKeyPress (struct wl_client *client, struct wl_resource *resource,
+		    uint32_t time, int32_t sourceid, int32_t detail,
+		    uint32_t root, uint32_t event, uint32_t child,
+		    wl_fixed_t root_x, wl_fixed_t root_y,
+		    wl_fixed_t event_x, wl_fixed_t event_y, int32_t flags,
+		    struct wl_resource *buttons_resource,
+		    struct wl_resource *valuators_resource,
+		    struct wl_resource *mods_resource,
+		    struct wl_resource *group_resource)
+{
+  TestSeatController *controller;
+  XIDeviceEvent test_event;
+
+  controller = wl_resource_get_user_data (resource);
+  GenerateDeviceEvent (XI_KeyPress, controller, test_event);
+
+  /* Now dispatch the event.  */
+  DispatchTestEvent (controller, event, (XIEvent *) &test_event);
+}
+
+static void
+DispatchXIKeyRelease (struct wl_client *client, struct wl_resource *resource,
+		      uint32_t time, int32_t sourceid, int32_t detail,
+		      uint32_t root, uint32_t event, uint32_t child,
+		      wl_fixed_t root_x, wl_fixed_t root_y,
+		      wl_fixed_t event_x, wl_fixed_t event_y, int32_t flags,
+		      struct wl_resource *buttons_resource,
+		      struct wl_resource *valuators_resource,
+		      struct wl_resource *mods_resource,
+		      struct wl_resource *group_resource)
+{
+  TestSeatController *controller;
+  XIDeviceEvent test_event;
+
+  controller = wl_resource_get_user_data (resource);
+  GenerateDeviceEvent (XI_KeyRelease, controller, test_event);
+
+  /* Now dispatch the event.  */
+  DispatchTestEvent (controller, event, (XIEvent *) &test_event);
+}
+
 static const struct test_seat_controller_interface seat_controller_impl =
   {
     .destroy = DestroySeatController,
@@ -1143,6 +1272,12 @@ static const struct test_seat_controller_interface seat_controller_impl =
     .dispatch_XI_ButtonRelease = DispatchXIButtonRelease,
     .get_device_controller = GetDeviceController,
     .set_last_user_time = SetLastUserTime,
+    .dispatch_XI_FocusIn = DispatchXIFocusIn,
+    .dispatch_XI_FocusOut = DispatchXIFocusOut,
+    .dispatch_XI_RawKeyPress = DispatchXIRawKeyPress,
+    .dispatch_XI_RawKeyRelease = DispatchXIRawKeyRelease,
+    .dispatch_XI_KeyPress = DispatchXIKeyPress,
+    .dispatch_XI_KeyRelease = DispatchXIKeyRelease,
   };
 
 static void
@@ -1247,6 +1382,11 @@ XLGetTestSeat (struct wl_client *client, struct wl_resource *resource,
 
   /* Add the seat to the live seat list.  */
   live_seats = XLListPrepend (live_seats, seat);
+
+  /* Initialize seat->key_pressed.  */
+  seat->key_pressed
+    = XLCalloc (MaskLen (xkb_desc->max_key_code
+			 - xkb_desc->min_key_code), 1);
 
   /* Retain the seat.  */
   RetainSeat (seat);

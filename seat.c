@@ -1833,6 +1833,13 @@ MakeSeatForDevicePair (int master_keyboard, int master_pointer,
   seat->latched_group = state.latched_group;
   seat->effective_group = state.group;
 
+  /* If a keymap is already attached, initialize seat->key_pressed
+     now.  */
+  if (xkb_desc)
+    seat->key_pressed
+      = XLCalloc (MaskLen (xkb_desc->max_key_code
+			   - xkb_desc->min_key_code), 1);
+
   /* And select for XKB events from the master keyboard device.  If
      the server does not support accessing input extension devices
      with Xkb, an error will result.  */

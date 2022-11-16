@@ -49,6 +49,9 @@ struct test_seat
   /* The wl_pointer resource.  */
   struct wl_pointer *pointer;
 
+  /* The keyboard resource.  */
+  struct wl_keyboard *keyboard;
+
   /* The device ID of the seat.  */
   uint32_t device_id;
 

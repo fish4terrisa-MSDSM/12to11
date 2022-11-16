@@ -30,6 +30,9 @@ enum test_expect_event_kind
     POINTER_LEAVE_EVENT,
     POINTER_BUTTON_EVENT,
     POINTER_AXIS_VALUE120_EVENT,
+    KEYBOARD_ENTER_EVENT,
+    KEYBOARD_KEY_EVENT,
+    KEYBOARD_MODIFIERS_EVENT,
   };
 
 struct test_recorded_event
@@ -95,6 +98,45 @@ struct test_recorded_axis_value120_event
   int32_t value120;
 };
 
+struct test_recorded_keyboard_enter_event
+{
+  /* The event header.  */
+  struct test_recorded_event header;
+
+  /* The event surface.  */
+  struct wl_surface *surface;
+
+  /* The keys.  */
+  uint32_t *keys;
+
+  /* The number of keys in that array.  */
+  size_t num_keys;
+};
+
+struct test_recorded_keyboard_key_event
+{
+  /* The event header.  */
+  struct test_recorded_event header;
+
+  /* The key.  */
+  uint32_t key;
+
+  /* And the key state.  */
+  uint32_t state;
+};
+
+struct test_recorded_keyboard_modifiers_event
+{
+  /* The event header.  */
+  struct test_recorded_event header;
+
+  /* The modifiers.  */
+  uint32_t base, latched, locked;
+
+  /* The group.  */
+  uint32_t group;
+};
+
 struct test_subsurface
 {
   /* The subsurface itself.  */
@@ -111,6 +153,7 @@ enum test_kind
     TEST_CLICK_KIND,
     TEST_GRAB_KIND,
     TEST_VALUATOR_KIND,
+    TEST_KEY_KIND,
   };
 
 static const char *test_names[] =
@@ -120,9 +163,10 @@ static const char *test_names[] =
     "test_click",
     "test_grab",
     "test_valuator",
+    "test_key",
   };
 
-#define LAST_TEST	        TEST_VALUATOR_KIND
+#define LAST_TEST	        TEST_KEY_KIND
 #define TEST_SOURCE_DEVICE	4500000
 
 /* The display.  */
@@ -164,6 +208,11 @@ static void expect_motion_event (double, double);
 static void expect_leave_event (void);
 static void expect_button_event (int, int);
 static void expect_axis_value120_event (uint32_t, int32_t);
+static void expect_keyboard_enter_event (struct wl_surface *, uint32_t *,
+					 size_t);
+static void expect_keyboard_key_event (uint32_t, uint32_t);
+static void expect_keyboard_modifiers_event (uint32_t, uint32_t,
+					     uint32_t, uint32_t);
 static void expect_no_events (void);
 
 
@@ -636,6 +685,71 @@ run_valuator_test (void)
 }
 
 static void
+run_key_test (void)
+{
+  test_seat_controller_dispatch_XI_FocusIn (display->seat->controller,
+					    test_get_time (),
+					    TEST_SOURCE_DEVICE,
+					    XINotifyAncestor,
+					    test_get_root (),
+					    test_surface_window,
+					    None,
+					    wl_fixed_from_double (2.0),
+					    wl_fixed_from_double (2.0),
+					    wl_fixed_from_double (2.0),
+					    wl_fixed_from_double (2.0),
+					    XINotifyNonlinear,
+					    0,
+					    1,
+					    NULL, NULL, NULL);
+  test_seat_controller_dispatch_XI_RawKeyPress (display->seat->controller,
+						test_get_time (),
+						TEST_SOURCE_DEVICE,
+						67,
+						0,
+						NULL);
+  test_seat_controller_dispatch_XI_KeyPress (display->seat->controller,
+					     test_get_time (),
+					     TEST_SOURCE_DEVICE,
+					     67,
+					     test_get_root (),
+					     test_surface_window,
+					     None,
+					     wl_fixed_from_double (2.0),
+					     wl_fixed_from_double (2.0),
+					     wl_fixed_from_double (2.0),
+					     wl_fixed_from_double (2.0),
+					     0,
+					     NULL, NULL, NULL, NULL);
+  test_seat_controller_dispatch_XI_RawKeyRelease (display->seat->controller,
+						  test_get_time (),
+						  TEST_SOURCE_DEVICE,
+						  67,
+						  0,
+						  NULL);
+  test_seat_controller_dispatch_XI_KeyRelease (display->seat->controller,
+					       test_get_time (),
+					       TEST_SOURCE_DEVICE,
+					       67,
+					       test_get_root (),
+					       test_surface_window,
+					       None,
+					       wl_fixed_from_double (2.0),
+					       wl_fixed_from_double (2.0),
+					       wl_fixed_from_double (2.0),
+					       wl_fixed_from_double (2.0),
+					       0,
+					       NULL, NULL, NULL, NULL);
+
+  /* Now, verify the events as they arrive.  */
+  record_events ();
+  expect_keyboard_key_event (59, WL_KEYBOARD_KEY_STATE_RELEASED);
+  expect_keyboard_key_event (59, WL_KEYBOARD_KEY_STATE_PRESSED);
+  expect_keyboard_modifiers_event (0, 0, 0, 0);
+  expect_keyboard_enter_event (wayland_surface, NULL, 0);
+}
+
+static void
 test_single_step (enum test_kind kind)
 {
   struct wl_buffer *buffer, *child_buffer;
@@ -877,6 +991,22 @@ test_single_step (enum test_kind kind)
        frame ();  */
 
       run_valuator_test ();
+      kind = TEST_KEY_KIND;
+      goto again;
+
+    case TEST_KEY_KIND:
+      /* Test simple key press and key release.  Dispatch an
+	 XI_FocusIn event to the test surface.  Then, press and
+	 release the keycode 67, generating both raw and device
+	 events.  Verify that the following events are sent to the
+	 keyboard.
+
+           enter (SERIAL, SURFACE, array[0])
+	   modifiers (SERIAL, 0, 0, 0, 0)
+           key (SERIAL, TIME, 59, WL_KEYBOARD_KEY_STATE_PRESSED)
+	   key (SERIAL, TIME, 59, WL_KEYBOARD_KEY_STATE_RELEASED) */
+
+      run_key_test ();
       break;
     }
 
@@ -1044,6 +1174,105 @@ expect_axis_value120_event (uint32_t axis, int32_t value120)
   else
     report_test_failure ("expected axis_value120 event, but it was not "
 			 "received");
+}
+
+static void
+expect_keyboard_enter_event (struct wl_surface *surface, uint32_t *keys,
+			     size_t num_keys)
+{
+  struct test_recorded_event *event;
+  struct test_recorded_keyboard_enter_event *keyboard_enter_event;
+
+  event = record_tail;
+
+  if (!event)
+    report_test_failure ("expected event not sent");
+
+  record_tail = record_tail->last;
+
+  if (event->kind == KEYBOARD_ENTER_EVENT)
+    {
+      keyboard_enter_event
+	= (struct test_recorded_keyboard_enter_event *) event;
+
+      if (keyboard_enter_event->num_keys != num_keys
+	  || surface != keyboard_enter_event->surface
+	  || memcmp (keyboard_enter_event->keys, keys,
+		     num_keys * sizeof *keys))
+	report_test_failure ("expected keyboard_enter event passed"
+			     " with invalid parameters");
+      else
+	{
+	  free (keyboard_enter_event->keys);
+	  free (event);
+	}
+    }
+  else
+    report_test_failure ("expected keyboard_enter_event, but it was"
+			 " not received");
+}
+
+static void
+expect_keyboard_key_event (uint32_t key, uint32_t state)
+{
+  struct test_recorded_event *event;
+  struct test_recorded_keyboard_key_event *keyboard_key_event;
+
+  event = record_tail;
+
+  if (!event)
+    report_test_failure ("expected event not sent");
+
+  record_tail = record_tail->last;
+
+  if (event->kind == KEYBOARD_KEY_EVENT)
+    {
+      keyboard_key_event
+	= (struct test_recorded_keyboard_key_event *) event;
+
+      if (key != keyboard_key_event->key
+	  || state != keyboard_key_event->state)
+	report_test_failure ("expected keyboard_key passed with"
+			     " invalid parameters");
+      else
+	free (event);
+    }
+  else
+    report_test_failure ("expected keyboard_key_event, but it was"
+			 " not received");
+}
+
+static void
+expect_keyboard_modifiers_event (uint32_t base, uint32_t latched,
+				 uint32_t locked, uint32_t group)
+{
+  struct test_recorded_event *event;
+  struct test_recorded_keyboard_modifiers_event *keyboard_modifiers_event;
+
+  event = record_tail;
+
+  if (!event)
+    return;
+
+  record_tail = record_tail->last;
+
+  if (event->kind == KEYBOARD_MODIFIERS_EVENT)
+    {
+      keyboard_modifiers_event
+	= (struct test_recorded_keyboard_modifiers_event *) event;
+
+      if (keyboard_modifiers_event->base != base
+	  || keyboard_modifiers_event->latched != latched
+	  || keyboard_modifiers_event->locked != locked
+	  || keyboard_modifiers_event->group != group)
+	report_test_failure ("expected keyboard_modifiers passed with"
+			     " invalid parameters");
+      else
+	free (event);
+    }
+  else
+    report_test_failure ("expected keyboard_modifiers_event, but it was"
+			 " not received");
 }
 
 static void
@@ -1352,6 +1581,156 @@ static const struct wl_pointer_listener pointer_listener =
 
 
 static void
+handle_keyboard_keymap (void *data, struct wl_keyboard *keyboard,
+			uint32_t format, int32_t fd, uint32_t size)
+{
+  close (fd);
+}
+
+static void
+handle_keyboard_enter (void *data, struct wl_keyboard *keyboard,
+		       uint32_t serial, struct wl_surface *surface,
+		       struct wl_array *keys)
+{
+  struct test_recorded_keyboard_enter_event *event;
+
+  if (!recording_events)
+    {
+      test_log ("ignored keyboard enter event");
+      return;
+    }
+
+  event = malloc (sizeof *event);
+
+  if (!event)
+    report_test_failure ("failed to record event");
+
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
+#endif
+
+  event->header.kind = KEYBOARD_ENTER_EVENT;
+  event->header.last = record_tail;
+  record_tail = &event->header;
+
+  if (keys->size % sizeof (uint32_t))
+    report_test_failure ("reported key size modulo"
+			 " uint32_t!");
+
+  event->keys = malloc (keys->size);
+
+  if (!event->keys)
+    report_test_failure ("failed to allocate key array");
+
+  memcpy (event->keys, keys->data, keys->size);
+  event->num_keys = keys->size / sizeof (uint32_t);
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
+}
+
+static void
+handle_keyboard_leave (void *data, struct wl_keyboard *keyboard,
+		       uint32_t serial, struct wl_surface *surface)
+{
+
+}
+
+static void
+handle_keyboard_key (void *data, struct wl_keyboard *keyboard,
+		     uint32_t serial, uint32_t time, uint32_t key,
+		     uint32_t state)
+{
+  struct test_recorded_keyboard_key_event *event;
+
+  if (!recording_events)
+    {
+      test_log ("ignored keyboard key event");
+      return;
+    }
+
+  event = malloc (sizeof *event);
+
+  if (!event)
+    report_test_failure ("failed to record event");
+
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
+#endif
+
+  event->header.kind = KEYBOARD_KEY_EVENT;
+  event->header.last = record_tail;
+  record_tail = &event->header;
+
+  event->key = key;
+  event->state = state;
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
+}
+
+static void
+handle_keyboard_modifiers (void *data, struct wl_keyboard *keyboard,
+			   uint32_t serial, uint32_t mods_depressed,
+			   uint32_t mods_latched, uint32_t mods_locked,
+			   uint32_t group)
+{
+  struct test_recorded_keyboard_modifiers_event *event;
+
+  if (!recording_events)
+    {
+      test_log ("ignored modifiers event");
+      return;
+    }
+
+  event = malloc (sizeof *event);
+
+  if (!event)
+    report_test_failure ("failed to record modifiers event");
+
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
+#endif
+
+  event->header.kind = KEYBOARD_MODIFIERS_EVENT;
+  event->header.last = record_tail;
+  record_tail = &event->header;
+
+  event->base = mods_depressed;
+  event->latched = mods_latched;
+  event->locked = mods_locked;
+  event->group = group;
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
+}
+
+static void
+handle_keyboard_repeat_info (void *data, struct wl_keyboard *keyboard,
+			     int32_t rate, int32_t delay)
+{
+  
+}
+
+static const struct wl_keyboard_listener keyboard_listener =
+  {
+    handle_keyboard_keymap,
+    handle_keyboard_enter,
+    handle_keyboard_leave,
+    handle_keyboard_key,
+    handle_keyboard_modifiers,
+    handle_keyboard_repeat_info,
+  };
+
+
+
+static void
 submit_surface_damage (struct wl_surface *surface, int x, int y, int width,
 		       int height)
 {
@@ -1419,6 +1798,10 @@ run_test (void)
   /* Initialize the pointer listener.  */
   wl_pointer_add_listener (display->seat->pointer, &pointer_listener,
 			   NULL);
+
+  /* And the keyboard listener.  */
+  wl_keyboard_add_listener (display->seat->keyboard, &keyboard_listener,
+			    NULL);
 
   while (true)
     {

@@ -907,6 +907,12 @@ test_init_seat (struct test_display *display)
 
   if (!display->seat->pointer)
     report_test_failure ("failed to bind to test pointer");
+
+  display->seat->keyboard
+    = wl_seat_get_keyboard (display->seat->seat);
+
+  if (!display->seat->keyboard)
+    report_test_failure ("failed to bind to test keyboard");
 }
 
 void __attribute__ ((noreturn))
