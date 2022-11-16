@@ -2921,8 +2921,17 @@ HandleNewIM (XIM xim)
 
   return;
 
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
+#endif
+
  bad_locale:
   XCloseIM (xim);
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 }
 
 static void
