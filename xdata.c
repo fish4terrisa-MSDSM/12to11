@@ -1691,10 +1691,19 @@ GetConversionCallback (WriteTransfer *transfer, Atom target, Atom *type,
 
   cd = iconv_open ("ISO-8859-1", "UTF-8");
 
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
+#endif
+
   if (cd == (iconv_t) -1)
     /* The conversion context couldn't be initialized, so fail this
        transfer.  */
     return NULL;
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 
   /* First, create a non-blocking pipe.  We will give the write end to
      the client.  */
@@ -1885,10 +1894,17 @@ PostReceiveConversion (Time time, Atom selection, Atom target, int fd)
 
   if (cd == (iconv_t) -1)
     {
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
+#endif
       /* The conversion context couldn't be created.  Close the file
 	 descriptor and fail.  */
       close (fd);
       return;
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
     }
 
   info = XLCalloc (1, sizeof *info);

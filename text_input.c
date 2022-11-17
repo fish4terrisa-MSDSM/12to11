@@ -2222,12 +2222,19 @@ EncodeIMString (const char *input, size_t input_size, int *chars)
   /* If creating the cd failed, bail out.  */
   if (cd == (iconv_t) -1)
     {
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
+#endif
       /* Restore the old locale.  */
       if (!setlocale (LC_CTYPE, oldlocale))
 	abort ();
 
       XLFree (oldlocale);
       return NULL;
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
     }
 
   /* Otherwise, start converting.  */
