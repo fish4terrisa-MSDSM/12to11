@@ -260,7 +260,7 @@ following Wayland interfaces:
 lb lb
 lb n .
 Protocol	Version
-wl_output	2
+wl_output	4
 wl_compositor	5
 wl_shm	1
 xdg_wm_base	5

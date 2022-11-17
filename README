@@ -52,7 +52,7 @@ the "renderer" resource (class "Renderer") to "egl".
 The following Wayland protocols are implemented to a more-or-less
 complete degree:
 
-  'wl_output',                                  version:  2
+  'wl_output',                                  version:  4
   'wl_compositor',                              version:  5
   'wl_shm',                                     version:  1
   'xdg_wm_base',                                version:  5

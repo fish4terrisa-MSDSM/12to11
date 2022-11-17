@@ -39,9 +39,6 @@ struct _Output
   /* The output ID of this output.  */
   RROutput output;
 
-  /* Physical height of this output.  */
-  unsigned int mm_width, mm_height;
-
   /* List of display modes.  */
   XLList *modes;
 
@@ -51,14 +48,17 @@ struct _Output
   /* A list of resources associated with this output.  */
   XLList *resources;
 
+  /* The name of the output.  */
+  char *name;
+
+  /* Physical height of this output.  */
+  unsigned int mm_width, mm_height;
+
   /* The X and Y position of this output.  */
   int x, y;
 
   /* The width and height of this output.  */
   int width, height;
-
-  /* The name of the output.  */
-  char *name;
 
   /* The transform and subpixel layout of this output.  */
   uint32_t transform, subpixel;
@@ -83,10 +83,11 @@ enum
   {
     ModesChanged    = 1,
     GeometryChanged = (1 << 2),
+    NameChanged	    = (1 << 3),
     /* N.B. that this isn't currently checked during comparisons,
        since the rest of the code only supports a single global
        scale.  */
-    ScaleChanged    = (1 << 3),
+    ScaleChanged    = (1 << 4),
   };
 
 /* List of all outputs registered.  */
@@ -270,6 +271,11 @@ HandleBind (struct wl_client *client, void *data,
 
   for (tem = output->modes; tem; tem = tem->next)
     SendMode (tem->data, resource);
+
+  /* Send the output name.  I think it is supposed to be unique.  */
+
+  if (wl_resource_get_version (resource) >= 3)
+    wl_output_send_name (resource, output->name);
 
   if (wl_resource_get_version (resource) >= 2)
     wl_output_send_done (resource);
@@ -530,9 +536,11 @@ CompareOutputs (Output *output, Output *other, int *flags)
       || output->x != other->x
       || output->y != other->y
       || output->subpixel != other->subpixel
-      || output->transform != other->transform
-      || !strcmp (output->name, other->name))
+      || output->transform != other->transform)
     difference |= GeometryChanged;
+
+  if (strcmp (output->name, other->name))
+    difference |= NameChanged;
 
   *flags = difference;
 }
@@ -560,7 +568,7 @@ MakeGlobal (Output *output)
   XLAssert (!output->global);
 
   output->global = wl_global_create (compositor.wl_display,
-				     &wl_output_interface, 2,
+				     &wl_output_interface, 4,
 				     output, HandleBind);
 
   if (!output->global)
@@ -585,10 +593,17 @@ SendUpdates (Output *output, int difference)
   if (!difference)
     return;
 
+  /* Given a mask of differences, send the updated output information
+     to all clients.  */
+
   for (tem = output->resources; tem; tem = tem->next)
     {
       if (difference & GeometryChanged)
 	SendGeometry (output, tem->data);
+
+      if (difference & NameChanged
+	  && wl_resource_get_version (tem->data) >= 3)
+	wl_output_send_name (tem->data, output->name);
 
       if (difference & ModesChanged)
 	{
