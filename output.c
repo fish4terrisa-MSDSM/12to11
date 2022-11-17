@@ -375,8 +375,36 @@ ComputeSubpixel (XRROutputInfo *info)
 static uint32_t
 ComputeTransform (XRRCrtcInfo *info)
 {
-  /* TODO: support surface transforms.  */
-  return WL_OUTPUT_TRANSFORM_NORMAL;
+  switch (info->rotation)
+    {
+    case RR_Rotate_0:
+      return WL_OUTPUT_TRANSFORM_NORMAL;
+
+    case RR_Rotate_90:
+      return WL_OUTPUT_TRANSFORM_90;
+
+    case RR_Rotate_180:
+      return WL_OUTPUT_TRANSFORM_180;
+
+    case RR_Rotate_270:
+      return WL_OUTPUT_TRANSFORM_270;
+
+    case RR_Reflect_X | RR_Rotate_0:
+      return WL_OUTPUT_TRANSFORM_FLIPPED;
+
+    case RR_Reflect_X | RR_Rotate_90:
+      return WL_OUTPUT_TRANSFORM_FLIPPED_90;
+
+    case RR_Reflect_X | RR_Rotate_180:
+      return WL_OUTPUT_TRANSFORM_FLIPPED_180;
+
+    case RR_Reflect_X | RR_Rotate_270:
+      return WL_OUTPUT_TRANSFORM_FLIPPED_270;
+
+      /* How should Y axis reflection be handled here? */
+    default:
+      return WL_OUTPUT_TRANSFORM_NORMAL;
+    }
 }
 
 static XLList *
