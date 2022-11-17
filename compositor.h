@@ -820,6 +820,7 @@ extern SubcompositorDestroyCallback *SubcompositorOnDestroy (Subcompositor *,
 							     void (*) (void *),
 							     void *);
 extern void SubcompositorRemoveDestroyCallback (SubcompositorDestroyCallback *);
+extern void SubcompositorSetAlwaysGarbaged (Subcompositor *);
 
 extern void ViewSetSubcompositor (View *, Subcompositor *);
 

@@ -133,6 +133,8 @@ enum
     SubcompositorIsPartiallyMapped = (1 << 4),
     /* This means that the subcompositor has a target attached.  */
     SubcompositorIsTargetAttached  = (1 << 5),
+    /* This means the subcompositor is always garbaged.  */
+    SubcompositorIsAlwaysGarbaged  = (1 << 6),
   };
 
 #define IsGarbaged(subcompositor)				\
@@ -159,6 +161,11 @@ enum
   ((subcompositor)->state |= SubcompositorIsTargetAttached)
 #define IsTargetAttached(subcompositor)				\
   ((subcompositor)->state & SubcompositorIsTargetAttached)
+
+#define SetAlwaysGarbaged(subcompositor)			\
+  ((subcompositor)->state |= SubcompositorIsAlwaysGarbaged)
+#define IsAlwaysGarbaged(subcompositor)				\
+  ((subcompositor)->state & SubcompositorIsAlwaysGarbaged)
 
 enum
   {
@@ -3042,8 +3049,11 @@ SubcompositorUpdate (Subcompositor *subcompositor)
 
       EndFrame (subcompositor);
 
-      /* Clear the garbaged flag.  */
-      subcompositor->state &= ~SubcompositorIsGarbaged;
+      /* Clear the garbaged flag, unless for debugging purposes the
+	 subcompositor is always garbaged.  */
+
+      if (!IsAlwaysGarbaged (subcompositor))
+	subcompositor->state &= ~SubcompositorIsGarbaged;
 
       return;
     }
@@ -3281,4 +3291,11 @@ SubcompositorRemoveDestroyCallback (SubcompositorDestroyCallback *callback)
   callback->next->last = callback->last;
 
   XLFree (callback);
+}
+
+void
+SubcompositorSetAlwaysGarbaged (Subcompositor *subcompositor)
+{
+  SetGarbaged (subcompositor);
+  SetAlwaysGarbaged (subcompositor);
 }

@@ -363,9 +363,21 @@ Activate (Surface *surface, Role *role, int deviceid,
     }
 }
 
+static void
+SetAlwaysGarbage (struct wl_client *client, struct wl_resource *resource)
+{
+  TestSurface *test;
+
+  test = wl_resource_get_user_data (resource);
+
+  /* Make the subcompositor always garbaged.  */
+  SubcompositorSetAlwaysGarbaged (test->subcompositor);
+}
+
 static const struct test_surface_interface test_surface_impl =
   {
     .destroy = Destroy,
+    .set_always_garbage = SetAlwaysGarbage,
   };
 
 static void

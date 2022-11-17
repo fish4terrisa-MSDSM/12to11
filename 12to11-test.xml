@@ -154,6 +154,13 @@
       </description>
     </request>
 
+    <request name="set_always_garbage">
+      <description summary="set_always_garbage">
+	Force the subcompositor to be garbaged, and all contents
+	redrawn from scratch upon any damage.
+      </description>
+    </request>
+
     <event name="mapped">
       <description summary="role initialized">
 	The map event is sent once the window is mapped and its

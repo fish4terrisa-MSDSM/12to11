@@ -421,6 +421,9 @@ make_test_surface (struct test_display *display,
       return false;
     }
 
+  if (getenv ("TEST_ALWAYS_GARBAGE"))
+    test_surface_set_always_garbage (test_surface);
+
   *surface_return = surface;
   *test_surface_return = test_surface;
   return true;
