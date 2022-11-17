@@ -28,6 +28,7 @@ main (void)
 //==
 
 //== Composite Rectangle Vertex Shader
+precision mediump float;
 attribute vec2 pos;
 attribute vec2 texcoord;
 varying vec2 v_texcoord;
