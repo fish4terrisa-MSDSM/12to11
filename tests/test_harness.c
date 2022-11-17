@@ -28,12 +28,19 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <sys/fcntl.h>
 #include <sys/errno.h>
 #include <sys/uio.h>
+#include <sys/param.h>
 
 #include <png.h>
 
 #include "test_harness.h"
 
 #define BIG_ENDIAN_BYTE_ORDER (1 << 8)
+
+struct image_difference_statistics
+{
+  /* The max and min differences between any channels.  */
+  int max_diff, min_diff;
+};
 
 #if PNG_LIBPNG_VER < 10500
 #define PNG_JMPBUF(ptr) ((ptr)->jmpbuf)
@@ -47,6 +54,8 @@ static bool write_image_data_instead;
 
 /* The test display.  */
 static struct test_display *display;
+
+
 
 static void
 handle_test_manager_display_string (void *data, struct test_manager *manager,
@@ -727,17 +736,74 @@ write_image_data_1 (XImage *image, const char *filename)
 }
 
 static void
-compare_single_row (unsigned char *data, int row_no,
-		    struct image_data_header *header, XImage *image)
+compare_single_row_8bpc4 (unsigned char *data, unsigned char *xdata,
+			  size_t size,
+			  struct image_difference_statistics *statistics)
 {
-  char *xdata;
+  unsigned char channel_a, channel_b;
+  int diff;
+  size_t i;
+
+  for (i = 0; i < size; ++i)
+    {
+      channel_a = data[i];
+      channel_b = xdata[i];
+
+      diff = (int) channel_b - (int) channel_a;
+      statistics->min_diff = MIN (statistics->min_diff,
+				  diff);
+      statistics->max_diff = MAX (statistics->max_diff,
+				  diff);
+    }
+}
+
+static void
+compare_single_row_8bpc4x1 (unsigned char *data, unsigned char *xdata,
+			    size_t size,
+			    struct image_difference_statistics *statistics)
+{
+  unsigned char channel_a, channel_b;
+  int diff;
+  size_t i;
+
+  for (i = 0; i < size; ++i)
+    {
+      if (!(i % 4))
+	continue;
+
+      channel_a = data[i];
+      channel_b = xdata[i];
+
+      diff = (int) channel_b - (int) channel_a;
+      statistics->min_diff = MIN (statistics->min_diff,
+				  diff);
+      statistics->max_diff = MAX (statistics->max_diff,
+				  diff);
+    }  
+}
+
+static void
+compare_single_row (unsigned char *data, int row_no,
+		    struct image_data_header *header, XImage *image,
+		    struct image_difference_statistics *statistics)
+{
+  unsigned char *xdata;
   unsigned short bytes_per_pixel;
 
   bytes_per_pixel = bytes_per_pixel_for_format (header->format);
   data = data + header->stride * row_no;
-  xdata = image->data + image->bytes_per_line * row_no;
+  xdata = (unsigned char *) (image->data +
+			     image->bytes_per_line * row_no);
 
-  if (memcmp (data, xdata, bytes_per_pixel * header->width))
+  if (header->format == IMAGE_DATA_ARGB8888_LE)
+    compare_single_row_8bpc4 (data, xdata, (bytes_per_pixel
+					    * header->width),
+			      statistics);
+  else if (header->format == IMAGE_DATA_XRGB8888_LE)
+    compare_single_row_8bpc4x1 (data, xdata, (bytes_per_pixel
+					      * header->width),
+				statistics);
+  else if (memcmp (data, xdata, bytes_per_pixel * header->width))
     {
       /* Write the reject to a file.  */
       test_log ("writing reject to reject.dump");
@@ -781,6 +847,10 @@ verify_image_data (struct test_display *display, Window window,
   struct image_data_header header;
   unsigned short data_bpp, i;
   int byte_order;
+  struct image_difference_statistics statistics;
+
+  statistics.min_diff = 0;
+  statistics.max_diff = 0;
 
   if (write_image_data_instead)
     write_image_data (display, window, filename);
@@ -820,7 +890,22 @@ verify_image_data (struct test_display *display, Window window,
      the same visual as the reference data was saved in!  */
 
   for (i = 0; i < header.height; ++i)
-    compare_single_row (data, i, &header, image);
+    compare_single_row (data, i, &header, image, &statistics);
+
+  /* Note that statistics is not always used by
+     compare_single_row.  */
+
+  test_log ("comparison finished.  channel differences were: %d, %d",
+	    statistics.min_diff, statistics.max_diff);
+
+  if (statistics.min_diff < -3 || statistics.max_diff > 4)
+    {
+      /* Write the reject to a file.  */
+      test_log ("writing reject to reject.dump");
+      write_image_data_1 (image, "reject.dump");
+
+      report_test_failure ("differences exceeded thresholds (-3, 4)");
+    }
 
   /* Destroy the images.  */
   free (data);
