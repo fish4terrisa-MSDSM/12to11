@@ -885,6 +885,11 @@ UpdateCursorOutput (SeatCursor *cursor, int root_x, int root_y)
 {
   int hotspot_x, hotspot_y;
 
+  if (!cursor->role.surface)
+    /* The surface has been destroyed, so there is no point in
+       continuing.  */
+    return;
+
   /* Scale the hotspot coordinates up by the scale factor specified in
      the surface.  */
   hotspot_x = cursor->hotspot_x * cursor->role.surface->factor;
