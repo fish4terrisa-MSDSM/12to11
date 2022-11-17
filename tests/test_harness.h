@@ -159,6 +159,7 @@ extern void test_complete (void) __attribute__ ((noreturn));
 extern void test_set_scale (struct test_display *, int);
 extern void test_init_seat (struct test_display *);
 extern uint32_t test_get_serial (struct test_display *);
+extern void verify_window_size (struct test_display *, Window, int, int);
 
 #define ARRAYELTS(arr) (sizeof (arr) / sizeof (arr)[0])
 

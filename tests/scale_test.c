@@ -28,6 +28,7 @@ enum test_kind
     BUFFER_SCALE_2_KIND,
     BUFFER_SCALE_1_2_KIND,
     BUFFER_SCALE_2_2_KIND,
+    BUFFER_SCALE_2_5_KIND,
   };
 
 static const char *test_names[] =
@@ -37,9 +38,10 @@ static const char *test_names[] =
     "buffer_scale_2",
     "buffer_scale_1_2",
     "buffer_scale_2_2",
+    "buffer_scale_2_5",
   };
 
-#define LAST_TEST       BUFFER_SCALE_2_2_KIND
+#define LAST_TEST       BUFFER_SCALE_2_5_KIND
 
 /* The display.  */
 static struct test_display *display;
@@ -63,6 +65,30 @@ static struct wl_surface *wayland_surface;
 static void wait_frame_callback (struct wl_surface *);
 
 
+
+static void
+do_verify_window_size (int scale, int output_scale)
+{
+  int scale_factor;
+  double buffer_factor;
+
+  /* Verify the window size.  The window size is determined by first
+     calculating a scale factor, which is the output scale minus the
+     scale.  The scale factor describes how many times to scale down
+     the buffer contents.  */
+  scale_factor = scale - output_scale;
+
+  /* Next, compute how much the buffer should actually be scaled
+     by.  */
+  buffer_factor = (scale_factor > 0
+		   ? 1.0 / (scale_factor + 1)
+		   : -scale_factor + 1);
+
+  /* And verify the window size.  */
+  verify_window_size (display, test_surface_window,
+		      ceil (500 * buffer_factor),
+		      ceil (500 * buffer_factor));
+}
 
 static void
 do_scale_damage_test (int scale, const char *dump_1_name,
@@ -140,12 +166,14 @@ test_single_step (enum test_kind kind)
     case BUFFER_SCALE_1_KIND:
       do_scale_damage_test (1, "buffer_scale_1_1.dump",
 			    "buffer_scale_1_2.dump");
+      do_verify_window_size (1, 1);
       test_single_step (BUFFER_SCALE_2_KIND);
       break;
 
     case BUFFER_SCALE_2_KIND:
       do_scale_damage_test (2, "buffer_scale_2_1.dump",
 			    "buffer_scale_2_2.dump");
+      do_verify_window_size (2, 1);
       test_single_step (BUFFER_SCALE_1_2_KIND);
       break;
 
@@ -154,6 +182,7 @@ test_single_step (enum test_kind kind)
       test_set_scale (display, 2);
       do_scale_damage_test (1, "buffer_scale_1_2_1.dump",
 			    "buffer_scale_1_2_2.dump");
+      do_verify_window_size (1, 2);
       test_single_step (BUFFER_SCALE_2_2_KIND);
       break;
 
@@ -162,6 +191,16 @@ test_single_step (enum test_kind kind)
       test_set_scale (display, 2);
       do_scale_damage_test (2, "buffer_scale_2_2_1.dump",
 			    "buffer_scale_2_2_2.dump");
+      do_verify_window_size (2, 2);
+      test_single_step (BUFFER_SCALE_2_5_KIND);
+      break;
+
+    case BUFFER_SCALE_2_5_KIND:
+      /* The buffer should be made three times larger.  */
+      test_set_scale (display, 5);
+      do_scale_damage_test (2, "buffer_scale_2_5_1.dump",
+			    "buffer_scale_2_5_2.dump");
+      do_verify_window_size (2, 5);
       break;
     }
 

@@ -930,3 +930,17 @@ test_get_serial (struct test_display *display)
 
   return display->serial;
 }
+
+void
+verify_window_size (struct test_display *display,
+		    Window window, int width, int height)
+{
+  XWindowAttributes attrs;
+
+  XGetWindowAttributes (display->x_display, window, &attrs);
+
+  if (width != attrs.width || height != attrs.height)
+    report_test_failure ("window is incorrect size.  expected: %d %d"
+			 ", actual: %d %d", width, height,
+			 attrs.width, attrs.height);
+}
