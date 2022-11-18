@@ -110,6 +110,15 @@ struct test_interface
   uint32_t version;
 };
 
+struct test_buffer
+{
+  /* The associated struct wl_buffer.  */
+  struct wl_buffer *buffer;
+
+  /* Whether or not the buffer is busy.  */
+  int is_busy;
+};
+
 struct image_data_header
 {
   /* Currently 1.  High bit is byte order.  */
@@ -160,6 +169,10 @@ extern void test_set_scale (struct test_display *, int);
 extern void test_init_seat (struct test_display *);
 extern uint32_t test_get_serial (struct test_display *);
 extern void verify_window_size (struct test_display *, Window, int, int);
+extern struct test_buffer *get_test_buffer (struct test_display *,
+					    struct wl_buffer *);
+extern void test_buffer_committed (struct test_buffer *);
+extern void verify_buffer_released (struct test_buffer *);
 
 #define ARRAYELTS(arr) (sizeof (arr) / sizeof (arr)[0])
 

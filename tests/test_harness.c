@@ -1032,3 +1032,52 @@ verify_window_size (struct test_display *display,
 			 ", actual: %d %d", width, height,
 			 attrs.width, attrs.height);
 }
+
+
+
+static void
+handle_wl_buffer_release (void *data, struct wl_buffer *buffer)
+{
+  struct test_buffer *test_buffer;
+
+  test_buffer = data;
+  test_buffer->is_busy = false;
+}
+
+static const struct wl_buffer_listener test_buffer_listener =
+  {
+    handle_wl_buffer_release,
+  };
+
+
+
+struct test_buffer *
+get_test_buffer (struct test_display *display, struct wl_buffer *buffer)
+{
+  struct test_buffer *test_buffer;
+
+  test_buffer = malloc (sizeof *test_buffer);
+
+  if (!test_buffer)
+    return NULL;
+
+  test_buffer->buffer = buffer;
+  test_buffer->is_busy = false;
+
+  wl_buffer_add_listener (buffer, &test_buffer_listener, test_buffer);
+  return test_buffer;
+}
+
+void
+test_buffer_committed (struct test_buffer *test_buffer)
+{
+  test_buffer->is_busy = true;
+}
+
+void
+verify_buffer_released (struct test_buffer *test_buffer)
+{
+  if (test_buffer->is_busy)
+    report_test_failure ("buffer %p should not be busy right now",
+			 test_buffer->buffer);
+}

@@ -22,7 +22,7 @@ pushd "$(dirname $0)"
 declare -a standard_tests=(
     simple_test damage_test transform_test viewporter_test
     subsurface_test scale_test seat_test dmabuf_test
-    xdg_activation_test single_pixel_buffer_test
+    xdg_activation_test single_pixel_buffer_test buffer_test
 )
 
 make -C . "${standard_tests[@]}"
