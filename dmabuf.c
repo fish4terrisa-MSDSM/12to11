@@ -83,14 +83,14 @@ struct _Buffer
   /* The wl_resource corresponding to this buffer.  */
   struct wl_resource *resource;
 
-  /* List of "destroy listeners" connected to this buffer.  */
-  XLList *destroy_listeners;
-
   /* The width and height of this buffer.  */
   unsigned int width, height;
 
   /* The number of references to this buffer.  */
   int refcount;
+
+  /* Whether or not this buffer is actually a single-pixel buffer.  */
+  Bool is_fallback;
 };
 
 struct _FormatModifierPair
@@ -122,6 +122,8 @@ static DrmFormat *supported_formats;
 
 /* Number of formats.  */
 static int n_drm_formats;
+
+
 
 static void
 CloseFdsEarly (BufferParams *params)
@@ -268,8 +270,13 @@ DestroyBacking (Buffer *buffer)
   if (--buffer->refcount)
     return;
 
-  /* Free the renderer-specific dmabuf buffer.  */
-  RenderFreeDmabufBuffer (buffer->render_buffer);
+  if (!buffer->is_fallback)
+    /* Free the renderer-specific dmabuf buffer.  */
+    RenderFreeDmabufBuffer (buffer->render_buffer);
+  else
+    /* This is actually a fallback single-pixel buffer.  Destroy it
+       instead.  */
+    RenderFreeSinglePixelBuffer (buffer->render_buffer);
 
   ExtBufferDestroy (&buffer->buffer);
   XLFree (buffer);
@@ -383,7 +390,6 @@ CreateBufferFor (BufferParams *params, RenderBuffer render_buffer,
   buffer->render_buffer = render_buffer;
   buffer->width = params->width;
   buffer->height = params->height;
-  buffer->destroy_listeners = NULL;
 
   /* Initialize function pointers.  */
   buffer->buffer.funcs.retain = RetainBufferFunc;
@@ -630,6 +636,67 @@ Create (struct wl_client *client, struct wl_resource *resource, int32_t width,
 }
 
 static void
+CreatePlaceholderBuffer (struct wl_client *client, uint32_t id,
+			 int width, int height)
+{
+  Buffer *buffer;
+  Bool error;
+
+  /* Create a placeholder buffer for the given client and dimensions.
+     The buffer is a completely transparent single-pixel buffer.
+
+     Such a placeholder buffer is required when
+     zwp_linux_buffer_params_v1.failed is posted in response to a
+     failed create_immed request.  */
+
+  buffer = XLCalloc (1, sizeof *buffer);
+  buffer->resource = wl_resource_create (client, &wl_buffer_interface,
+					 1, id);
+  buffer->is_fallback = True;
+
+  if (!buffer->resource)
+    {
+      wl_client_post_no_memory (client);
+      XLFree (buffer);
+      return;
+    }
+
+  /* A single pixel buffer is used because it is safe to read outside
+     them.  */
+  error = False;
+  buffer->render_buffer = RenderBufferFromSinglePixel (0, 0, 0, 0,
+						       &error);
+
+  if (error)
+    {
+      /* If an error occured, then we are probably out of memory.  */
+      wl_resource_destroy (buffer->resource);
+      XLFree (buffer);
+      wl_client_post_no_memory (client);
+      return;
+    }
+
+  /* Add a reference.  */
+  buffer->refcount = 1;
+
+  /* Set the width and height.  */
+  buffer->width = width;
+  buffer->height = height;
+
+  /* Initialize virtual functions.  */
+  buffer->buffer.funcs.retain = RetainBufferFunc;
+  buffer->buffer.funcs.dereference = DereferenceBufferFunc;
+  buffer->buffer.funcs.get_buffer = GetBufferFunc;
+  buffer->buffer.funcs.width = WidthFunc;
+  buffer->buffer.funcs.height = HeightFunc;
+  buffer->buffer.funcs.release = ReleaseBufferFunc;
+
+  wl_resource_set_implementation (buffer->resource,
+				  &zwp_linux_dmabuf_v1_buffer_impl,
+				  buffer, HandleBufferResourceDestroy);
+}
+
+static void
 CreateImmed (struct wl_client *client, struct wl_resource *resource, uint32_t id,
 	     int32_t width, int32_t height, uint32_t format, uint32_t flags)
 {
@@ -716,7 +783,10 @@ CreateImmed (struct wl_client *client, struct wl_resource *resource, uint32_t id
 				"invalid format/modifiers specified for version 4"
 				" resource");
       else
-	zwp_linux_buffer_params_v1_send_failed (resource);
+	{
+	  zwp_linux_buffer_params_v1_send_failed (resource);
+	  CreatePlaceholderBuffer (client, id, width, height);
+	}
 
       goto inert_error;
     }
@@ -769,6 +839,7 @@ CreateImmed (struct wl_client *client, struct wl_resource *resource, uint32_t id
     {
       /* The fds should have been closed by the renderer.  */
       zwp_linux_buffer_params_v1_send_failed (resource);
+      CreatePlaceholderBuffer (client, id, width, height);
     }
   else
     /* Otherwise, buffer creation was successful.  Create the buffer

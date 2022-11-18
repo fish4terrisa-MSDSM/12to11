@@ -2224,8 +2224,15 @@ UnsetMaximized (struct wl_client *client, struct wl_resource *resource)
     {
       /* The toplevel is already unmaximized to the best of our
 	 knowledge.  Simply send an empty configure event to the
-	 client.  */
-      if (!toplevel->configuration_timer)
+	 client.
+
+         However, avoid all of this if the surface's initial commit
+         has not yet been sent.  This is because Chromium gets
+         confused if any configure event arrives before the initial
+         commit, and fails to ack the initial commit before it commits
+         the xdg surface itself.  */
+      if (!toplevel->configuration_timer
+	  && !(toplevel->state & StateWaitingForInitialConfigure))
 	SendConfigure (toplevel, 0, 0);
 
       return;
@@ -2283,7 +2290,8 @@ UnsetFullscreen (struct wl_client *client, struct wl_resource *resource)
       /* The toplevel is already not fullscreen to the best of our
 	 knowledge.  Simply send an empty configure event to the
 	 client.  */
-      if (!toplevel->configuration_timer)
+      if (!toplevel->configuration_timer
+	  && !(toplevel->state & StateWaitingForInitialConfigure))
 	SendConfigure (toplevel, 0, 0);
 
       return;
