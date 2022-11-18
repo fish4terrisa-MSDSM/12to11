@@ -57,6 +57,10 @@ enum
     StateEverMapped		    = (1 << 8),
     StateNeedDecorationConfigure    = (1 << 9),
     StateWaitingForInitialConfigure = (1 << 10),
+    StateMaximizeOnMap		    = (1 << 11),
+    StateUnmaximizeOnMap	    = (1 << 12),
+    StateFullscreenOnMap	    = (1 << 13),
+    StateUnfullscreenOnMap	    = (1 << 14),
   };
 
 enum
@@ -1199,6 +1203,9 @@ Unmap (XdgToplevel *toplevel)
   RunUnmapCallbacks (toplevel);
 }
 
+/* Forward declaration.  */
+static void SetWmState (XdgToplevel *, Atom, Atom, How);
+
 static void
 Map (XdgToplevel *toplevel)
 {
@@ -1219,6 +1226,30 @@ Map (XdgToplevel *toplevel)
   /* Now, map the window.  */
   XMapWindow (compositor.display,
 	      XLWindowFromXdgRole (toplevel->role));
+
+  /* If any state change was requested before the window was mapped,
+     apply it now.  Such changes are deferred until the window is
+     mapped because the window manager will otherwise be unable to
+     determine exactly what is going on.  */
+
+  if (toplevel->state & StateMaximizeOnMap)
+    SetWmState (toplevel, _NET_WM_STATE_MAXIMIZED_HORZ,
+		_NET_WM_STATE_MAXIMIZED_VERT, Add);
+  else if (toplevel->state & StateUnmaximizeOnMap)
+    SetWmState (toplevel, _NET_WM_STATE_MAXIMIZED_HORZ,
+		_NET_WM_STATE_MAXIMIZED_VERT, Remove);
+
+  if (toplevel->state & StateFullscreenOnMap)
+    SetWmState (toplevel, _NET_WM_STATE_FULLSCREEN, None,
+		Add);
+  else if (toplevel->state & StateUnfullscreenOnMap)
+    SetWmState (toplevel, _NET_WM_STATE_FULLSCREEN, None,
+		Remove);
+
+  toplevel->state &= ~(StateMaximizeOnMap
+		       | StateUnmaximizeOnMap
+		       | StateFullscreenOnMap
+		       | StateUnfullscreenOnMap);
 }
 
 static void
@@ -2158,8 +2189,28 @@ SetMaximized (struct wl_client *client, struct wl_resource *resource)
   XdgToplevel *toplevel;
 
   toplevel = wl_resource_get_user_data (resource);
-  SetWmState (toplevel, _NET_WM_STATE_MAXIMIZED_HORZ,
-	      _NET_WM_STATE_MAXIMIZED_VERT, Add);
+
+  if (toplevel->toplevel_state.maximized)
+    {
+      /* The toplevel is already maximized to the best of our
+	 knowledge.  Simply send an empty configure event to the
+	 client.  */
+      if (!toplevel->configuration_timer)
+	SendConfigure (toplevel, 0, 0);
+
+      return;
+    }
+
+  if (toplevel->state & StateIsMapped)
+    SetWmState (toplevel, _NET_WM_STATE_MAXIMIZED_HORZ,
+		_NET_WM_STATE_MAXIMIZED_VERT, Add);
+  else
+    {
+      /* If the toplevel is withdrawn, set a flag.  Then, maximize it
+	 upon being mapped.  */
+      toplevel->state &= ~StateUnmaximizeOnMap;
+      toplevel->state |= StateMaximizeOnMap;
+    }
 }
 
 static void
@@ -2168,8 +2219,26 @@ UnsetMaximized (struct wl_client *client, struct wl_resource *resource)
   XdgToplevel *toplevel;
 
   toplevel = wl_resource_get_user_data (resource);
-  SetWmState (toplevel, _NET_WM_STATE_MAXIMIZED_HORZ,
-	      _NET_WM_STATE_MAXIMIZED_VERT, Remove);
+
+  if (!toplevel->toplevel_state.maximized)
+    {
+      /* The toplevel is already unmaximized to the best of our
+	 knowledge.  Simply send an empty configure event to the
+	 client.  */
+      if (!toplevel->configuration_timer)
+	SendConfigure (toplevel, 0, 0);
+
+      return;
+    }
+
+  if (toplevel->state & StateIsMapped)
+    SetWmState (toplevel, _NET_WM_STATE_MAXIMIZED_HORZ,
+		_NET_WM_STATE_MAXIMIZED_VERT, Remove);
+  else
+    {
+      toplevel->state &= ~StateMaximizeOnMap;
+      toplevel->state |= StateUnmaximizeOnMap;
+    }
 }
 
 static void
@@ -2181,7 +2250,25 @@ SetFullscreen (struct wl_client *client, struct wl_resource *resource,
   /* Maybe also move the toplevel to the output?  */
 
   toplevel = wl_resource_get_user_data (resource);
-  SetWmState (toplevel, _NET_WM_STATE_FULLSCREEN, None, Add);
+
+  if (toplevel->toplevel_state.fullscreen)
+    {
+      /* The toplevel is already fullscreen to the best of our
+	 knowledge.  Simply send an empty configure event to the
+	 client.  */
+      if (!toplevel->configuration_timer)
+	SendConfigure (toplevel, 0, 0);
+
+      return;
+    }
+
+  if (toplevel->state & StateIsMapped)
+    SetWmState (toplevel, _NET_WM_STATE_FULLSCREEN, None, Add);
+  else
+    {
+      toplevel->state &= ~StateUnfullscreenOnMap;
+      toplevel->state |= StateFullscreenOnMap;
+    }
 }
 
 static void
@@ -2190,7 +2277,25 @@ UnsetFullscreen (struct wl_client *client, struct wl_resource *resource)
   XdgToplevel *toplevel;
 
   toplevel = wl_resource_get_user_data (resource);
-  SetWmState (toplevel, _NET_WM_STATE_FULLSCREEN, None, Remove);
+
+  if (!toplevel->toplevel_state.fullscreen)
+    {
+      /* The toplevel is already not fullscreen to the best of our
+	 knowledge.  Simply send an empty configure event to the
+	 client.  */
+      if (!toplevel->configuration_timer)
+	SendConfigure (toplevel, 0, 0);
+
+      return;
+    }
+
+  if (toplevel->state & StateIsMapped)
+    SetWmState (toplevel, _NET_WM_STATE_FULLSCREEN, None, Remove);
+  else
+    {
+      toplevel->state &= ~StateFullscreenOnMap;
+      toplevel->state |= StateUnfullscreenOnMap;
+    }
 }
 
 static void
