@@ -178,10 +178,10 @@
 
     <event name="activated">
       <description summary="role activated">
-	The activated is sent when the xdg_activation protocol causes
-	the surface associated with the role to be activated.  Its
-	parameters constitute the timestamp at which the activation
-	occurred.
+	The activated event is sent when the xdg_activation protocol
+	causes the surface associated with the role to be activated.
+	Its parameters constitute the timestamp at which the
+	activation occurred.
 
 	If the surface that created the activation token used to
 	activate this test surface belongs to the same client that
@@ -193,6 +193,20 @@
       <arg name="milliseconds" type="uint"/>
       <arg name="activator_surface" type="object" interface="wl_surface"
 	   allow-null="true"/>
+    </event>
+
+    <event name="committed">
+      <description summary="commit happened">
+	The committed event is sent immediately after the role is
+	committed, and contains some information about what choices
+	were taken by the protocol translator during presentation.
+
+	presentation_hint is the presentation hint used by the
+	protocol translator during drawing.  Its value is that of the
+	enumerator used internally, where 1 means async and 0 means
+	vsync.
+      </description>
+      <arg name="presentation_hint" type="uint"/>
     </event>
   </interface>
 

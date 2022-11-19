@@ -917,6 +917,10 @@ SavePendingState (Surface *surface)
     pixman_region32_copy (&surface->cached_state.opaque,
 			  &surface->pending_state.opaque);
 
+  if (surface->pending_state.pending & PendingPresentationHint)
+    surface->cached_state.presentation_hint
+      = surface->pending_state.presentation_hint;
+
   if (surface->pending_state.pending & PendingBufferScale)
     surface->cached_state.buffer_scale
       = surface->pending_state.buffer_scale;
@@ -1051,6 +1055,10 @@ InternalCommit1 (Surface *surface, State *pending)
 	  ClearBuffer (pending);
 	}
     }
+
+  if (pending->pending & PendingPresentationHint)
+    surface->current_state.presentation_hint
+      = pending->presentation_hint;
 
   if (pending->pending & PendingBufferScale)
     {

@@ -249,6 +249,7 @@ XLMain (int argc, char **argv)
   XLInitIdleInhibit ();
   XLInitPointerGestures ();
   XLInitXdgActivation ();
+  XLInitTearingControl ();
   XLInitTest ();
 
   /* This has to come after the rest of the initialization.  */

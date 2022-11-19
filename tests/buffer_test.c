@@ -30,7 +30,7 @@ enum test_kind
 static const char *test_names[] =
   {
     "buffer_release",
-    "buffer_destroy_kind",
+    "buffer_destroy",
   };
 
 #define LAST_TEST	BUFFER_DESTROY_KIND

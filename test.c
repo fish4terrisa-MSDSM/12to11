@@ -226,6 +226,11 @@ Commit (Surface *surface, Role *role)
      mapped.  */
   if (test->flags & IsSurfaceMapped)
     SubcompositorUpdate (test->subcompositor);
+
+  /* And send the presentation hint.  */
+  if (test->role.resource)
+    test_surface_send_committed (test->role.resource,
+				 surface->current_state.presentation_hint);
 }
 
 static Bool

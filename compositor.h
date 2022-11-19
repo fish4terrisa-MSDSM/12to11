@@ -876,6 +876,7 @@ typedef struct _State State;
 typedef struct _FrameCallback FrameCallback;
 typedef enum _RoleType RoleType;
 typedef enum _FocusMode FocusMode;
+typedef enum _PresentationHint PresentationHint;
 
 enum _FocusMode
   {
@@ -901,22 +902,29 @@ enum _RoleType
 
 enum
   {
-    PendingNone		   = 0,
-    PendingOpaqueRegion	   = 1,
-    PendingInputRegion	   = (1 << 2),
-    PendingDamage	   = (1 << 3),
-    PendingSurfaceDamage   = (1 << 4),
-    PendingBuffer	   = (1 << 5),
-    PendingFrameCallbacks  = (1 << 6),
-    PendingBufferScale	   = (1 << 7),
-    PendingAttachments	   = (1 << 8),
-    PendingViewportSrc	   = (1 << 9),
-    PendingViewportDest	   = (1 << 10),
-    PendingBufferTransform = (1 << 11),
+    PendingNone		    = 0,
+    PendingOpaqueRegion	    = 1,
+    PendingInputRegion	    = (1 << 2),
+    PendingDamage	    = (1 << 3),
+    PendingSurfaceDamage    = (1 << 4),
+    PendingBuffer	    = (1 << 5),
+    PendingFrameCallbacks   = (1 << 6),
+    PendingBufferScale	    = (1 << 7),
+    PendingAttachments	    = (1 << 8),
+    PendingViewportSrc	    = (1 << 9),
+    PendingViewportDest	    = (1 << 10),
+    PendingBufferTransform  = (1 << 11),
+    PendingPresentationHint = (1 << 12),
 
     /* Flags here are stored in `pending' of the current state for
        space reasons.  */
     BufferAlreadyReleased = (1 << 19),
+  };
+
+enum _PresentationHint
+  {
+    PresentationHintVsync,
+    PresentationHintAsync,
   };
 
 struct _FrameCallback
@@ -968,6 +976,9 @@ struct _State
 
   /* Viewport source rectangle.  */
   double src_x, src_y, src_width, src_height;
+
+  /* The presentation hint.  Defaults to PresentationHintVsync.  */
+  PresentationHint presentation_hint;
 };
 
 typedef enum _ClientDataType ClientDataType;
@@ -987,6 +998,7 @@ enum _ClientDataType
     IdleInhibitData,
     MaxClientData,
     XdgActivationData,
+    TearingControlData,
   };
 
 struct _DestroyCallback
@@ -1888,6 +1900,10 @@ extern void XLGetTestSeat (struct wl_client *, struct wl_resource *,
 /* Defined in xdg_activation.c.  */
 
 extern void XLInitXdgActivation (void);
+
+/* Defined in tearing_control.c.  */
+
+extern void XLInitTearingControl (void);
 
 /* Utility functions that don't belong in a specific file.  */
 

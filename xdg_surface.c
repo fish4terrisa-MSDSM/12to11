@@ -276,7 +276,7 @@ RunFrameCallbacksConditionally (XdgRole *role)
     role->state |= StatePendingFrameCallback;
 }
 
-static void
+static Bool
 UpdateFrameRefreshPrediction (XdgRole *role)
 {
   int desync_children;
@@ -296,7 +296,11 @@ UpdateFrameRefreshPrediction (XdgRole *role)
 	XLFrameClockSetPredictRefresh (role->clock);
       else
 	XLFrameClockDisablePredictRefresh (role->clock);
+
+      return desync_children > 0;
     }
+
+  return False;
 }
 
 static void
@@ -862,14 +866,14 @@ MaybeRunLateFrame (XdgRole *role)
 
   if (role->state & StateLateFrame)
     {
-      /* Clear the late frame flag.  */
-      role->state &= ~StateLateFrame;
-
       if (role->state & StateLateFrameAcked)
 	XLFrameClockUnfreeze (role->clock);
 
       /* Now apply the state in the late frame.  */
       SubcompositorUpdate (role->subcompositor);
+
+      /* Clear the late frame flag.  */
+      role->state &= ~StateLateFrame;
 
       /* Return True, as a new update has started.  */
       return True;
@@ -1169,10 +1173,20 @@ WriteRedirectProperty (XdgRole *role)
 		   (unsigned char *) &bypass_compositor, 1);
 }
 
+static Bool
+WasFrameQueued (XdgRole *role)
+{
+  /* Return whether or not the translator slept before displaying this
+     frame in response to a frame drawn event.  */
+
+  return (role->state & StateLateFrame) != 0;
+}
+
 static void
 NoteFrame (FrameMode mode, uint64_t id, void *data)
 {
   XdgRole *role;
+  Bool predict_refresh, urgent;
 
   role = data;
 
@@ -1186,9 +1200,28 @@ NoteFrame (FrameMode mode, uint64_t id, void *data)
 	{
 	  /* Update whether or not frame refresh prediction is to be
 	     used.  */
-	  UpdateFrameRefreshPrediction (role);
+	  predict_refresh = UpdateFrameRefreshPrediction (role);
 
-	  if (XLFrameClockStartFrame (role->clock, False))
+	  /* A rule of thumb is to never let the compositing manager
+	     read or try to scan out incomplete buffer contents.
+	     Thus, if the client asked for async presentation, Commit
+	     will still wait for the compositor to finish drawing the
+	     last frame.
+
+	     In addition, how subsurfaces fit into all of this is
+	     unclear.  At present, the presentation hint of
+	     subsurfaces is simply discarded, and the hint of the
+	     topmost surface used instead.  In addition, asynchronous
+	     subsurfaces will prevent async presentation from taking
+	     place at all.  */
+
+	  urgent = (WasFrameQueued (role)
+		    && !predict_refresh
+		    && role->role.surface
+		    && (role->role.surface->current_state.presentation_hint
+			== PresentationHintAsync));
+
+	  if (XLFrameClockStartFrame (role->clock, urgent))
 	    role->state |= StateFrameStarted;
 	}
 
