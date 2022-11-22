@@ -160,6 +160,7 @@ typedef struct _ShmFormat ShmFormat;
 
 typedef enum _Operation Operation;
 typedef enum _BufferTransform BufferTransform;
+typedef enum _RenderMode RenderMode;
 
 typedef void *IdleCallbackKey;
 typedef void *PresentCompletionKey;
@@ -169,8 +170,8 @@ typedef void (*DmaBufSuccessFunc) (RenderBuffer, void *);
 typedef void (*DmaBufFailureFunc) (void *);
 
 typedef void (*BufferIdleFunc) (RenderBuffer, void *);
-typedef void (*PresentCompletionFunc) (void *);
-typedef void (*RenderCompletionFunc) (void *);
+typedef void (*PresentCompletionFunc) (void *, uint64_t, uint64_t);
+typedef void (*RenderCompletionFunc) (void *, uint64_t, uint64_t);
 
 enum _BufferTransform
   {
@@ -314,6 +315,14 @@ enum
     SupportsDirectPresent = 1 << 4,
   };
 
+enum _RenderMode
+  {
+    /* Do not synchronize rendering.  */
+    RenderModeAsync,
+    /* Synchronize rendering with the vertical refresh.  */
+    RenderModeVsync,
+  };
+
 struct _RenderFuncs
 {
   /* Initialize the visual and depth.  */
@@ -324,6 +333,12 @@ struct _RenderFuncs
 
   /* Create a rendering target for the given pixmap.  */
   RenderTarget (*target_from_pixmap) (Pixmap);
+
+  /* Set the rendering mode for the render target.  Return whether or
+     not the mode was successfully set.  The default rendering mode is
+     RenderModeAsync.  The last argument is the number of the next
+     frame as known to the caller.  */
+  Bool (*set_render_mode) (RenderTarget, RenderMode, uint64_t);
 
   /* Set the client associated with the target.  This allows some
      extra pixmap memory allocation tracking to be done.  */
@@ -422,6 +437,11 @@ struct _RenderFuncs
   PresentCompletionKey (*present_to_window) (RenderTarget, RenderBuffer,
 					     pixman_region32_t *,
 					     PresentCompletionFunc, void *);
+
+  /* Call the specified render callback once it is time to display the
+     next frame.  May be NULL.  */
+  RenderCompletionKey (*notify_msc) (RenderTarget, RenderCompletionFunc,
+				     void *);
 
   /* Cancel the given presentation callback.  */
   void (*cancel_presentation_callback) (PresentCompletionKey);
@@ -542,6 +562,7 @@ extern void InitRenderers (void);
 
 extern RenderTarget RenderTargetFromWindow (Window, unsigned long);
 extern RenderTarget RenderTargetFromPixmap (Pixmap);
+extern Bool RenderSetRenderMode (RenderTarget, RenderMode, uint64_t);
 extern void RenderSetClient (RenderTarget, struct wl_client *);
 extern void RenderSetStandardEventMask (RenderTarget, unsigned long);
 extern void RenderNoteTargetSize (RenderTarget, int, int);
@@ -568,6 +589,8 @@ extern PresentCompletionKey RenderPresentToWindow (RenderTarget, RenderBuffer,
 						   pixman_region32_t *,
 						   PresentCompletionFunc,
 						   void *);
+extern RenderCompletionKey RenderNotifyMsc (RenderTarget, RenderCompletionFunc,
+					    void *);
 extern void RenderCancelPresentationCallback (PresentCompletionKey);
 
 extern DrmFormat *RenderGetDrmFormats (int *);
@@ -767,7 +790,6 @@ typedef enum _FrameMode FrameMode;
 enum _FrameMode
   {
     ModeStarted,
-    ModeNotifyDisablePresent,
     ModeComplete,
     ModePresented,
   };
@@ -798,7 +820,8 @@ extern void SubcompositorSetBoundsCallback (Subcompositor *,
 					    void *);
 extern void SubcompositorSetNoteFrameCallback (Subcompositor *,
 					       void (*) (FrameMode, uint64_t,
-							 void *),
+							 void *, uint64_t,
+							 uint64_t),
 					       void *);
 extern void SubcompositorBounds (Subcompositor *, int *, int *, int *, int *);
 extern void SubcompositorSetProjectiveTransform (Subcompositor *, int, int);
@@ -1304,24 +1327,20 @@ typedef struct _FrameClock FrameClock;
 extern FrameClock *XLMakeFrameClockForWindow (Window);
 extern Bool XLFrameClockFrameInProgress (FrameClock *);
 extern void XLFrameClockAfterFrame (FrameClock *, void (*) (FrameClock *,
-							    void *),
+							    void *,
+							    uint64_t),
 				    void *);
 extern void XLFrameClockHandleFrameEvent (FrameClock *, XEvent *);
 extern Bool XLFrameClockStartFrame (FrameClock *, Bool);
 extern void XLFrameClockEndFrame (FrameClock *);
-extern Bool XLFrameClockIsFrozen (FrameClock *);
 extern Bool XLFrameClockCanBatch (FrameClock *);
-extern Bool XLFrameClockNeedConfigure (FrameClock *);
-extern void XLFrameClockFreeze (FrameClock *);
-extern void XLFrameClockUnfreeze (FrameClock *);
 extern void XLFreeFrameClock (FrameClock *);
 extern Bool XLFrameClockSyncSupported (void);
-extern Bool XLFrameClockCanRunFrame (FrameClock *);
 extern void XLFrameClockSetPredictRefresh (FrameClock *);
 extern void XLFrameClockDisablePredictRefresh (FrameClock *);
-extern void XLFrameClockSetFreezeCallback (FrameClock *, void (*) (void *),
-					   void *);
-extern uint64_t XLFrameClockGetFrameTime (FrameClock *);
+extern void XLFrameClockSetFreezeCallback (FrameClock *, void (*) (void *,
+								   Bool),
+					   Bool (*) (void *), void *);
 extern void XLFrameClockNoteConfigure (FrameClock *);
 extern void *XLAddCursorClockCallback (void (*) (void *, struct timespec),
 				       void *);
@@ -1904,6 +1923,25 @@ extern void XLInitXdgActivation (void);
 /* Defined in tearing_control.c.  */
 
 extern void XLInitTearingControl (void);
+
+/* Defined in sync_source.h.  */
+
+typedef struct _SyncHelper SyncHelper;
+typedef enum _SynchronizationType SynchronizationType;
+
+extern SyncHelper *MakeSyncHelper (Subcompositor *, Window,
+				   RenderTarget,
+				   void (*) (void *, uint32_t),
+				   Role *);
+extern void SyncHelperUpdate (SyncHelper *);
+extern void FreeSyncHelper (SyncHelper *);
+extern void SyncHelperHandleFrameEvent (SyncHelper *, XEvent *);
+extern void SyncHelperSetResizeCallback (SyncHelper *, void (*) (void *,
+								 Bool),
+					 Bool (*) (void *));
+extern void SyncHelperNoteConfigureEvent (SyncHelper *);
+extern void SyncHelperCheckFrameCallback (SyncHelper *);
+extern void SyncHelperClearPendingFrame (SyncHelper *);
 
 /* Utility functions that don't belong in a specific file.  */
 

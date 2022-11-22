@@ -33,23 +33,20 @@ enum
   };
 
 /* Whether or not the compositor supports frame synchronization.  */
-
 static Bool frame_sync_supported;
 
 /* Timer used for cursor animations.  */
-
 static Timer *cursor_clock;
 
 /* How many cursors want cursor animations.  */
-
 static int cursor_count;
 
 struct _FrameClockCallback
 {
-  /* Function called once a frame is completely written to display and
-     (ideally, whether or not this actually works depends on various
-     different factors) enters vblank.  */
-  void (*frame) (FrameClock *, void *);
+  /* Function called once a frame is completely written to display.
+     The last arg is the time at which the frame was written, or
+     (uint64_t) -1.  */
+  void (*frame) (FrameClock *, void *, uint64_t);
 
   /* Data that function is called with.  */
   void *data;
@@ -60,28 +57,12 @@ struct _FrameClockCallback
 
 struct _FrameClock
 {
-  /* List of frame clock callbacks.  */
-  FrameClockCallback callbacks;
-
-  /* Two sync counters.  */
-  XSyncCounter primary_counter, secondary_counter;
-
   /* The value of the frame currently being drawn in this frame clock,
      and the value of the last frame that was marked as complete.  */
   uint64_t next_frame_id, finished_frame_id;
 
-  /* A timer used as a fake synchronization source if frame
-     synchronization is not supported.  */
-  Timer *static_frame_timer;
-
-  /* A timer used to end the next frame.  */
-  Timer *end_frame_timer;
-
-    /* Callback run when the frame is frozen.  */
-  void (*freeze_callback) (void *);
-
-  /* Data for that callback.  */
-  void *freeze_callback_data;
+  /* List of frame clock callbacks.  */
+  FrameClockCallback callbacks;
 
   /* The wanted configure value.  */
   uint64_t configure_id;
@@ -103,6 +84,28 @@ struct _FrameClock
   /* The last known presentation time.  */
   uint64_t last_presentation_time;
 
+  /* Two sync counters.  */
+  XSyncCounter primary_counter, secondary_counter;
+
+  /* A timer used as a fake synchronization source if frame
+     synchronization is not supported.  */
+  Timer *static_frame_timer;
+
+  /* A timer used to end the next frame.  */
+  Timer *end_frame_timer;
+
+  /* Callback run when the frame is frozen.  The second arg means
+     whether or not the freeze should not result in more waiting for
+     ack_configure.  */
+  void (*freeze_callback) (void *, Bool);
+
+  /* Callback run to determine whether or not the frame clock can be
+     fast forwarded.  */
+  Bool (*can_forward_sync_counter) (void *);
+
+  /* Data for the above two callbacks.  */
+  void *freeze_callback_data;
+
   /* The refresh interval.  */
   uint32_t refresh_interval;
 
@@ -114,10 +117,8 @@ struct _FrameClock
      is put in place.  */
   uint32_t got_configure_count, pending_configure_count;
 
-  /* Whether or not configury is in progress, and whether or not this
-     is frozen, and whether or not the frame shouldn't actually be
-     unfrozen until EndFrame.  */
-  Bool need_configure, frozen, frozen_until_end_frame;
+  /* Whether or not configury is in progress.  */
+  Bool need_configure;
 
   /* Whether or not EndFrame was called after StartFrame.  */
   Bool end_frame_called;
@@ -246,8 +247,15 @@ HandleEndFrame (Timer *timer, void *data, struct timespec time)
 
 /* Forward declarations.  */
 
-static void RunFrameCallbacks (FrameClock *);
+static void RunFrameCallbacks (FrameClock *, uint64_t);
 static Bool StartFrame (FrameClock *, Bool, Bool);
+
+static void
+BumpFrame (FrameClock *clock)
+{
+  StartFrame (clock, True, False);
+  EndFrame (clock);
+}
 
 static void
 FreezeForValue (FrameClock *clock, uint64_t counter_value)
@@ -266,6 +274,7 @@ FreezeForValue (FrameClock *clock, uint64_t counter_value)
      configure event after this freeze may have been put into effect
      by the time the freeze itself.  Start a new frame to bring up to
      date contents to the display.  */
+
   if (clock->pending_configure_count <= clock->got_configure_count)
     need_empty_frame = True;
 
@@ -282,14 +291,6 @@ FreezeForValue (FrameClock *clock, uint64_t counter_value)
 	EndFrame (clock);
     }
 
-  /* counter_value - 240 is the value seen by the compositor when the
-     frame contents were frozen in response to a resize.  If it is
-     less than finished_frame_id, run frame callbacks now, or clients
-     like Chromium are confused and hang waiting for frame callbacks
-     to be called.  */
-  if (counter_value - 240 <= clock->finished_frame_id)
-    RunFrameCallbacks (clock);
-
   /* The reason for clearing in_frame is that otherwise a future
      Commit after the configuration is acknowledged will not be able
      to start a new frame and restart the frame clock.  */
@@ -297,17 +298,23 @@ FreezeForValue (FrameClock *clock, uint64_t counter_value)
   clock->need_configure = True;
   clock->configure_id = counter_value;
 
-  if (need_empty_frame)
-    {
-      /* Request a new frame and don't allow starting frames until it
-	 finishes.  See above for why.  clock->in_frame is False for
-	 now to really force the frame to happen.  */
+  if (need_empty_frame
+      /* If the surface has not yet ack_configure'd, don't fast
+	 forward the frame.  The sync counter will be set at the next
+	 commit after ack_configure.  */
+      && clock->can_forward_sync_counter
+      && clock->can_forward_sync_counter (clock->freeze_callback_data))
+    /* If this event is already out of date, just fast forward the
+       sync counter.  */
+    BumpFrame (clock);
 
-      StartFrame (clock, True, False);
-      EndFrame (clock);
-    }
-  else
-    clock->frozen = True;
+  clock->freeze_callback (clock->freeze_callback_data,
+			  /* Only run the freeze callback if this
+			     freeze is up to date.  If it is not,
+			     frame callbacks still have to be run,
+			     which is what the following parameter
+			     means.  */
+			  need_empty_frame);
 
   return;
 }
@@ -410,12 +417,6 @@ PostEndFrame (FrameClock *clock)
 static Bool
 StartFrame (FrameClock *clock, Bool urgent, Bool predict)
 {
-  if (clock->frozen)
-    return False;
-
-  if (clock->frozen_until_end_frame)
-    return False;
-
   if (clock->in_frame)
     {
       if (clock->end_frame_timer
@@ -487,11 +488,6 @@ StartFrame (FrameClock *clock, Bool urgent, Bool predict)
 static void
 EndFrame (FrameClock *clock)
 {
-  if (clock->frozen)
-    return;
-
-  clock->frozen_until_end_frame = False;
-
   /* Signal that end_frame was called and it is now safe to finish the
      frame from the timer.  */
   clock->end_frame_called = True;
@@ -521,8 +517,10 @@ EndFrame (FrameClock *clock)
 
   /* The frame has ended.  Freeze the frame clock if there is a
      pending sync value.  */
+
   if (clock->pending_sync_value)
     FreezeForValue (clock, clock->pending_sync_value);
+
   clock->pending_sync_value = 0;
 
   if (!frame_sync_supported)
@@ -551,7 +549,7 @@ FreeFrameCallbacks (FrameClock *clock)
 }
 
 static void
-RunFrameCallbacks (FrameClock *clock)
+RunFrameCallbacks (FrameClock *clock, uint64_t frame_drawn_time)
 {
   FrameClockCallback *callback;
 
@@ -559,7 +557,8 @@ RunFrameCallbacks (FrameClock *clock)
 
   while (callback != &clock->callbacks)
     {
-      callback->frame (clock, callback->data);
+      callback->frame (clock, callback->data,
+		       frame_drawn_time);
       callback = callback->next;
     }
 }
@@ -575,13 +574,14 @@ NoteFakeFrame (Timer *timer, void *data, struct timespec time)
       && (clock->finished_frame_id == clock->next_frame_id))
     {
       clock->in_frame = False;
-      RunFrameCallbacks (clock);
+      RunFrameCallbacks (clock, (uint64_t) -1);
     }
 }
 
 void
 XLFrameClockAfterFrame (FrameClock *clock,
-			void (*frame_func) (FrameClock *, void *),
+			void (*frame_func) (FrameClock *, void *,
+					    uint64_t),
 			void *data)
 {
   FrameClockCallback *callback;
@@ -613,34 +613,7 @@ XLFrameClockEndFrame (FrameClock *clock)
 Bool
 XLFrameClockFrameInProgress (FrameClock *clock)
 {
-  if (clock->frozen_until_end_frame)
-    /* Don't consider a frame as being in progress, since the frame
-       counter has been incremented to freeze the display.  */
-    return False;
-
   return clock->in_frame;
-}
-
-/* N.B. that this function is called from popups, where normal
-   freezing does not work, as the window manager does not
-   cooperate.  */
-
-void
-XLFrameClockFreeze (FrameClock *clock)
-{
-  /* Start a frame now, unless one is already in progress, in which
-     case it suffices to get rid of the timer.  */
-  if (!clock->end_frame_timer)
-    StartFrame (clock, False, False);
-  else
-    {
-      RemoveTimer (clock->end_frame_timer);
-      clock->end_frame_timer = NULL;
-    }
-
-  /* Don't unfreeze until the next EndFrame.  */
-  clock->frozen_until_end_frame = True;
-  clock->frozen = True;
 }
 
 void
@@ -671,9 +644,11 @@ XLFrameClockHandleFrameEvent (FrameClock *clock, XEvent *event)
 	  /* Actually compute the time and save it.  */
 	  clock->last_frame_time = low | (high << 32);
 
-	  /* Run any frame callbacks, since drawing has finished.  */
+	  /* Clear the in_frame flag.  */
 	  clock->in_frame = False;
-	  RunFrameCallbacks (clock);
+
+	  /* Run any frame callbacks, since drawing has finished.  */
+	  RunFrameCallbacks (clock, clock->last_frame_time);
 
 	  if (clock->frame_timings_id == -1)
 	    {
@@ -742,14 +717,11 @@ XLFrameClockHandleFrameEvent (FrameClock *clock, XEvent *event)
 
       /* If a frame is in progress, postpone this frame
 	 synchronization message.  */
+
       if (clock->in_frame && !clock->end_frame_called)
 	clock->pending_sync_value = value;
       else
 	FreezeForValue (clock, value);
-
-      if (clock->freeze_callback)
-	/* Call the freeze callback in any case.  */
-	clock->freeze_callback (clock->freeze_callback_data);
     }
 }
 
@@ -821,28 +793,10 @@ XLMakeFrameClockForWindow (Window window)
   return clock;
 }
 
-void
-XLFrameClockUnfreeze (FrameClock *clock)
-{
-  clock->frozen = False;
-}
-
-Bool
-XLFrameClockNeedConfigure (FrameClock *clock)
-{
-  return clock->need_configure;
-}
-
 Bool
 XLFrameClockSyncSupported (void)
 {
   return frame_sync_supported;
-}
-
-Bool
-XLFrameClockIsFrozen (FrameClock *clock)
-{
-  return clock->frozen;
 }
 
 Bool
@@ -884,21 +838,14 @@ XLFrameClockDisablePredictRefresh (FrameClock *clock)
 }
 
 void
-XLFrameClockSetFreezeCallback (FrameClock *clock, void (*callback) (void *),
+XLFrameClockSetFreezeCallback (FrameClock *clock, void (*callback) (void *,
+								    Bool),
+			       Bool (*fast_forward_callback) (void *),
 			       void *data)
 {
   clock->freeze_callback = callback;
   clock->freeze_callback_data = data;
-}
-
-uint64_t
-XLFrameClockGetFrameTime (FrameClock *clock)
-{
-  /* Only return the time if it is actually a valid clock time.  */
-  if (!compositor.server_time_monotonic)
-    return 0;
-
-  return clock->last_frame_time;
+  clock->can_forward_sync_counter = fast_forward_callback;
 }
 
 void

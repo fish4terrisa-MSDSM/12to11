@@ -115,11 +115,6 @@ composite the contents of Wayland surfaces onto X windows.  This can
 either be \fBpicture\fP (the XRender based compositor) or \fBegl\fP
 (the OpenGL ES 2.0 based compositor).
 .TP
-.B useDirectPresentation\fP (class \fBUseDirectPresentation\fP)
-If ``True'' or ``true'', this resource enables the use of direct
-presentation on unredirected windows.  This is not yet complete
-pending the installation of required functionality in the X server.
-.TP
 .B wmProtocols\fP (class \fBWmProtocols\fP)
 Comma-separated list of window manager protocols, similar to
 \fBinputStyles\fP, that the protocol translator should enable or

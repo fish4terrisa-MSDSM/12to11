@@ -165,7 +165,8 @@ NoteBounds (void *data, int min_x, int min_y, int max_x, int max_y)
 }
 
 static void
-NoteFrame (FrameMode mode, uint64_t id, void *data)
+NoteFrame (FrameMode mode, uint64_t id, void *data,
+	   uint64_t msc, uint64_t ust)
 {
   if (mode != ModeComplete && mode != ModePresented)
     return;

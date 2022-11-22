@@ -329,8 +329,10 @@ struct _Subcompositor
   /* Function called with the bounds before each update.  */
   void (*note_bounds) (void *, int, int, int, int);
 
-  /* Function called with the frame counter on each update.  */
-  void (*note_frame) (FrameMode, uint64_t, void *);
+  /* Function called with the frame counter on each update.  Counter 3
+     is the msc and counter 4 is the ust.  */
+  void (*note_frame) (FrameMode, uint64_t, void *, uint64_t,
+		      uint64_t);
 
   /* The current frame counter, incremented with each frame.  */
   uint64_t frame_counter;
@@ -2105,7 +2107,8 @@ SubcompositorSetBoundsCallback (Subcompositor *subcompositor,
 void
 SubcompositorSetNoteFrameCallback (Subcompositor *subcompositor,
 				   void (*note_frame) (FrameMode, uint64_t,
-						       void *),
+						       void *, uint64_t,
+						       uint64_t),
 				   void *data)
 {
   subcompositor->note_frame = note_frame;
@@ -2176,7 +2179,7 @@ StorePreviousDamage (Subcompositor *subcompositor,
 }
 
 static void
-PresentCompletedCallback (void *data)
+PresentCompletedCallback (void *data, uint64_t msc, uint64_t ust)
 {
   Subcompositor *subcompositor;
 
@@ -2190,11 +2193,12 @@ PresentCompletedCallback (void *data)
   if (subcompositor->note_frame)
     subcompositor->note_frame (ModePresented,
 			       subcompositor->frame_counter,
-			       subcompositor->note_frame_data);
+			       subcompositor->note_frame_data,
+			       msc, ust);
 }
 
 static void
-RenderCompletedCallback (void *data)
+RenderCompletedCallback (void *data, uint64_t msc, uint64_t ust)
 {
   Subcompositor *subcompositor;
 
@@ -2206,9 +2210,10 @@ RenderCompletedCallback (void *data)
 
   /* Call the frame function if it s still set.  */
   if (subcompositor->note_frame)
-    subcompositor->note_frame (ModeComplete,
+    subcompositor->note_frame (ModePresented,
 			       subcompositor->frame_counter,
-			       subcompositor->note_frame_data);
+			       subcompositor->note_frame_data,
+			       msc, ust);
 }
 
 /* Update ancillary data upon commit.  This includes the input and
@@ -2974,22 +2979,25 @@ static void
 BeginFrame (Subcompositor *subcompositor)
 {
   if (!subcompositor->note_frame)
-    return;
+    {
+      /* Cancel any presentation callback that is currently in
+	 progress.  */
+      if (subcompositor->present_key)
+	RenderCancelPresentationCallback (subcompositor->present_key);
+      subcompositor->present_key = NULL;
+
+      /* Cancel any render callback that is currently in progress.  */
+      if (subcompositor->render_key)
+	RenderCancelCompletionCallback (subcompositor->render_key);
+      subcompositor->render_key = NULL;
+
+      return;
+    }
 
   subcompositor->note_frame (ModeStarted,
 			     ++subcompositor->frame_counter,
-			     subcompositor->note_frame_data);
-
-  /* Cancel any presentation callback that is currently in
-     progress.  */
-  if (subcompositor->present_key)
-    RenderCancelPresentationCallback (subcompositor->present_key);
-  subcompositor->present_key = NULL;
-
-  /* Cancel any render callback that is currently in progress.  */
-  if (subcompositor->render_key)
-    RenderCancelCompletionCallback (subcompositor->render_key);
-  subcompositor->render_key = NULL;
+			     subcompositor->note_frame_data,
+			     -1, -1);
 }
 
 static void
@@ -2999,12 +3007,22 @@ EndFrame (Subcompositor *subcompositor)
     return;
 
   /* Make sure that we wait for the presentation callback or render
-     callback if they are attached.  */
+     callback if they are attached.  If not, ask for a
+     notification.  */
 
   if (!subcompositor->present_key && !subcompositor->render_key)
-    subcompositor->note_frame (ModeComplete,
-			       subcompositor->frame_counter,
-			       subcompositor->note_frame_data);
+    {
+      subcompositor->render_key
+	= RenderNotifyMsc (subcompositor->target,
+			   RenderCompletedCallback,
+			   subcompositor);
+
+      if (!subcompositor->render_key)
+	subcompositor->note_frame (ModeComplete,
+				   subcompositor->frame_counter,
+				   subcompositor->note_frame_data,
+				   -1, -1);
+    }
 }
 
 void

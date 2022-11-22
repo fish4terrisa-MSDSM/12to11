@@ -220,6 +220,9 @@ enum
 
 struct _PictureTarget
 {
+  /* The next frame number.  */
+  uint64_t next_msc;
+
   /* The XID of the picture.  */
   Picture picture;
 
@@ -265,6 +268,9 @@ struct _PictureTarget
 
   /* List of buffers that were used in the course of an update.  */
   XLList *buffers_used;
+
+  /* What rendering mode should be used.  */
+  RenderMode render_mode;
 };
 
 struct _DrmFormatInfo
@@ -450,9 +456,6 @@ static BufferActivityRecord all_activity;
 
 /* List of all presentations that have not yet been completed.  */
 static PresentCompletionCallback all_completion_callbacks;
-
-/* Whether or not direct presentation should be used.  */
-static Bool use_direct_presentation;
 
 /* The device nodes of each provider.  */
 static dev_t *render_devices;
@@ -839,10 +842,18 @@ SwapBackBuffers (PictureTarget *target, pixman_region32_t *damage)
   if (!present_serial)
     present_serial++;
 
-  XPresentPixmap (compositor.display, target->window,
-		  back_buffer->pixmap, present_serial,
-		  None, region, 0, 0, None, None, fence,
-		  PresentOptionAsync, 0, 0, 0, NULL, 0);
+  if (target->render_mode == RenderModeAsync)
+    XPresentPixmap (compositor.display, target->window,
+		    back_buffer->pixmap, present_serial,
+		    None, region, 0, 0, None, None, fence,
+		    PresentOptionAsync, 0, 0, 0, NULL, 0);
+  else
+    /* Present the pixmap synchronously at the next frame.  */
+    XPresentPixmap (compositor.display, target->window,
+		    back_buffer->pixmap, present_serial,
+		    None, region, 0, 0, None, None, fence,
+		    PresentOptionNone, target->next_msc,
+		    1, 0, NULL, 0);
 
   /* Mark the back buffer as busy, and the other back buffer as having
      been released.  */
@@ -1025,42 +1036,6 @@ PickVisual (int *depth)
 }
 
 static void
-InitSynchronizedPresentation (void)
-{
-  XrmDatabase rdb;
-  XrmName namelist[3];
-  XrmClass classlist[3];
-  XrmValue value;
-  XrmRepresentation type;
-
-  rdb = XrmGetDatabase (compositor.display);
-
-  if (!rdb)
-    return;
-
-  namelist[1] = XrmStringToQuark ("useDirectPresentation");
-  namelist[0] = app_quark;
-  namelist[2] = NULLQUARK;
-
-  classlist[1] = XrmStringToQuark ("UseDirectPresentation");
-  classlist[0] = resource_quark;
-  classlist[2] = NULLQUARK;
-
-  /* Enable the use of direct presentation if
-     *.UseDirectPresentation.*.useDirectPresentation is true.  This is
-     still incomplete, as the features necessary for it to play nice
-     with frame synchronization have not yet been implemented in the X
-     server.  */
-
-  if (XrmQGetResource (rdb, namelist, classlist,
-		       &type, &value)
-      && type == QString
-      && (!strcmp (value.addr, "True")
-	  || !strcmp (value.addr, "true")))
-    use_direct_presentation = True;
-}
-
-static void
 AddAdditionalModifier (const char *name)
 {
   int i, j;
@@ -1154,12 +1129,6 @@ InitAdditionalModifiers (void)
   classlist[0] = resource_quark;
   classlist[2] = NULLQUARK;
 
-  /* Enable the use of direct presentation if
-     *.UseDirectPresentation.*.useDirectPresentation is true.  This is
-     still incomplete, as the features necessary for it to play nice
-     with frame synchronization have not yet been implemented in the X
-     server.  */
-
   if (XrmQGetResource (rdb, namelist, classlist,
 		       &type, &value)
       && type == QString)
@@ -1190,15 +1159,11 @@ InitRenderFuncs (void)
       return False;
     }
 
-  /* Figure out whether or not the user wants synchronized
-     presentation.  */
-  InitSynchronizedPresentation ();
-
   /* Find out what additional modifiers the user wants.  */
   InitAdditionalModifiers ();
 
-  if (use_direct_presentation)
-    AddRenderFlag (SupportsDirectPresent);
+  /* Add the direct presentation support flag.  */
+  AddRenderFlag (SupportsDirectPresent);
 
   /* Create an unmapped, InputOnly window, that is used to receive
      roundtrip events.  */
@@ -1277,15 +1242,31 @@ TargetFromDrawable (Drawable drawable, Window window,
 }
 
 static RenderTarget
+TargetFromWindow (Window window, unsigned long event_mask)
+{
+  return TargetFromDrawable (window, window, event_mask);
+}
+
+static RenderTarget
 TargetFromPixmap (Pixmap pixmap)
 {
   return TargetFromDrawable (pixmap, None, NoEventMask);
 }
 
-static RenderTarget
-TargetFromWindow (Window window, unsigned long event_mask)
+static Bool
+SetRenderMode (RenderTarget target, RenderMode mode,
+	       uint64_t target_msc)
 {
-  return TargetFromDrawable (window, window, event_mask);
+  PictureTarget *pict_target;
+
+  pict_target = target.pointer;
+
+  /* Set the rendering mode to use with target.  */
+  pict_target->render_mode = mode;
+
+  /* And set the target msc.  */
+  pict_target->next_msc = target_msc;
+  return True;
 }
 
 static void
@@ -1941,21 +1922,16 @@ PresentToWindow (RenderTarget target, RenderBuffer source,
   else
     region = None;
 
-  if (use_direct_presentation)
-    {
-      /* Present the pixmap now from the damage; it will complete upon
-	 the next vblank if direct presentation is enabled, or
-	 immediately if it is not.  */
-      XPresentPixmap (compositor.display, pict_target->window, buffer->pixmap,
-		      ++present_serial, None, region, 0, 0, None, None, None,
-		      PresentOptionNone, 0, 1, 0, NULL, 0);
-    }
-  else
-    /* Direct presentation is off; present the pixmap asynchronously
-       at an msc of 0.  */
+  if (pict_target->render_mode == RenderModeAsync)
+    /* Present the pixmap asynchronously at an msc of 0.  */
     XPresentPixmap (compositor.display, pict_target->window, buffer->pixmap,
-		    ++present_serial, None, region, 0, 0,  None, None, None,
+		    ++present_serial, None, region, 0, 0, None, None, None,
 		    PresentOptionAsync, 0, 0, 0, NULL, 0);
+  else
+    /* Present the pixmap at the next msc.  */
+    XPresentPixmap (compositor.display, pict_target->window, buffer->pixmap,
+		    ++present_serial, None, region, 0, 0, None, None, None,
+		    PresentOptionNone, pict_target->next_msc, 1, 0, NULL, 0);
 
   if (region)
     XFixesDestroyRegion (compositor.display, region);
@@ -1987,6 +1963,30 @@ PresentToWindow (RenderTarget target, RenderBuffer source,
   return callback_rec;
 }
 
+static RenderCompletionKey
+NotifyMsc (RenderTarget target, RenderCompletionFunc callback,
+	   void *data)
+{
+  PictureTarget *pict_target;
+  PresentCompletionCallback *callback_rec;
+
+  pict_target = target.pointer;
+
+  if (pict_target->render_mode != RenderModeVsync)
+    return NULL;
+
+  /* Allocate a presentation completion callback.  */
+  callback_rec = MakePresentationCallback ();
+  callback_rec->function = callback;
+  callback_rec->data = data;
+  callback_rec->id = ++present_serial;
+
+  /* Ask for a notification.  */
+  XPresentNotifyMSC (compositor.display, pict_target->window,
+		     present_serial, 0, 1, 0);
+  return callback_rec;
+}
+
 /* Cancel the given presentation callback.  */
 
 static void
@@ -2006,6 +2006,7 @@ static RenderFuncs picture_render_funcs =
     .init_render_funcs = InitRenderFuncs,
     .target_from_window = TargetFromWindow,
     .target_from_pixmap = TargetFromPixmap,
+    .set_render_mode = SetRenderMode,
     .set_client = SetClient,
     .set_standard_event_mask = SetStandardEventMask,
     .note_target_size = NoteTargetSize,
@@ -2023,6 +2024,7 @@ static RenderFuncs picture_render_funcs =
     .delete_fence = DeleteFence,
     .get_finish_fence = GetFinishFence,
     .present_to_window = PresentToWindow,
+    .notify_msc = NotifyMsc,
     .cancel_presentation_callback = CancelPresentationCallback,
   };
 
@@ -3379,7 +3381,7 @@ HandlePresentCompleteNotify (XPresentCompleteNotifyEvent *complete)
 	{
 	  /* The presentation is complete.  Run and unlink the
 	     callback.  */
-	  last->function (last->data);
+	  last->function (last->data, complete->msc, complete->ust);
 	  last->next->last = last->last;
 	  last->last->next = last->next;
 

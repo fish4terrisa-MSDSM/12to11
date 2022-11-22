@@ -442,7 +442,6 @@ static void
 InternalReposition (XdgPopup *popup)
 {
   int x, y, width, height;
-  FrameClock *clock;
 
   /* No parent was specified or the role is detached.  */
   if (!popup->role || !popup->parent)
@@ -457,11 +456,6 @@ InternalReposition (XdgPopup *popup)
 
   SendConfigure (popup, popup->pending_x, popup->pending_y,
 		 width, height);
-
-  /* Now, freeze the frame clock, to avoid flicker when the client
-     commits before ack_configure.  */
-  clock = XLXdgRoleGetFrameClock (popup->role);
-  XLFrameClockFreeze (clock);
 
   popup->state |= StateAckPosition;
 }

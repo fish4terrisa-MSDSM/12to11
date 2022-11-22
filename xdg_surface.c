@@ -36,17 +36,13 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 enum
   {
     StatePendingFrameCallback	= 1,
-    StateLateFrame		= (1 << 1),
     StatePendingWindowGeometry	= (1 << 2),
     StateWaitingForAckConfigure = (1 << 3),
     StateWaitingForAckCommit	= (1 << 4),
-    StateLateFrameAcked		= (1 << 5),
-    StateMaybeConfigure		= (1 << 6),
-    StateDirtyFrameExtents	= (1 << 7),
-    StateTemporaryBounds	= (1 << 8),
-    StateFrameStarted		= (1 << 9),
-    StateAllowUnredirection	= (1 << 10),
-    StatePendingBufferRelease   = (1 << 11),
+    StateMaybeConfigure		= (1 << 5),
+    StateDirtyFrameExtents	= (1 << 6),
+    StateTemporaryBounds	= (1 << 7),
+    StatePendingBufferRelease   = (1 << 8),
   };
 
 typedef struct _XdgRole XdgRole;
@@ -128,8 +124,8 @@ struct _XdgRole
   /* Buffer release helper.  */
   BufferReleaseHelper *release_helper;
 
-  /* The frame clock.  */
-  FrameClock *clock;
+  /* The synchronization helper.  */
+  SyncHelper *sync_helper;
 
   /* The pending xdg_surface state.  */
   XdgState pending_state;
@@ -155,6 +151,9 @@ struct _XdgRole
   /* How many synthetic (in the case of toplevels) ConfigureNotify
      events to wait for before ignoring those coordinates.  */
   int pending_synth_configure;
+
+  /* The pending frame time.  */
+  uint32_t pending_frame_time;
 
   /* The input region of the attached subsurface.  */
   pixman_region32_t input_region;
@@ -244,63 +243,29 @@ FreeReconstrainCallbacks (XdgRole *role)
 }
 
 static void
-RunFrameCallbacks (Surface *surface, XdgRole *role)
+RunFrameCallbacks (Surface *surface, XdgRole *role, uint32_t frame_time)
 {
-  struct timespec time;
-  uint64_t last_drawn_time;
-
   /* Surface can be NULL for various reasons, especially events
      arriving after the shell surface is detached.  */
+
   if (!surface)
     return;
 
-  last_drawn_time = XLFrameClockGetFrameTime (role->clock);
-
-  if (!last_drawn_time)
-    {
-      clock_gettime (CLOCK_MONOTONIC, &time);
-      XLSurfaceRunFrameCallbacks (surface, time);
-    }
-  else
-    XLSurfaceRunFrameCallbacksMs (surface, last_drawn_time / 1000);
+  XLSurfaceRunFrameCallbacksMs (surface, frame_time);
 }
 
 static void
-RunFrameCallbacksConditionally (XdgRole *role)
+RunFrameCallbacksConditionally (XdgRole *role, uint32_t frame_time)
 {
   if (!(role->state & StatePendingBufferRelease))
-    RunFrameCallbacks (role->role.surface, role);
+    RunFrameCallbacks (role->role.surface, role, frame_time);
   else if (role->role.surface)
-    /* weston-simple-shm seems to assume that a frame callback can
-       only arrive after all buffers have been released.  */
-    role->state |= StatePendingFrameCallback;
-}
-
-static Bool
-UpdateFrameRefreshPrediction (XdgRole *role)
-{
-  int desync_children;
-
-  /* Count the number of desynchronous children attached to this
-     surface, directly or indirectly.  When this number is more than
-     1, enable frame refresh prediction, which allows separate frames
-     from subsurfaces to be batched together.  */
-
-  if (role->role.surface)
     {
-      desync_children = 0;
-      XLUpdateDesynchronousChildren (role->role.surface,
-				     &desync_children);
-
-      if (desync_children)
-	XLFrameClockSetPredictRefresh (role->clock);
-      else
-	XLFrameClockDisablePredictRefresh (role->clock);
-
-      return desync_children > 0;
+      /* weston-simple-shm seems to assume that a frame callback can
+	 only arrive after all buffers have been released.  */
+      role->state |= StatePendingFrameCallback;
+      role->pending_frame_time = frame_time;
     }
-
-  return False;
 }
 
 static void
@@ -319,7 +284,8 @@ AllBuffersReleased (void *data)
      released.  */
   if (surface && role->state & StatePendingFrameCallback)
     {
-      RunFrameCallbacks (surface, role);
+      RunFrameCallbacks (surface, role,
+			 role->pending_frame_time);
 
       role->state &= ~StatePendingFrameCallback;
     }
@@ -341,7 +307,7 @@ XLHandleXEventForXdgSurfaces (XEvent *event)
 
       if (role)
 	{
-	  XLFrameClockHandleFrameEvent (role->clock, event);
+	  SyncHelperHandleFrameEvent (role->sync_helper, event);
 	  return True;
 	}
 
@@ -354,11 +320,7 @@ XLHandleXEventForXdgSurfaces (XEvent *event)
 
       if (role)
 	{
-	  /* If resizing is in progress with WM synchronization, don't
-	     handle exposure events, since that causes updates outside
-	     a frame.  */
-	  if (!XLFrameClockNeedConfigure (role->clock))
-	    SubcompositorExpose (role->subcompositor, event);
+	  SubcompositorExpose (role->subcompositor, event);
 
 	  return True;
 	}
@@ -535,11 +497,6 @@ AckConfigure (struct wl_client *client, struct wl_resource *resource,
 	 exposed due to changes in bounds.  */
       SubcompositorGarbage (xdg_role->subcompositor);
 
-      /* Also run frame callbacks if the frame clock is frozen.  */
-      if (XLFrameClockIsFrozen (xdg_role->clock)
-	  && xdg_role->role.surface)
-	RunFrameCallbacksConditionally (xdg_role);
-
 #ifdef DEBUG_GEOMETRY_CALCULATION
       fprintf (stderr, "Client acknowledged configuration\n");
 #endif
@@ -559,51 +516,6 @@ static const struct xdg_surface_interface xdg_surface_impl =
     .set_window_geometry = SetWindowGeometry,
     .ack_configure = AckConfigure,
   };
-
-static void
-Unfreeze (XdgRole *role)
-{
-  XLFrameClockUnfreeze (role->clock);
-}
-
-static Bool
-IsRoleMapped (XdgRole *role)
-{
-  if (!role->impl)
-    /* This can happen when destroying subsurfaces as part of client
-       cleanup.  */
-    return False;
-
-  return role->impl->funcs.is_window_mapped (&role->role,
-					     role->impl);
-}
-
-/* Check if a frame can be drawn.  Return True if it is okay to call
-   SubcompositorUpdate, or schedule a frame after the current frame is
-   drawn and return False.  */
-
-static Bool
-CheckFrame (XdgRole *role)
-{
-  if (XLFrameClockFrameInProgress (role->clock))
-    {
-      if (XLFrameClockCanBatch (role->clock))
-	/* But if we can squeeze the frame inside the vertical
-	   blanking period, or a frame is in progress but EndFrame has
-	   not yet been called, go ahead.  */
-	return True;
-
-      role->state |= StateLateFrame;
-      role->state &= ~StatePendingFrameCallback;
-
-      if (role->state & StateWaitingForAckConfigure)
-	role->state &= ~StateLateFrameAcked;
-
-      return False;
-    }
-
-  return True;
-}
 
 static void
 Commit (Surface *surface, Role *role)
@@ -627,11 +539,13 @@ Commit (Surface *surface, Role *role)
 	= xdg_role->pending_state.window_geometry_height;
 
 #ifdef DEBUG_GEOMETRY_CALCULATION
-      fprintf (stderr, "Client set window geometry to: [%d %d %d %d]\n",
+      fprintf (stderr, "Client set window geometry to: [%d %d %d %d]\n"
+	       "State is: %d\n",
 	       xdg_role->current_state.window_geometry_x,
 	       xdg_role->current_state.window_geometry_y,
 	       xdg_role->current_state.window_geometry_width,
-	       xdg_role->current_state.window_geometry_height);
+	       xdg_role->current_state.window_geometry_height,
+	       xdg_role->state & StateWaitingForAckConfigure);
 #endif
 
       /* Now, clear the "pending window geometry" flag.  */
@@ -657,35 +571,40 @@ Commit (Surface *surface, Role *role)
       xdg_role->state &= ~StateWaitingForAckCommit;
     }
 
-  /* If the frame clock is frozen but we are no longer waiting for the
-     configure event to be acknowledged by the client, unfreeze the
-     frame clock.  */
-  if (!(xdg_role->state & StateWaitingForAckConfigure))
-    Unfreeze (xdg_role);
+  if (!(xdg_role->state & StateWaitingForAckCommit))
+    {
+      /* Tell the sync helper to update the frame.  This will also
+	 complete any resize if necessary.  */
+      SyncHelperUpdate (xdg_role->sync_helper);
 
-  /* Now, check if a frame can be drawn, or schedule a frame to be
-     drawn after this one completes.  */
+      /* Run the after_commit function of the role implementation,
+	 which peforms actions such as posting pending configure
+	 events for built-in resize.  */
 
-  if (!CheckFrame (xdg_role))
-    /* The frame cannot be drawn, because the compositor has not yet
-       drawn a previous frame.  */
-    goto after_commit;
+      if (xdg_role->impl->funcs.after_commit)
+	xdg_role->impl->funcs.after_commit (role, surface,
+					    xdg_role->impl);
+    }
+  else
+    /* Now, tell the sync helper to generate a frame.
+       Many clients do this:
 
-  /* The frame can be drawn, so update the window contents now.  */
-  SubcompositorUpdate (xdg_role->subcompositor);
+       wl_surface@1.frame (new id wl_callback@2)
+       wl_surface@1.commit ()
 
-  /* Do not end frames explicitly.  Instead, wait for the
-     NoteFrameCallback to end the frame.  */
+       and upon receiving a configure event, potentially call:
 
- after_commit:
+       xdg_surface@3.ack_configure (1)
 
-  /* Run the after_commit function of the role implementation, which
-     peforms actions such as posting pending configure events for
-     built-in resize.  */
+       but do not commit (or even ack_configure) until the frame
+       callback is triggered.
 
-  if (xdg_role->impl->funcs.after_commit)
-    xdg_role->impl->funcs.after_commit (role, surface,
-					xdg_role->impl);
+       That is problematic because the frame clock is not unfrozen
+       until the commit happens.  To work around the problem, tell the
+       sync helper to check for this situation, and run frame
+       callbacks if necessary.  */
+    SyncHelperCheckFrameCallback (xdg_role->sync_helper);
+
   return;
 }
 
@@ -753,12 +672,12 @@ ReleaseBacking (XdgRole *role)
   /* And the association.  */
   XLDeleteAssoc (surfaces, role->window);
 
+  /* Destroy the sync helper.  */
+  FreeSyncHelper (role->sync_helper);
+
   /* There shouldn't be any children of the subcompositor at this
      point.  */
   SubcompositorFree (role->subcompositor);
-
-  /* The frame clock is no longer useful.  */
-  XLFreeFrameClock (role->clock);
 
   /* Free the input region.  */
   pixman_region32_fini (&role->input_region);
@@ -822,19 +741,34 @@ SubsurfaceUpdate (Surface *surface, Role *role)
 
   xdg_role = XdgRoleFromRole (role);
 
-  /* If the frame clock is frozen, don't update anything.  */
-  if (XLFrameClockIsFrozen (xdg_role->clock))
-    return;
+  if (xdg_role->state & StateWaitingForAckCommit)
+    {
+      /* Updates are being postponed until the next commit after
+	 ack_configure. 
 
-  /* If a frame is already in progress, return, but schedule a frame
-     to be drawn later.  */
+	 Now, tell the sync helper to generate a frame.
+	 Many clients do this:
 
-  if (!CheckFrame (xdg_role))
-    /* The frame cannot be drawn.  */
-    return;
+	 wl_surface@1.frame (new id wl_callback@2)
+	 wl_surface@1.commit ()
 
-  /* The frame can be drawn, so update the window contents.  */
-  SubcompositorUpdate (xdg_role->subcompositor);
+	 and upon receiving a configure event, potentially call:
+
+	 xdg_surface@3.ack_configure (1)
+
+	 but do not commit (or even ack_configure) until the frame
+	 callback is triggered.
+
+	 That is problematic because the frame clock is not unfrozen
+	 until the commit happens.  To work around the problem, tell
+	 the sync helper to check for this situation, and run frame
+	 callbacks if necessary.  */
+      SyncHelperCheckFrameCallback (xdg_role->sync_helper);
+      return;
+    }
+
+  /* Tell the sync helper to do an update.  */
+  SyncHelperUpdate (xdg_role->sync_helper);
 }
 
 static Window
@@ -856,48 +790,6 @@ HandleResourceDestroy (struct wl_resource *resource)
 
   /* Release the backing data.  */
   ReleaseBacking (role);
-}
-
-static Bool
-MaybeRunLateFrame (XdgRole *role)
-{
-  /* If there is a late frame, run it now.  Return whether or not a
-     late frame was run.  */
-
-  if (role->state & StateLateFrame)
-    {
-      if (role->state & StateLateFrameAcked)
-	XLFrameClockUnfreeze (role->clock);
-
-      /* Now apply the state in the late frame.  */
-      SubcompositorUpdate (role->subcompositor);
-
-      /* Clear the late frame flag.  */
-      role->state &= ~StateLateFrame;
-
-      /* Return True, as a new update has started.  */
-      return True;
-    }
-
-  return False;
-}
-
-static void
-AfterFrame (FrameClock *clock, void *data)
-{
-  XdgRole *role;
-
-  role = data;
-
-  /* Run any late frame.  */
-  if (MaybeRunLateFrame (role))
-    return;
-
-  /* If all pending frames have been drawn, run frame callbacks.
-     Unless some buffers have not yet been released, in which case the
-     callbacks will be run when they are.  */
-
-  RunFrameCallbacksConditionally (role);
 }
 
 static void
@@ -1004,7 +896,7 @@ NoteConfigure (XdgRole *role, XEvent *event)
 
   /* Tell the frame clock how many WM-generated configure events have
      arrived.  */
-  XLFrameClockNoteConfigure (role->clock);
+  SyncHelperNoteConfigureEvent (role->sync_helper);
 
   /* Run reconstrain callbacks.  */
   RunReconstrainCallbacksForXEvent (role, event);
@@ -1039,11 +931,6 @@ NoteBounds (void *data, int min_x, int min_y,
   role = data;
   run_reconstrain_callbacks = False;
   root_position_initialized = False;
-
-  if (XLFrameClockIsFrozen (role->clock))
-    /* We are waiting for the acknowledgement of a configure event.
-       Don't resize the window until it's acknowledged.  */
-    return;
 
   if (role->state & StateWaitingForAckCommit)
     /* Don't resize the window until all configure events are
@@ -1160,124 +1047,12 @@ WriteRedirectProperty (XdgRole *role)
 {
   unsigned long bypass_compositor;
 
-  if (role->state & StateAllowUnredirection)
-    /* The subcompositor determined that the window should be
-       uncomposited to allow for direct buffer flipping.  */
-    bypass_compositor = 0;
-  else
-    bypass_compositor = 2;
+  bypass_compositor = 2;
 
   XChangeProperty (compositor.display, role->window,
 		   _NET_WM_BYPASS_COMPOSITOR, XA_CARDINAL,
 		   32, PropModeReplace,
 		   (unsigned char *) &bypass_compositor, 1);
-}
-
-static Bool
-WasFrameQueued (XdgRole *role)
-{
-  /* Return whether or not the translator slept before displaying this
-     frame in response to a frame drawn event.  */
-
-  return (role->state & StateLateFrame) != 0;
-}
-
-static void
-NoteFrame (FrameMode mode, uint64_t id, void *data)
-{
-  XdgRole *role;
-  Bool predict_refresh, urgent;
-
-  role = data;
-
-  switch (mode)
-    {
-    case ModeStarted:
-      /* Record this frame counter as the pending frame.  */
-      role->pending_frame = id;
-
-      if (!(role->state & StateFrameStarted))
-	{
-	  /* Update whether or not frame refresh prediction is to be
-	     used.  */
-	  predict_refresh = UpdateFrameRefreshPrediction (role);
-
-	  /* A rule of thumb is to never let the compositing manager
-	     read or try to scan out incomplete buffer contents.
-	     Thus, if the client asked for async presentation, Commit
-	     will still wait for the compositor to finish drawing the
-	     last frame.
-
-	     In addition, how subsurfaces fit into all of this is
-	     unclear.  At present, the presentation hint of
-	     subsurfaces is simply discarded, and the hint of the
-	     topmost surface used instead.  In addition, asynchronous
-	     subsurfaces will prevent async presentation from taking
-	     place at all.  */
-
-	  urgent = (WasFrameQueued (role)
-		    && !predict_refresh
-		    && role->role.surface
-		    && (role->role.surface->current_state.presentation_hint
-			== PresentationHintAsync));
-
-	  if (XLFrameClockStartFrame (role->clock, urgent))
-	    role->state |= StateFrameStarted;
-	}
-
-      break;
-
-    case ModeNotifyDisablePresent:
-      /* The subcompositor will draw to the frame directly, so make
-	 the compositing manager redirect the frame again.  */
-
-      if (role->state & StateAllowUnredirection)
-	{
-	  role->state &= ~StateAllowUnredirection;
-	  WriteRedirectProperty (role);
-	}
-
-      break;
-
-    case ModePresented:
-    case ModeComplete:
-      /* The frame was completed.  */
-      if (id == role->pending_frame)
-	{
-	  /* End the frame.  */
-	  XLFrameClockEndFrame (role->clock);
-
-	  /* No frame was started clock-side for this frame.  That
-	     means programs waiting for frame callbacks will not get
-	     any, so the frame callbacks must be run by hand.  */
-	  if (!(role->state & StateFrameStarted)
-	      || !IsRoleMapped (role))
-	    {
-	      if (MaybeRunLateFrame (role))
-		return;
-
-	      RunFrameCallbacksConditionally (role);
-	    }
-
-	  /* Clear the frame completed flag.  */
-	  role->state &= ~StateFrameStarted;
-
-	  if (mode == ModePresented
-	      && renderer_flags & SupportsDirectPresent)
-	    {
-	      /* Since a presentation was successful, assume future
-		 frames will be presented as well.  In that case, let
-		 the compositing manager unredirect the window, so
-		 buffers can be directly flipped to the screen.  */
-
-	      if (!(role->state & StateAllowUnredirection))
-		{
-		  role->state |= StateAllowUnredirection;
-		  WriteRedirectProperty (role);
-		}
-	    }
-	}
-    }
 }
 
 static void
@@ -1373,21 +1148,52 @@ Rescale (Surface *surface, Role *role)
 }
 
 static void
-HandleFreeze (void *data)
+HandleResize (void *data, Bool only_frame)
 {
   XdgRole *role;
 
   role = data;
+
+  if (only_frame)
+    {
+      SyncHelperCheckFrameCallback (role->sync_helper);
+      return;
+    }
 
   /* _NET_WM_SYNC_REQUEST events should be succeeded by a
      ConfigureNotify event.  */
   role->state |= StateWaitingForAckConfigure;
   role->state |= StateWaitingForAckCommit;
 
+  /* Cancel any pending frame.  Nothing should be displayed while an
+     ack_configure is pending.  */
+  SyncHelperClearPendingFrame (role->sync_helper);
+
   /* This flag means the WaitingForAckConfigure was caused by a
      _NET_WM_SYNC_REQUEST, and the following ConfigureNotify event
      might not lead to a configure event being sent.  */
   role->state |= StateMaybeConfigure;
+
+  /* If a freeze comes between commit and configure, then clients will
+     hang indefinitely waiting for _NET_WM_FRAME_DRAWN.  Make the sync
+     helper check for this situation.  */
+  SyncHelperCheckFrameCallback (role->sync_helper);
+
+#ifdef DEBUG_GEOMETRY_CALCULATION
+  fprintf (stderr, "Waiting for ack_configure (?)...\n");
+#endif
+}
+
+static Bool
+CheckFastForward (void *data)
+{
+  XdgRole *role;
+
+  /* Return whether or not it is ok to fast forward the frame
+     counter while ending a frame.  */
+
+  role = data;
+  return !(role->state & StateWaitingForAckCommit);
 }
 
 static void
@@ -1443,6 +1249,15 @@ Activate (Surface *surface, Role *role, int deviceid,
 				    deviceid,
 				    timestamp.milliseconds,
 				    activator_surface);
+}
+
+static void
+HandleFrameCallback (void *data, uint32_t frame_time)
+{
+  XdgRole *role;
+
+  role = data;
+  RunFrameCallbacksConditionally (role, frame_time);
 }
 
 void
@@ -1538,8 +1353,13 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
   RenderSetClient (role->target, client);
 
   role->subcompositor = MakeSubcompositor ();
-  role->clock = XLMakeFrameClockForWindow (role->window);
-  XLFrameClockSetFreezeCallback (role->clock, HandleFreeze, role);
+  role->sync_helper = MakeSyncHelper (role->subcompositor,
+				      role->window,
+				      role->target,
+				      HandleFrameCallback,
+				      &role->role);
+  SyncHelperSetResizeCallback (role->sync_helper, HandleResize,
+			       CheckFastForward);
 
   SubcompositorSetTarget (role->subcompositor, &role->target);
   SubcompositorSetInputCallback (role->subcompositor,
@@ -1548,17 +1368,12 @@ XLGetXdgSurface (struct wl_client *client, struct wl_resource *resource,
 				  OpaqueRegionChanged, role);
   SubcompositorSetBoundsCallback (role->subcompositor,
 				  NoteBounds, role);
-  SubcompositorSetNoteFrameCallback (role->subcompositor,
-				     NoteFrame, role);
   XLSelectStandardEvents (role->window);
   XLMakeAssoc (surfaces, role->window, role);
 
   /* Tell the compositing manager to never un-redirect this window.
      If it does, frame synchronization will not work.  */
   WriteRedirectProperty (role);
-
-  /* Initialize frame callbacks.  */
-  XLFrameClockAfterFrame (role->clock, AfterFrame, role);
 
   if (!XLSurfaceAttachRole (surface, &role->role))
     abort ();
@@ -1625,6 +1440,10 @@ XLXdgRoleSendConfigure (Role *role, uint32_t serial)
   xdg_role->conf_serial = serial;
   xdg_role->state |= StateWaitingForAckConfigure;
   xdg_role->state |= StateWaitingForAckCommit;
+
+  /* Cancel any pending frame.  Nothing should be displayed while an
+     ack_configure is pending.  */
+  SyncHelperClearPendingFrame (xdg_role->sync_helper);
 
   /* See the comment under XLXdgRoleSetBoundsSize.  */
   xdg_role->state &= ~StateTemporaryBounds;
@@ -1912,7 +1731,7 @@ XLXdgRoleReconstrain (Role *role, XEvent *event)
 
   /* If event is a configure event, tell the frame clock about it.  */
   if (event->type == ConfigureNotify)
-    XLFrameClockNoteConfigure (xdg_role->clock);
+    SyncHelperNoteConfigureEvent (xdg_role->sync_helper);
 }
 
 void
@@ -1936,15 +1755,6 @@ XLXdgRoleMoveBy (Role *role, int west, int north)
   xdg_role->pending_root_x = root_x - west;
   xdg_role->pending_root_y = root_y - north;
   xdg_role->pending_synth_configure++;
-}
-
-FrameClock *
-XLXdgRoleGetFrameClock (Role *role)
-{
-  XdgRole *xdg_role;
-
-  xdg_role = XdgRoleFromRole (role);
-  return xdg_role->clock;
 }
 
 void
@@ -2043,9 +1853,6 @@ XLXdgRoleNoteRejectedConfigure (Role *role)
       xdg_role->state &= ~StateWaitingForAckConfigure;
       xdg_role->state &= ~StateWaitingForAckCommit;
       xdg_role->state &= ~StateMaybeConfigure;
-
-      /* Unfreeze the frame clock now.  */
-      XLFrameClockUnfreeze (xdg_role->clock);
     }
 }
 

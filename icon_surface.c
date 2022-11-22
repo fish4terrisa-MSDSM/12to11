@@ -29,9 +29,10 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 enum
   {
-    StateLateFrame  = 1,
-    StateIsMapped   = (1 << 1),
-    StateIsReleased = (1 << 2),
+    StateIsMapped	      = 1,
+    StateIsReleased	      = (1 << 1),
+    StatePendingBufferRelease = (1 << 2),
+    StatePendingFrameCallback = (1 << 3),
   };
 
 struct _IconSurface
@@ -48,8 +49,11 @@ struct _IconSurface
   /* The subcompositor associated with this role.  */
   Subcompositor *subcompositor;
 
-  /* The frame clock associated with this role.  */
-  FrameClock *clock;
+  /* The associated buffer release helper.  */
+  BufferReleaseHelper *release_helper;
+
+  /* The sync source associated with this role.  */
+  SyncHelper *sync_helper;
 
   /* The number of references to this role.  */
   int refcount;
@@ -63,6 +67,9 @@ struct _IconSurface
 
   /* The last known bounds of this icon surface.  */
   int min_x, min_y, max_x, max_y;
+
+  /* The time of any pending frame.  */
+  uint32_t pending_frame_time;
 };
 
 /* Hash table of all icon surfaces.  */
@@ -90,15 +97,18 @@ ReleaseBacking (IconSurface *icon)
   RenderDestroyRenderTarget (icon->target);
   XDestroyWindow (compositor.display, icon->window);
 
+  /* And the buffer release helper.  */
+  FreeBufferReleaseHelper (icon->release_helper);
+
   /* And the association.  */
   XLDeleteAssoc (surfaces, icon->window);
+
+  /* Free the sync helper.  */
+  FreeSyncHelper (icon->sync_helper);
 
   /* There shouldn't be any children of the subcompositor at this
      point.  */
   SubcompositorFree (icon->subcompositor);
-
-  /* The frame clock is no longer useful.  */
-  XLFreeFrameClock (icon->clock);
 
   /* And since there are no C level references to the icon surface
      anymore, it can be freed.  */
@@ -155,17 +165,22 @@ Setup (Surface *surface, Role *role)
 static void
 ReleaseBuffer (Surface *surface, Role *role, ExtBuffer *buffer)
 {
+  RenderBuffer render_buffer;
   IconSurface *icon;
 
   icon = IconSurfaceFromRole (role);
+  render_buffer = XLRenderBufferFromBuffer (buffer);
 
-  /* Icon surfaces are not supposed to change much, so doing an XSync
-     (or XIfEvent) here is okay.  */
-  RenderWaitForIdle (XLRenderBufferFromBuffer (buffer),
-		     icon->target);
-
-  /* Now really release the buffer.  */
-  XLReleaseBuffer (buffer);
+  if (RenderIsBufferIdle (render_buffer, icon->target))
+    /* If the buffer is already idle, release it now.  */
+    XLReleaseBuffer (buffer);
+  else
+    {
+      /* Release the buffer once it is destroyed or becomes idle.  */
+      ReleaseBufferWithHelper (icon->release_helper,
+			       buffer, icon->target);
+      icon->state |= StatePendingBufferRelease;
+    }
 }
 
 static void
@@ -218,48 +233,61 @@ NoteBounds (void *data, int min_x, int min_y, int max_x, int max_y)
 }
 
 static void
-RunFrameCallbacks (Surface *surface, FrameClock *clock)
+RunFrameCallbacks (Surface *surface, uint32_t ms_time)
 {
-  struct timespec time;
-  uint64_t last_drawn_time;
-
   /* Surface can be NULL for various reasons, especially events
      arriving after the icon surface is detached.  */
   if (!surface)
     return;
 
-  last_drawn_time = XLFrameClockGetFrameTime (clock);
-
-  if (!last_drawn_time)
-    {
-      clock_gettime (CLOCK_MONOTONIC, &time);
-      XLSurfaceRunFrameCallbacks (surface, time);
-    }
-  else
-    XLSurfaceRunFrameCallbacksMs (surface, last_drawn_time / 1000);
+  XLSurfaceRunFrameCallbacksMs (surface, ms_time);
 }
 
 static void
-AfterFrame (FrameClock *clock, void *data)
+RunFrameCallbacksConditionally (IconSurface *icon, uint32_t ms_time)
+{
+  if (!icon->role.surface)
+    return;
+
+  if (icon->state & StatePendingBufferRelease)
+    {
+      /* Wait for all buffers to be released first.  */
+      icon->state |= StatePendingFrameCallback;
+      icon->pending_frame_time = ms_time;
+    }
+  else
+    RunFrameCallbacks (icon->role.surface, ms_time);
+}
+
+static void
+AllBuffersReleased (void *data)
+{
+  IconSurface *icon;
+  Surface *surface;
+
+  icon = data;
+  surface = icon->role.surface;
+
+  /* Clear the buffer release flag.  */
+  icon->state = ~StatePendingBufferRelease;
+
+  if (surface && icon->state & StatePendingFrameCallback)
+    {
+      /* Run frame callbacks now, as no more buffers are waiting to be
+	 released.  */
+      RunFrameCallbacks (surface, icon->pending_frame_time);
+
+      icon->state &= ~StatePendingFrameCallback;
+    }
+}
+
+static void
+HandleFrameCallback (void *data, uint32_t ms_time)
 {
   IconSurface *icon;
 
   icon = data;
-
-  if (icon->state & StateLateFrame)
-    {
-      icon->state &= ~StateLateFrame;
-
-      /* Since we are running late, make the compositor draw the frame
-	 now.  */
-      XLFrameClockStartFrame (clock, True);
-      SubcompositorUpdate (icon->subcompositor);
-      XLFrameClockEndFrame (clock);
-
-      return;
-    }
-
-  RunFrameCallbacks (icon->role.surface, clock);
+  RunFrameCallbacksConditionally (icon, ms_time);
 }
 
 static void
@@ -316,20 +344,6 @@ Commit (Surface *surface, Role *role)
 
   icon = IconSurfaceFromRole (role);
 
-  if (XLFrameClockFrameInProgress (icon->clock))
-    {
-      /* A frame is already in progress; schedule another one for
-	 later.  */
-      icon->state |= StateLateFrame;
-    }
-  else
-    {
-      /* Start a frame and update the icon surface now.  */
-      XLFrameClockStartFrame (icon->clock, False);
-      SubcompositorUpdate (icon->subcompositor);
-      XLFrameClockEndFrame (icon->clock);
-    }
-
   /* Move the window if any offset was specified.  */
   if (surface->pending_state.pending & PendingAttachments)
     MoveWindowTo (icon, icon->x, icon->y);
@@ -340,6 +354,9 @@ Commit (Surface *surface, Role *role)
     MaybeMapWindow (icon);
   else
     MaybeUnmapWindow (icon);
+
+  /* Update via the sync helper.  */
+  SyncHelperUpdate (icon->sync_helper);
 }
 
 static void
@@ -348,19 +365,7 @@ SubsurfaceUpdate (Surface *surface, Role *role)
   IconSurface *icon;
 
   icon = IconSurfaceFromRole (role);
-
-  if (XLFrameClockFrameInProgress (icon->clock))
-    {
-      /* A frame is already in progress; schedule another one for
-	 later.  */
-      icon->state |= StateLateFrame;
-      return;
-    }
-
-  /* I guess subsurface updates don't count as urgent frames?  */
-  XLFrameClockStartFrame (icon->clock, False);
-  SubcompositorUpdate (icon->subcompositor);
-  XLFrameClockEndFrame (icon->clock);
+  SyncHelperUpdate (icon->sync_helper);
 }
 
 static Window
@@ -415,6 +420,8 @@ XLGetIconSurface (Surface *surface)
 
   /* Create a target associated with the window.  */
   role->target = RenderTargetFromWindow (role->window, None);
+  role->release_helper = MakeBufferReleaseHelper (AllBuffersReleased,
+						  role);
 
   /* Set the client.  */
   if (surface->resource)
@@ -427,7 +434,11 @@ XLGetIconSurface (Surface *surface)
 
   /* Create a subcompositor associated with the window.  */
   role->subcompositor = MakeSubcompositor ();
-  role->clock = XLMakeFrameClockForWindow (role->window);
+  role->sync_helper = MakeSyncHelper (role->subcompositor,
+				      role->window,
+				      role->target,
+				      HandleFrameCallback,
+				      &role->role);
 
   /* Set the subcompositor target and some callbacks.  */
   SubcompositorSetTarget (role->subcompositor, &role->target);
@@ -444,9 +455,6 @@ XLGetIconSurface (Surface *surface)
   /* Tell the compositing manager to never un-redirect this window.
      If it does, frame synchronization will not work.  */
   WriteRedirectProperty (role);
-
-  /* Initialize frame callbacks.  */
-  XLFrameClockAfterFrame (role->clock, AfterFrame, role);
 
   if (!XLSurfaceAttachRole (surface, &role->role))
     abort ();
@@ -469,7 +477,7 @@ XLHandleOneXEventForIconSurfaces (XEvent *event)
 
       if (icon)
 	{
-	  XLFrameClockHandleFrameEvent (icon->clock, event);
+	  SyncHelperHandleFrameEvent (icon->sync_helper, event);
 	  return True;
 	}
 

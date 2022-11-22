@@ -80,6 +80,16 @@ RenderTargetFromPixmap (Pixmap pixmap)
   return render_funcs.target_from_pixmap (pixmap);
 }
 
+Bool
+RenderSetRenderMode (RenderTarget target, RenderMode mode,
+		     uint64_t target_msc)
+{
+  if (!render_funcs.set_render_mode)
+    return False;
+
+  return render_funcs.set_render_mode (target, mode, target_msc);
+}
+
 void
 RenderSetClient (RenderTarget target, struct wl_client *client)
 {
@@ -213,6 +223,16 @@ RenderPresentToWindow (RenderTarget target, RenderBuffer source,
   return render_funcs.present_to_window (target, source,
 					 damage, callback,
 					 data);
+}
+
+RenderCompletionKey
+RenderNotifyMsc (RenderTarget target, RenderCompletionFunc callback,
+		 void *data)
+{
+  if (!render_funcs.notify_msc)
+    return NULL;
+
+  return render_funcs.notify_msc (target, callback, data);
 }
 
 void
