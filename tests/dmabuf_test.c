@@ -282,9 +282,18 @@ handle_test_surface_mapped (void *data, struct test_surface *surface,
   test_surface_window = xid;
 }
 
+static void
+handle_test_surface_committed (void *data, struct test_surface *surface,
+			       uint32_t presentation_hint)
+{
+
+}
+
 static const struct test_surface_listener test_surface_listener =
   {
     handle_test_surface_mapped,
+    NULL,
+    handle_test_surface_committed,
   };
 
 

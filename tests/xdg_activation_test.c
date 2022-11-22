@@ -305,10 +305,18 @@ handle_test_surface_activated (void *data, struct test_surface *test_surface,
   last_activation_surface = activator_surface;
 }
 
+static void
+handle_test_surface_committed (void *data, struct test_surface *surface,
+			       uint32_t presentation_hint)
+{
+
+}
+
 static const struct test_surface_listener test_surface_listener =
   {
     handle_test_surface_mapped,
     handle_test_surface_activated,
+    handle_test_surface_committed,
   };
 
 
