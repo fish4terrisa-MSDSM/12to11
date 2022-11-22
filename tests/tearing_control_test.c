@@ -34,7 +34,7 @@ static const char *test_names[] =
     "tearing_destroy",
   };
 
-#define LAST_TEST	TEARING_CONTROL_KIND
+#define LAST_TEST	TEARING_DESTROY_KIND
 
 /* The display.  */
 static struct test_display *display;
