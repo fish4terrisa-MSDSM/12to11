@@ -1749,6 +1749,14 @@ PostResize (Role *role, XdgRoleImplementation *impl, int west_motion,
   XdgToplevel *toplevel;
 
   toplevel = ToplevelFromRoleImpl (impl);
+
+  /* Scale the provided window coordinates to surface coordinates.  */
+
+  if (toplevel->role->surface)
+    TruncateScaleToSurface (toplevel->role->surface,
+			    new_width, new_height,
+			    &new_width, &new_height);
+
   PostResize1 (toplevel, west_motion, north_motion,
 	       new_width, new_height);
 }
