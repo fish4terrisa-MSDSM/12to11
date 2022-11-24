@@ -321,6 +321,9 @@ enum _RenderMode
     RenderModeAsync,
     /* Synchronize rendering with the vertical refresh.  */
     RenderModeVsync,
+    /* Synchronize rendering with the vertical refresh but allow async
+       presentation if deadlines were missed.  */
+    RenderModeVsyncAsync,
   };
 
 struct _RenderFuncs

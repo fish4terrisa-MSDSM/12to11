@@ -112,6 +112,13 @@ GetWantedSynchronizationType (SyncHelper *helper)
       return SyncTypeFrameClock;
     }
 
+  /* If tearing is allowed, then use present targeting the next
+     frame.  */
+  if (helper->role->surface
+      && (helper->role->surface->current_state.presentation_hint
+	  == PresentationHintAsync))
+    return SyncTypePresent;
+
 #ifdef AllowPresent /* TODO: make this work.  */
   /* Otherwise, use Present.  */
   return SyncTypePresent;
@@ -307,10 +314,11 @@ NoteFrame (FrameMode mode, uint64_t id, void *data,
 	}
       else if (wanted == SyncTypePresent)
 	{
-	  /* Since presentation is wanted, switch the renderer to
-	     vsync mode.  */
+	  /* Since presentation is wanted (which can currently only be
+	     due to the client having requested a presentation hint of
+	     "async"), switch the renderer to vsync-async mode.  */
 
-	  if (!RenderSetRenderMode (helper->target, RenderModeVsync,
+	  if (!RenderSetRenderMode (helper->target, RenderModeVsyncAsync,
 				    helper->last_msc + 1))
 	    {
 	      wanted = SyncTypeFrameClock;

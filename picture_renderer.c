@@ -847,6 +847,13 @@ SwapBackBuffers (PictureTarget *target, pixman_region32_t *damage)
 		    back_buffer->pixmap, present_serial,
 		    None, region, 0, 0, None, None, fence,
 		    PresentOptionAsync, 0, 0, 0, NULL, 0);
+  else if (target->render_mode == RenderModeVsyncAsync)
+    /* Present the pixmap asynchronously at the next frame.  */
+    XPresentPixmap (compositor.display, target->window,
+		    back_buffer->pixmap, present_serial,
+		    None, region, 0, 0, None, None, fence,
+		    PresentOptionAsync, target->next_msc,
+		    1, 0, NULL, 0);
   else
     /* Present the pixmap synchronously at the next frame.  */
     XPresentPixmap (compositor.display, target->window,
@@ -1927,6 +1934,12 @@ PresentToWindow (RenderTarget target, RenderBuffer source,
     XPresentPixmap (compositor.display, pict_target->window, buffer->pixmap,
 		    ++present_serial, None, region, 0, 0, None, None, None,
 		    PresentOptionAsync, 0, 0, 0, NULL, 0);
+  else if (pict_target->render_mode == RenderModeVsyncAsync)
+    /* Present the pixmap at the next msc if possible.  Otherwise,
+       present the pixmap asynchronously.  */
+    XPresentPixmap (compositor.display, pict_target->window, buffer->pixmap,
+		    ++present_serial, None, region, 0, 0, None, None, None,
+		    PresentOptionAsync, pict_target->next_msc, 1, 0, NULL, 0);
   else
     /* Present the pixmap at the next msc.  */
     XPresentPixmap (compositor.display, pict_target->window, buffer->pixmap,
@@ -1972,7 +1985,7 @@ NotifyMsc (RenderTarget target, RenderCompletionFunc callback,
 
   pict_target = target.pointer;
 
-  if (pict_target->render_mode != RenderModeVsync)
+  if (pict_target->render_mode == RenderModeAsync)
     return NULL;
 
   /* Allocate a presentation completion callback.  */
@@ -1982,8 +1995,14 @@ NotifyMsc (RenderTarget target, RenderCompletionFunc callback,
   callback_rec->id = ++present_serial;
 
   /* Ask for a notification.  */
-  XPresentNotifyMSC (compositor.display, pict_target->window,
-		     present_serial, 0, 1, 0);
+  if (pict_target->render_mode == RenderModeVsync)
+    XPresentNotifyMSC (compositor.display, pict_target->window,
+		       present_serial, 0, 1, 0);
+  else
+    XPresentNotifyMSC (compositor.display, pict_target->window,
+		       present_serial, pict_target->next_msc,
+		       1, 0);
+
   return callback_rec;
 }
 

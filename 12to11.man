@@ -272,6 +272,7 @@ zwp_pointer_constraints_v1	1
 zwp_relative_pointer_manager	1
 zwp_idle_inhibit_manager_v1	1
 xdg_activation_v1	1
+wp_tearing_control_manager_v1	1
 .TE
 .PP
 When the protocol translator is built with EGL support, the following
