@@ -1632,7 +1632,7 @@ extern void XLDispatchGEForSeats (XEvent *, Surface *,
 extern void XLSelectStandardEvents (Window);
 extern void XLInitSeats (void);
 extern Bool XLResizeToplevel (Seat *, Surface *, uint32_t, uint32_t);
-extern void XLMoveToplevel (Seat *, Surface *, uint32_t);
+extern Bool XLMoveToplevel (Seat *, Surface *, uint32_t);
 extern Bool XLSeatExplicitlyGrabSurface (Seat *, Surface *, uint32_t);
 
 extern void *XLSeatRunAfterResize (Seat *, void (*) (void *, void *),

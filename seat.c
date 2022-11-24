@@ -2051,6 +2051,7 @@ CancelResizeOperation (Seat *seat, Time time, Subcompositor *subcompositor,
   /* Stop the resize operation.  */
   XLSurfaceCancelUnmapCallback (seat->resize_surface_callback);
   seat->resize_surface = NULL;
+  seat->resize_surface_callback = NULL;
 
   /* Run resize completion callbacks.  */
   RunResizeDoneCallbacks (seat);
@@ -5098,21 +5099,30 @@ FakePointerEdge (Seat *seat, Surface *target, uint32_t serial,
   XISetMask (mask.mask, XI_ButtonPress);
   XISetMask (mask.mask, XI_ButtonRelease);
 
-  /* Grab the pointer, and don't let go until the button is
-     released.  */
-  state = XIGrabDevice (compositor.display, seat->master_pointer,
-			window, seat->its_press_time, cursor,
-			XIGrabModeAsync, XIGrabModeAsync, False, &mask);
+  if (!(seat->flags & IsTestSeat))
+    {
+      /* Grab the pointer, and don't let go until the button is
+	 released.  */
+      state = XIGrabDevice (compositor.display, seat->master_pointer,
+			    window, seat->its_press_time, cursor,
+			    XIGrabModeAsync, XIGrabModeAsync, False, &mask);
 
-  if (state != Success)
-    return False;
+      if (state != Success)
+	return False;
+    }
 
   /* On the other hand, cancel focus locking and leave the surface,
      since we will not be reporting motion events until the resize
      operation completes.  */
 
   if (seat->grab_held)
-    CancelGrabEarly (seat);
+    {
+      CancelGrabEarly (seat);
+
+      /* CancelGrabEarly may not have left the focus surface if the
+	 pointer remains on it.  Force a leave event to be sent.  */
+      EnteredSurface (seat, NULL, seat->its_press_time, 0, 0, False);
+    }
 
   /* Set the surface as the surface undergoing resize.  */
   seat->resize_surface = target;
@@ -5139,6 +5149,7 @@ HandlePointerEdge (Seat *seat, Surface *target, uint32_t serial,
     return False;
 
   if (!XLWmSupportsHint (_NET_WM_MOVERESIZE)
+      || (seat->flags & IsTestSeat)
       || getenv ("USE_BUILTIN_RESIZE"))
     return FakePointerEdge (seat, target, serial, edge);
 
@@ -5417,10 +5428,10 @@ XLResizeToplevel (Seat *seat, Surface *surface, uint32_t serial,
   return StartResizeTracking (seat, surface, serial, edge);
 }
 
-void
+Bool
 XLMoveToplevel (Seat *seat, Surface *surface, uint32_t serial)
 {
-  StartResizeTracking (seat, surface, serial, MoveEdge);
+  return StartResizeTracking (seat, surface, serial, MoveEdge);
 }
 
 void *

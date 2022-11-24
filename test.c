@@ -47,6 +47,9 @@ struct _TestSurface
   /* The associated buffer release helper.  */
   BufferReleaseHelper *release_helper;
 
+  /* List of live resize callbacks.  */
+  XLList *resize_callbacks;
+
   /* The associated window.  */
   Window window;
 
@@ -72,6 +75,19 @@ static struct wl_global *test_manager_global;
 static XLAssocTable *surfaces;
 
 static void
+HandleResizeDone (void *key, void *data)
+{
+  TestSurface *test;
+
+  test = data;
+  test->resize_callbacks
+    = XLListRemove (test->resize_callbacks, key);
+
+  if (test->role.resource)
+    test_surface_send_resize_finished (test->role.resource);
+}
+
+static void
 DestroyBacking (TestSurface *test)
 {
   if (--test->refcount)
@@ -89,6 +105,10 @@ DestroyBacking (TestSurface *test)
 
   /* Free the subcompositor.  */
   SubcompositorFree (test->subcompositor);
+
+  /* Free all resize callbacks.  */
+  XLListFree (test->resize_callbacks,
+	      XLSeatCancelResizeCallback);
 
   /* And since there are no C level references to the role anymore, it
      can be freed.  */
@@ -370,6 +390,18 @@ Activate (Surface *surface, Role *role, int deviceid,
 }
 
 static void
+GetResizeDimensions (Surface *surface, Role *role, int *width,
+		     int *height)
+{
+  TestSurface *test;
+
+  test = TestSurfaceFromRole (role);
+
+  *width = SubcompositorWidth (test->subcompositor);
+  *height = SubcompositorHeight (test->subcompositor);
+}
+
+static void
 SetAlwaysGarbage (struct wl_client *client, struct wl_resource *resource)
 {
   TestSurface *test;
@@ -380,10 +412,46 @@ SetAlwaysGarbage (struct wl_client *client, struct wl_resource *resource)
   SubcompositorSetAlwaysGarbaged (test->subcompositor);
 }
 
+static void
+MoveResize (struct wl_client *client, struct wl_resource *resource,
+	    uint32_t edge, uint32_t serial,
+	    struct wl_resource *seat_resource)
+{
+  TestSurface *test;
+  Seat *seat;
+  void *key;
+
+  test = wl_resource_get_user_data (resource);
+  seat = wl_resource_get_user_data (seat_resource);
+
+  if (!test->role.surface)
+    {
+      wl_resource_post_error (resource, TEST_MANAGER_ERROR_RESIZE_REJECTED,
+			      "trying to resize test surface without surface");
+      return;
+    }
+
+  if (edge == TEST_MANAGER_RESIZE_EDGE_MOVE)
+    {
+      if (!XLMoveToplevel (seat, test->role.surface, serial))
+	wl_resource_post_error (resource, TEST_MANAGER_ERROR_RESIZE_REJECTED,
+				"move rejected for unspecified reason");
+    }
+  else if (!XLResizeToplevel (seat, test->role.surface, serial, edge))
+    wl_resource_post_error (resource, TEST_MANAGER_ERROR_RESIZE_REJECTED,
+			    "resize rejected for unspecified reason");
+
+  /* Now attach a resize complete callback.  */
+  key = XLSeatRunAfterResize (seat, HandleResizeDone, test);
+  test->resize_callbacks = XLListPrepend (test->resize_callbacks,
+					  key);
+}
+
 static const struct test_surface_interface test_surface_impl =
   {
     .destroy = Destroy,
     .set_always_garbage = SetAlwaysGarbage,
+    .move_resize = MoveResize,
   };
 
 static void
@@ -535,6 +603,7 @@ GetTestSurface (struct wl_client *client, struct wl_resource *resource,
   test->role.funcs.subsurface_update = SubsurfaceUpdate;
   test->role.funcs.get_window = GetWindow;
   test->role.funcs.activate = Activate;
+  test->role.funcs.get_resize_dimensions = GetResizeDimensions;
 
   /* Add the resource implementation.  */
   wl_resource_set_implementation (test->role.resource, &test_surface_impl,

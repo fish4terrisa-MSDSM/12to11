@@ -33,6 +33,7 @@ enum test_expect_event_kind
     KEYBOARD_ENTER_EVENT,
     KEYBOARD_KEY_EVENT,
     KEYBOARD_MODIFIERS_EVENT,
+    SURFACE_RESIZE_FINISHED_EVENT,
   };
 
 struct test_recorded_event
@@ -84,6 +85,9 @@ struct test_recorded_button_event
 
   /* The button and state.  */
   uint32_t button, state;
+
+  /* The serial.  */
+  uint32_t serial;
 };
 
 struct test_recorded_axis_value120_event
@@ -137,6 +141,12 @@ struct test_recorded_keyboard_modifiers_event
   uint32_t group;
 };
 
+struct test_recorded_resize_finished_event
+{
+  /* The event header.  */
+  struct test_recorded_event header;
+};
+
 struct test_subsurface
 {
   /* The subsurface itself.  */
@@ -154,6 +164,7 @@ enum test_kind
     TEST_GRAB_KIND,
     TEST_VALUATOR_KIND,
     TEST_KEY_KIND,
+    TEST_RESIZE_KIND,
   };
 
 static const char *test_names[] =
@@ -164,9 +175,10 @@ static const char *test_names[] =
     "test_grab",
     "test_valuator",
     "test_key",
+    "test_resize",
   };
 
-#define LAST_TEST	        TEST_KEY_KIND
+#define LAST_TEST	        TEST_RESIZE_KIND
 #define TEST_SOURCE_DEVICE	4500000
 
 /* The display.  */
@@ -206,13 +218,14 @@ static void expect_frame_event (void);
 static void expect_enter_event (struct wl_surface *, double, double);
 static void expect_motion_event (double, double);
 static void expect_leave_event (void);
-static void expect_button_event (int, int);
+static uint32_t expect_button_event (int, int);
 static void expect_axis_value120_event (uint32_t, int32_t);
 static void expect_keyboard_enter_event (struct wl_surface *, uint32_t *,
 					 size_t);
 static void expect_keyboard_key_event (uint32_t, uint32_t);
 static void expect_keyboard_modifiers_event (uint32_t, uint32_t,
 					     uint32_t, uint32_t);
+static void expect_resize_finished_event (void);
 static void expect_no_events (void);
 
 
@@ -750,6 +763,62 @@ run_key_test (void)
 }
 
 static void
+run_resize_test (struct test_XIButtonState *button_state)
+{
+  uint32_t serial;
+
+  test_seat_controller_dispatch_XI_ButtonPress (display->seat->controller,
+						test_get_time (),
+						TEST_SOURCE_DEVICE,
+						1,
+						test_get_root (),
+						test_surface_window,
+						None,
+						wl_fixed_from_double (2.0),
+						wl_fixed_from_double (2.0),
+						wl_fixed_from_double (2.0),
+						wl_fixed_from_double (2.0),
+						0,
+						button_state,
+						NULL, NULL, NULL);
+  test_XIButtonState_add_button (button_state, 1);
+  record_events ();
+
+  /* Obtain the serial.  */
+  expect_frame_event ();
+  serial = expect_button_event (BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+  expect_no_events ();
+
+  /* Now, start resize.  */
+  test_surface_move_resize (test_surface, TEST_MANAGER_RESIZE_EDGE_MOVE,
+			    serial, display->seat->seat);
+
+  /* And dispatch the button release.  */
+  test_seat_controller_dispatch_XI_ButtonRelease (display->seat->controller,
+						  test_get_time (),
+						  TEST_SOURCE_DEVICE,
+						  1,
+						  test_get_root (),
+						  test_surface_window,
+						  None,
+						  wl_fixed_from_double (2.0),
+						  wl_fixed_from_double (2.0),
+						  wl_fixed_from_double (2.0),
+						  wl_fixed_from_double (2.0),
+						  0,
+						  button_state,
+						  NULL, NULL, NULL);
+  test_XIButtonState_remove_button (button_state, 1);
+
+  record_events ();
+  expect_frame_event ();
+  expect_enter_event (wayland_surface, 2.0, 2.0);
+  expect_resize_finished_event ();
+  expect_frame_event ();
+  expect_leave_event ();
+}
+
+static void
 test_single_step (enum test_kind kind)
 {
   struct wl_buffer *buffer, *child_buffer;
@@ -1007,6 +1076,24 @@ test_single_step (enum test_kind kind)
 	   key (SERIAL, TIME, 59, WL_KEYBOARD_KEY_STATE_RELEASED) */
 
       run_key_test ();
+      kind = TEST_RESIZE_KIND;
+      goto again;
+
+    case TEST_RESIZE_KIND:
+      /* Test simple resize (or rather movement).  Dispatch a
+	 ButtonPress event, obtain the serial of said event, start
+	 resize, and dispatch a ButtonRelease event.  Verify that the
+	 following events are sent to the pointer and surface.
+
+           button (SERIAL, TIME, BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED)
+           frame ()
+           leave ()
+           resize_finished ()
+	   frame ();
+	   enter (SERIAL, SURFACE, 2.0, 2.0)
+	   frame (); */
+
+      run_resize_test (button_state);
       break;
     }
 
@@ -1118,11 +1205,12 @@ expect_leave_event (void)
     report_test_failure ("a leave event was expected, but not received");
 }
 
-static void
+static uint32_t
 expect_button_event (int button, int state)
 {
   struct test_recorded_event *event;
   struct test_recorded_button_event *button_event;
+  uint32_t serial;
 
   event = record_tail;
 
@@ -1136,7 +1224,12 @@ expect_button_event (int button, int state)
       button_event = (struct test_recorded_button_event *) event;
 
       if (button_event->button == button && button_event->state == state)
-	free (event);
+	{
+	  serial = button_event->serial;
+	  free (event);
+
+	  return serial;
+	}
       else
 	report_test_failure ("expected button event received "
 			     "with incorrect parameters");
@@ -1284,6 +1377,25 @@ expect_no_events (void)
 }
 
 static void
+expect_resize_finished_event (void)
+{
+  struct test_recorded_event *event;
+
+  event = record_tail;
+
+  if (!event)
+    return;
+
+  record_tail = record_tail->last;
+
+  if (event->kind == SURFACE_RESIZE_FINISHED_EVENT)
+    free (event);
+  else
+    report_test_failure ("expected resize_finished_event, but it was"
+			 " not received");
+}
+
+static void
 expect_surface_enter (double x, double y)
 {
   /* Record events.  */
@@ -1331,11 +1443,42 @@ handle_test_surface_committed (void *data, struct test_surface *surface,
 
 }
 
+static void
+handle_test_surface_resize_finished (void *data, struct test_surface *surface)
+{
+  struct test_recorded_resize_finished_event *event;
+
+  if (!recording_events)
+    {
+      test_log ("ignored resize finish event");
+      return;
+    }
+
+  event = malloc (sizeof *event);
+
+  if (!event)
+    report_test_failure ("failed to record event");
+
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
+#endif
+
+  event->header.kind = SURFACE_RESIZE_FINISHED_EVENT;
+  event->header.last = record_tail;
+  record_tail = &event->header;
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
+}
+
 static const struct test_surface_listener test_surface_listener =
   {
     handle_test_surface_mapped,
     NULL,
     handle_test_surface_committed,
+    handle_test_surface_resize_finished,
   };
 
 
@@ -1475,6 +1618,7 @@ handle_pointer_button (void *data, struct wl_pointer *wl_pointer,
 
   event->button = button;
   event->state = state;
+  event->serial = serial;
 
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
@@ -1634,6 +1778,7 @@ handle_keyboard_enter (void *data, struct wl_keyboard *keyboard,
 
   memcpy (event->keys, keys->data, keys->size);
   event->num_keys = keys->size / sizeof (uint32_t);
+  event->surface = surface;
 
 #ifdef __GNUC__
 #pragma GCC diagnostic pop

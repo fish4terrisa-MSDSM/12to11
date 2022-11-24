@@ -55,6 +55,26 @@
 	     summary="the specified label is invalid"/>
       <entry name="invalid_user_time" value="12"
 	     summary="the specified user time lies in the past"/>
+      <entry name="resize_rejected" value="13"
+	     summary="the resize was rejected"/>
+    </enum>
+
+
+    <enum name="resize_edge">
+      <description summary="edge values for resizing">
+	These values are used to indicate which edge of a surface
+	is being dragged in a resize or move operation.
+      </description>
+      <entry name="none" value="0"/>
+      <entry name="top" value="1"/>
+      <entry name="bottom" value="2"/>
+      <entry name="left" value="4"/>
+      <entry name="top_left" value="5"/>
+      <entry name="bottom_left" value="6"/>
+      <entry name="right" value="8"/>
+      <entry name="top_right" value="9"/>
+      <entry name="bottom_right" value="10"/>
+      <entry name="move" value="11"/>
     </enum>
 
     <request name="get_test_surface">
@@ -155,10 +175,23 @@
     </request>
 
     <request name="set_always_garbage">
-      <description summary="set_always_garbage">
+      <description summary="set always garbage">
 	Force the subcompositor to be garbaged, and all contents
 	redrawn from scratch upon any damage.
       </description>
+    </request>
+
+    <request name="move_resize">
+      <description summary="begin move or resize">
+	Begin a move or resize event with the specified resize edge
+	and event serial on the given seat.  Send a resize_rejected
+	event if the edge is invalid or the serial is out of date, or
+	the specified role no longer has a surface.
+      </description>
+      <arg name="edge" type="uint" summary="the resize edge"/>
+      <arg name="serial" type="uint" summary="the resize serial"/>
+      <arg name="seat" type="object" interface="wl_seat"
+	   summary="the resize seat"/>
     </request>
 
     <event name="mapped">
@@ -207,6 +240,13 @@
 	vsync.
       </description>
       <arg name="presentation_hint" type="uint"/>
+    </event>
+
+    <event name="resize_finished">
+      <description summary="resize finished">
+	The resize_finished event is sent immediately after a resize
+	completes.
+      </description>
     </event>
   </interface>
 
