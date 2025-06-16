@@ -274,7 +274,7 @@ HandleBind (struct wl_client *client, void *data,
 
   /* Send the output name.  I think it is supposed to be unique.  */
 
-  if (wl_resource_get_version (resource) >= 3)
+  if (wl_resource_get_version (resource) >= 4)
     wl_output_send_name (resource, output->name);
 
   if (wl_resource_get_version (resource) >= 2)
