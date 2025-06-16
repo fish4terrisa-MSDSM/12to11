@@ -747,9 +747,9 @@ EglPickConfig (void)
   EGLint visual_id;
 
   /* We want the best framebuffer configuration that supports at least
-     8 bits of alpha, red, green, and blue.  */
+     8 bits of red, green, and blue.  */
   egl_config_attribs[0] = EGL_BUFFER_SIZE;
-  egl_config_attribs[1] = 32;
+  egl_config_attribs[1] = 24;
   egl_config_attribs[2] = EGL_RED_SIZE;
   egl_config_attribs[3] = 8;
   egl_config_attribs[4] = EGL_GREEN_SIZE;
@@ -757,7 +757,7 @@ EglPickConfig (void)
   egl_config_attribs[6] = EGL_BLUE_SIZE;
   egl_config_attribs[7] = 8;
   egl_config_attribs[8] = EGL_ALPHA_SIZE;
-  egl_config_attribs[9] = 8;
+  egl_config_attribs[9] = 0;
 
   /* We want OpenGL ES 2 or later.  */
   egl_config_attribs[10] = EGL_RENDERABLE_TYPE;
