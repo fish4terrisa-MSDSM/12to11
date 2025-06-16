@@ -19,7 +19,7 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <xf86drm.h>
 #include <gbm.h>
-#include <drm/drm_fourcc.h>
+#include <drm_fourcc.h>
 
 #include <sys/mman.h>
 #include <sys/fcntl.h>
