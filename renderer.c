@@ -486,15 +486,12 @@ PickRenderer (void)
 	{
 	  if (!strcmp (renderer->name, selected))
 	    {
-	      if (!InstallRenderer (renderer))
-		{
-		  fprintf (stderr, "Failed to initialize renderer %s, "
-			   "defaulting to %s instead.\n", selected,
-			   renderers->name);
-		  goto fall_back;
-		}
+	      if (InstallRenderer (renderer))
+		return;
 
-	      return;
+	      fprintf (stderr, "Failed to initialize renderer %s, "
+		       "trying fallbacks.\n", selected);
+	      goto fall_back;
 	    }
 	}
 
@@ -504,18 +501,24 @@ PickRenderer (void)
     }
 
  fall_back:
+  renderer = renderers;
+  while (renderer)
+    {
+      if (InstallRenderer (renderer))
+        return;
+      renderer = renderer->next;
+    }
 
-  if (!InstallRenderer (renderers))
-    abort ();
+  abort ();
 }
 
 void
 InitRenderers (void)
 {
+  InitPictureRenderer ();
 #ifdef HaveEglSupport
   InitEgl ();
 #endif
-  InitPictureRenderer ();
 
   PickRenderer ();
 }

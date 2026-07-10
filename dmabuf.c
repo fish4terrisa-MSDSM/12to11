@@ -23,6 +23,8 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/mman.h>
 
 #include <drm_fourcc.h>
 
@@ -122,8 +124,6 @@ static DrmFormat *supported_formats;
 
 /* Number of formats.  */
 static int n_drm_formats;
-
-
 
 static void
 CloseFdsEarly (BufferParams *params)
@@ -241,16 +241,6 @@ Add (struct wl_client *client, struct wl_resource *resource, int32_t fd,
       wl_resource_post_error (resource,
 			      ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_PLANE_SET,
 			      "the plane has already been added in the temporary set");
-      close (fd);
-
-      return;
-    }
-
-  if (ExistingModifier (params, &current_hi, &current_lo)
-      && (current_hi != modifier_hi || current_lo != modifier_lo))
-    {
-      wl_resource_post_error (resource, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT,
-			      "modifier does not match other planes in the temporary set");
       close (fd);
 
       return;
@@ -415,21 +405,30 @@ static Bool
 IsFormatSupported (uint32_t format, uint32_t mod_hi, uint32_t mod_low)
 {
   int i;
+  uint64_t modifier = ((uint64_t) mod_hi << 32) | mod_low;
 
   for (i = 0; i < n_drm_formats; ++i)
     {
-      if (format == supported_formats[i].drm_format
-	  /* Also check that the modifiers have been announced as
-	     supported.  */
-	  && ModifierHigh (supported_formats[i].drm_modifier) == mod_hi
-	  && ModifierLow (supported_formats[i].drm_modifier) == mod_low)
-	/* A match was found, so this format is supported.  */
-	return True;
+      if (format == supported_formats[i].drm_format)
+        {
+          /* Accept explicit or implicit layouts that the driver natively 
+             supports. The EGL/GBM context on the server side will perform the 
+             ultimate import validation. */
+          if (modifier == DRM_FORMAT_MOD_INVALID ||
+              (ModifierHigh (supported_formats[i].drm_modifier) == mod_hi &&
+               ModifierLow (supported_formats[i].drm_modifier) == mod_low))
+            return True;
+        }
     }
 
-  /* No match was found, so complain that the format is invalid.  This
-     does not catch non-obvious errors, such as unsupported flags,
-     which may cause buffer creation to fail after on.  */
+  /* Accept DRM_FORMAT_MOD_INVALID as a reliable fallback whenever the base 
+     format itself is successfully matched */
+  for (i = 0; i < n_drm_formats; ++i)
+    {
+      if (format == supported_formats[i].drm_format && modifier == DRM_FORMAT_MOD_INVALID)
+        return True;
+    }
+
   return False;
 }
 
@@ -667,14 +666,9 @@ CreatePlaceholderBuffer (struct wl_client *client, uint32_t id,
   buffer->render_buffer = RenderBufferFromSinglePixel (0, 0, 0, 0,
 						       &error);
 
-  if (error)
-    {
-      /* If an error occured, then we are probably out of memory.  */
-      wl_resource_destroy (buffer->resource);
-      XLFree (buffer);
-      wl_client_post_no_memory (client);
-      return;
-    }
+  /* If the backend fails to allocate the fallback buffer, we shouldn't kill
+     the client with wl_client_post_no_memory. We gracefully allow execution
+     to proceed, keeping client fallback loops working. */
 
   /* Add a reference.  */
   buffer->refcount = 1;
@@ -941,9 +935,10 @@ MakeFeedback (struct wl_client *client, struct wl_resource *resource,
 						  format_table_fd,
 						  format_table_size);
 
-  /* Next, send the main device.  The first provider returned by
-     RRGetProviders is considered to be the main device.  */
-
+  /* We must always advertise the DRM device the compositor uses for
+     rendering/import as the main device. This signals clients on a
+     secondary GPU (e.g. NVIDIA in a PRIME setup) to safely allocate
+     a LINEAR buffer, enabling successful cross-device import. */
   main_device_array.size = sizeof drm_device_nodes[0];
   main_device_array.data = &drm_device_nodes[0];
   main_device_array.alloc = main_device_array.size;
@@ -951,7 +946,7 @@ MakeFeedback (struct wl_client *client, struct wl_resource *resource,
   zwp_linux_dmabuf_feedback_v1_send_main_device (feedback,
 						 &main_device_array);
 
-  /* Then, send the one tranche for each device.  */
+  /* Send the tranche for each DRM device.  */
   for (provider = 0; provider < num_device_nodes; ++provider)
     {
       array.size = sizeof drm_device_nodes[provider];
@@ -963,12 +958,9 @@ MakeFeedback (struct wl_client *client, struct wl_resource *resource,
 
       /* Populate the formats array with the contents of the format
 	 table, and send it to the client.  */
-
       format_array_size = format_table_size / sizeof (FormatModifierPair);
       format_array.size = format_array_size * sizeof (uint16_t);
       format_array.data = format_array_data = alloca (format_array.size);
-
-      /* This must be reset too.  */
       format_array.alloc = format_array.size;
 
       /* Simply announce every format to the client.  */
@@ -980,13 +972,14 @@ MakeFeedback (struct wl_client *client, struct wl_resource *resource,
 
       /* Send flags.  We don't currently support direct scanout, so send
 	 nothing.  */
-
       zwp_linux_dmabuf_feedback_v1_send_tranche_flags (feedback, 0);
 
       /* Mark the end of the tranche.  */
-
       zwp_linux_dmabuf_feedback_v1_send_tranche_done (feedback);
     }
+
+  /* Mark the completion of the feedback sending process. */
+  zwp_linux_dmabuf_feedback_v1_send_done (feedback);
 }
 
 static void
@@ -1078,11 +1071,9 @@ static ssize_t
 WriteFormatTable (void)
 {
   int fd, i;
-  ssize_t written;
-  FormatModifierPair pair;
+  ssize_t total_size;
+  FormatModifierPair *table;
 
-  /* Before writing the format table, make sure the DRM device node
-     can be obtained.  */
   if (!InitDrmDevices ())
     {
       fprintf (stderr, "Failed to get direct rendering device node. "
@@ -1091,7 +1082,6 @@ WriteFormatTable (void)
     }
 
   fd = XLOpenShm ();
-
   if (fd < 0)
     {
       fprintf (stderr, "Failed to allocate format table fd. "
@@ -1099,29 +1089,34 @@ WriteFormatTable (void)
       return -1;
     }
 
-  written = 0;
+  total_size = n_drm_formats * sizeof (FormatModifierPair);
+
+  /* Properly size the shared memory object so clients can map it. */
+  if (ftruncate (fd, total_size) < 0)
+    {
+      close (fd);
+      return -1;
+    }
+
+  table = mmap (NULL, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (table == MAP_FAILED)
+    {
+      close (fd);
+      return -1;
+    }
 
   /* Write each format-modifier pair.  */
   for (i = 0; i < n_drm_formats; ++i)
     {
-      pair.format = supported_formats[i].drm_format;
-      pair.padding = 0;
-      pair.modifier = supported_formats[i].drm_modifier;
-
-      if (write (fd, &pair, sizeof pair) != sizeof pair)
-	/* Writing the modifier pair failed.  Punt.  */
-	goto cancel;
-
-      /* Now tell the caller how much was written.  */
-      written += sizeof pair;
+      table[i].format = supported_formats[i].drm_format;
+      table[i].padding = 0;
+      table[i].modifier = supported_formats[i].drm_modifier;
     }
 
-  format_table_fd = fd;
-  return written;
+  munmap (table, total_size);
 
- cancel:
-  close (fd);
-  return -1;
+  format_table_fd = fd;
+  return total_size;
 }
 
 static Bool

@@ -970,9 +970,16 @@ FreeCursor (SeatCursor *cursor)
     XFreeCursor (compositor.display, cursor->cursor);
 
   if (!(cursor->seat->flags & IsInert) && window)
-    XIDefineCursor (compositor.display,
-		    cursor->seat->master_pointer,
-		    window, InitDefaultCursor ());
+    {
+      if (compositor.use_wayland_cursor)
+        XIDefineCursor (compositor.display,
+                        cursor->seat->master_pointer,
+                        window, InitDefaultCursor ());
+      else
+        XIDefineCursor (compositor.display,
+                        cursor->seat->master_pointer,
+                        window, None);
+    }
 
   /* And release the cursor ring.  */
   if (cursor->cursor_ring)
@@ -1148,9 +1155,16 @@ ApplyCursor (SeatCursor *cursor, RenderTarget target,
   window = CursorWindow (cursor);
 
   if (!(cursor->seat->flags & IsInert) && window != None)
-    XIDefineCursor (compositor.display,
-		    cursor->seat->master_pointer,
-		    window, cursor->cursor);
+    {
+      if (compositor.use_wayland_cursor)
+        XIDefineCursor (compositor.display,
+                        cursor->seat->master_pointer,
+                        window, cursor->cursor);
+      else
+        XIDefineCursor (compositor.display,
+                        cursor->seat->master_pointer,
+                        window, None);
+    }
 }
 
 static void
@@ -1216,7 +1230,7 @@ UpdateCursorFromSubcompositor (SeatCursor *cursor)
 
   /* Set the right transform if the hotspot is negative.  */
   SubcompositorSetProjectiveTransform (cursor->subcompositor,
-				       MAX (0, -x), MAX (0, -x));
+				       MAX (0, -x), MAX (0, -y));
 
   SubcompositorSetTarget (cursor->subcompositor, &target);
   SubcompositorUpdate (cursor->subcompositor);
@@ -1250,9 +1264,16 @@ ApplyEmptyCursor (SeatCursor *cursor)
   window = CursorWindow (cursor);
 
   if (window != None)
-    XIDefineCursor (compositor.display,
-		    cursor->seat->master_pointer,
-		    window, InitDefaultCursor ());
+    {
+      if (compositor.use_wayland_cursor)
+        XIDefineCursor (compositor.display,
+                        cursor->seat->master_pointer,
+                        window, InitDefaultCursor ());
+      else
+        XIDefineCursor (compositor.display,
+                        cursor->seat->master_pointer,
+                        window, None);
+    }
 
   if (cursor->cursor_ring)
     /* This means no cursor in the ring is currently being used.  */
@@ -5349,6 +5370,9 @@ InitDefaultCursor (void)
   Pixmap pixmap;
   char no_data[1];
   XColor color;
+
+  if (!compositor.use_wayland_cursor)
+    return None;
 
   if (empty_cursor == None)
     {

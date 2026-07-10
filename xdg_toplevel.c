@@ -249,6 +249,11 @@ struct _XdgToplevel
 
   /* X Windows size hints.  */
   XSizeHints size_hints;
+
+  /* Cache to prevent redundant configure events.  */
+  int last_sent_width, last_sent_height;
+  ToplevelState last_sent_toplevel_state;
+  Bool last_sent_valid;
 };
 
 struct _XdgDecoration
@@ -422,6 +427,17 @@ SendConfigure (XdgToplevel *toplevel, unsigned int width,
 {
   uint32_t serial;
 
+  if (toplevel->last_sent_valid
+      && width == toplevel->last_sent_width
+      && height == toplevel->last_sent_height
+      && toplevel->toplevel_state.maximized == toplevel->last_sent_toplevel_state.maximized
+      && toplevel->toplevel_state.fullscreen == toplevel->last_sent_toplevel_state.fullscreen
+      && toplevel->toplevel_state.activated == toplevel->last_sent_toplevel_state.activated
+      && !(toplevel->state & StateNeedDecorationConfigure))
+    {
+      return;
+    }
+
   serial = wl_display_next_serial (compositor.wl_display);
   xdg_toplevel_send_configure (toplevel->resource, width, height,
 			       &toplevel->states);
@@ -439,6 +455,11 @@ SendConfigure (XdgToplevel *toplevel, unsigned int width,
 
   toplevel->conf_reply = True;
   toplevel->conf_serial = serial;
+
+  toplevel->last_sent_width = width;
+  toplevel->last_sent_height = height;
+  toplevel->last_sent_toplevel_state = toplevel->toplevel_state;
+  toplevel->last_sent_valid = True;
 }
 
 static void
@@ -1179,6 +1200,8 @@ Unmap (XdgToplevel *toplevel)
   toplevel->height = 0;
   toplevel->min_width = 0;
   toplevel->min_height = 0;
+
+  toplevel->last_sent_valid = False;
 
   memset (&toplevel->toplevel_state, 0,
 	  sizeof toplevel->toplevel_state);
@@ -2542,6 +2565,7 @@ XLGetXdgToplevel (struct wl_client *client, struct wl_resource *resource,
      decorations will (or rather ought to) also cause the window
      manager to empty the frame window's input region, which allows
      the surface-specified input region to work correctly.  */
+  toplevel->decor = DecorationModeClient;
   SetDecorated (toplevel, False);
 
   XLXdgRoleAttachImplementation (role, &toplevel->impl);
@@ -2770,22 +2794,12 @@ SetMode (struct wl_client *client, struct wl_resource *resource,
   if (!decoration->toplevel)
     return;
 
-  switch (mode)
-    {
-    case ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE:
-      decoration->toplevel->decor = DecorationModeClient;
-      break;
-
-    case ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE:
-      decoration->toplevel->decor = DecorationModeWindowManager;
-      break;
-
-    default:
-      wl_resource_post_error (resource, WL_DISPLAY_ERROR_IMPLEMENTATION,
-			      "trying to set bogus decoration mode %u",
-			      mode);
-      return;
-    }
+  if (XLWmSupportsHint (_NET_WM_STATE))
+    decoration->toplevel->decor = DecorationModeWindowManager;
+  else if (mode == ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE)
+    decoration->toplevel->decor = DecorationModeWindowManager;
+  else
+    decoration->toplevel->decor = DecorationModeClient;
 
   /* According to #wayland the configure event shouldn't be sent for
      partially initialized surfaces.  */
@@ -2805,8 +2819,10 @@ UnsetMode (struct wl_client *client, struct wl_resource *resource)
   if (!decoration->toplevel)
     return;
 
-  /* Default to using window manager decorations.  */
-  decoration->toplevel->decor = DecorationModeWindowManager;
+  if (XLWmSupportsHint (_NET_WM_STATE))
+    decoration->toplevel->decor = DecorationModeWindowManager;
+  else
+    decoration->toplevel->decor = DecorationModeClient;
 
   /* According to #wayland the configure event shouldn't be sent for
      partially initialized surfaces.  */
@@ -2903,7 +2919,18 @@ XLXdgToplevelGetDecoration (XdgRoleImplementation *impl,
   toplevel->decoration = decoration;
   decoration->toplevel = toplevel;
 
+  /* Enforce Server Side Decorations if supported by WM */
+  if (XLWmSupportsHint (_NET_WM_STATE))
+    toplevel->decor = DecorationModeWindowManager;
+  else
+    toplevel->decor = DecorationModeClient;
+
   /* And set the implementation.  */
   wl_resource_set_implementation (decoration->resource, &decoration_impl,
 				  decoration, HandleDecorationResourceDestroy);
+
+  if (toplevel->state & StateEverMapped)
+    SendDecorationConfigure (toplevel);
+  else
+    toplevel->state |= StateNeedDecorationConfigure;
 }

@@ -87,6 +87,9 @@ struct _Compositor
 
   /* The resource and app names.  */
   const char *resource_name, *app_name;
+
+  /* Whether to use the Wayland-provided cursor instead of the X11 one.  */
+  Bool use_wayland_cursor;
 };
 
 /* Forward declarations from seat.c.  */

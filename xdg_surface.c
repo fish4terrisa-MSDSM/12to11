@@ -470,6 +470,7 @@ AckConfigure (struct wl_client *client, struct wl_resource *resource,
 	      uint32_t serial)
 {
   XdgRole *xdg_role;
+  int current_width, current_height;
 
   xdg_role = wl_resource_get_user_data (resource);
 
@@ -488,9 +489,10 @@ AckConfigure (struct wl_client *client, struct wl_resource *resource,
       return;
     }
 
+  xdg_role->last_specified_serial = serial;
+
   if (serial == xdg_role->conf_serial)
     {
-      xdg_role->last_specified_serial = serial;
       xdg_role->state &= ~StateWaitingForAckConfigure;
 
       /* Garbage the subcompositor too, since contents could be
@@ -500,6 +502,21 @@ AckConfigure (struct wl_client *client, struct wl_resource *resource,
 #ifdef DEBUG_GEOMETRY_CALCULATION
       fprintf (stderr, "Client acknowledged configuration\n");
 #endif
+
+      current_width = XLXdgRoleGetWidth (&xdg_role->role);
+      current_height = XLXdgRoleGetHeight (&xdg_role->role);
+
+      /* If the current buffer matches the bounds, we don't need to wait for a
+         commit to prevent NoteBounds from shrinking the window.
+         Clear StateWaitingForAckCommit so we don't get stuck if the client
+         decides not to commit. */
+      if ((xdg_role->state & StateWaitingForAckCommit) &&
+          current_width == xdg_role->bounds_width &&
+          current_height == xdg_role->bounds_height)
+        {
+          xdg_role->state &= ~StateWaitingForAckCommit;
+          SyncHelperUpdate (xdg_role->sync_helper);
+        }
     }
 
   if (xdg_role->impl)

@@ -82,6 +82,7 @@ HandleCmdline (Display *dpy, const char *socket, int argc, char **argv)
   /* Set the default resource and class names.  */
   compositor.resource_name = "12to11";
   compositor.app_name = "12to11";
+  compositor.use_wayland_cursor = True;
 
   if (argc < 2)
     /* There are no arguments to handle.  */
@@ -108,7 +109,7 @@ HandleCmdline (Display *dpy, const char *socket, int argc, char **argv)
 	print_usage:
 	  fprintf (stderr,
 		   "usage: %s [-name name] [-class class] [-printsocket]"
-		   " [-xrm resourcestring...]\n",
+		   " [-x11-cursor] [-xrm resourcestring...]\n",
 		   argv[0]);
 	  exit (!strcmp (argv[i], "-help") ? 0 : 1);
 	}
@@ -145,6 +146,8 @@ HandleCmdline (Display *dpy, const char *socket, int argc, char **argv)
 
 	  XrmPutLineResource (&rdb, argv[++i]);
 	}
+      else if (!strcmp (argv[i], "-x11-cursor"))
+	compositor.use_wayland_cursor = False;
       else if (!strcmp (argv[i], "-printsocket"))
 	puts (socket);
       else
@@ -190,6 +193,9 @@ XLMain (int argc, char **argv)
       fprintf (stderr, "Unable to add socket to Wayland display\n");
       exit (1);
     }
+
+  /* Try to set it in the dbus activation environment as well */
+  system ("dbus-update-activation-environment --systemd GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb SDL_VIDEODRIVER=x11 WINIT_UNIX_BACKEND=x11 2>/dev/null");
 
   /* Call XGetDefault with some dummy values to have the resource
      database set up.  */
