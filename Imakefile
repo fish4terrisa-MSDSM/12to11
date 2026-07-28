@@ -40,7 +40,7 @@ LOCAL_LIBRARIES ::= $(LOCAL_LIBRARIES) $(EGL) $(GLES)
         DEFINES ::= $(DEFINES) -DHaveEglSupport
 
 shaders.h: shaders.txt shaders.awk
-	awk -f shaders.awk shaders.txt > $@
+	gawk -f shaders.awk shaders.txt > $@
 
 depend:: shaders.h
 
@@ -67,14 +67,14 @@ XCOMM	waste a lot of space on disk.
 
 transfer_atoms.h: short_types.txt mime0.awk mime1.awk mime2.awk mime3.awk \
 		  mime4.awk
-	awk -f mime0.awk short_types.txt >  $@
-	awk -f mime1.awk short_types.txt >> $@
-	awk -f mime2.awk short_types.txt >> $@
-	awk -f mime3.awk short_types.txt >> $@
-	awk -f mime4.awk short_types.txt >> $@
+	gawk -f mime0.awk short_types.txt >  $@
+	gawk -f mime1.awk short_types.txt >> $@
+	gawk -f mime2.awk short_types.txt >> $@
+	gawk -f mime3.awk short_types.txt >> $@
+	gawk -f mime4.awk short_types.txt >> $@
 
 drm_modifiers.h: modifiers.awk $(DRMFOURCCH)
-	awk -f modifiers.awk $(DRMFOURCCH) > $@
+	gawk -f modifiers.awk $(DRMFOURCCH) > $@
 
 /* Now, define generated files.  */
 
