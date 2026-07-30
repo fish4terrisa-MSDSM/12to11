@@ -1678,6 +1678,7 @@ extern RelativePointer *XLSeatGetRelativePointer (Seat *, struct wl_resource *);
 extern void XLSeatDestroyRelativePointer (RelativePointer *);
 extern Bool XLSeatApplyExternalGrab (Seat *, Surface *);
 extern void XLSeatCancelExternalGrab (Seat *);
+extern void XLPointerSetCursorShape (Pointer *, uint32_t, uint32_t);
 extern SwipeGesture *XLSeatGetSwipeGesture (Seat *, struct wl_resource *);
 extern PinchGesture *XLSeatGetPinchGesture (Seat *, struct wl_resource *);
 extern void XLSeatDestroySwipeGesture (SwipeGesture *);
@@ -1932,6 +1933,10 @@ extern void XLInitXdgActivation (void);
 /* Defined in tearing_control.c.  */
 
 extern void XLInitTearingControl (void);
+
+/* Defined in cursor_shape.c.  */
+
+extern void XLInitCursorShape (void);
 
 /* Defined in sync_source.h.  */
 

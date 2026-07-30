@@ -256,6 +256,7 @@ XLMain (int argc, char **argv)
   XLInitPointerGestures ();
   XLInitXdgActivation ();
   XLInitTearingControl ();
+  XLInitCursorShape ();
   XLInitTest ();
 
   /* This has to come after the rest of the initialization.  */

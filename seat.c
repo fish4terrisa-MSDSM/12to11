@@ -37,6 +37,8 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <X11/extensions/XKBfile.h>
 #include <X11/extensions/XKM.h>
 
+#include <X11/Xcursor/Xcursor.h>
+
 #include <X11/extensions/XInput2.h>
 #include <linux/input-event-codes.h>
 
@@ -611,6 +613,9 @@ struct _Seat
 
   /* Array of keys currently held down.  */
   struct wl_array keys;
+
+  /* Cursor loaded from wp_cursor_shape */
+  Cursor shape_cursor;
 };
 
 struct _DeviceInfo
@@ -1088,6 +1093,12 @@ ReleaseSeat (Seat *seat)
   if (seat->cursor)
     FreeCursor (seat->cursor);
 
+  if (seat->shape_cursor != None)
+    {
+      XFreeCursor (compositor.display, seat->shape_cursor);
+      seat->shape_cursor = None;
+    }
+
   if (seat->data_device)
     {
       XLDataDeviceClearSeat (seat->data_device);
@@ -1437,10 +1448,25 @@ SetCursor (struct wl_client *client, struct wl_resource *resource,
     {
       if (!seen || (wl_resource_get_client (seen->resource)
 		    != client))
-	return;
+	      return;
 
       if (seat->cursor)
-	FreeCursor (seat->cursor);
+	      FreeCursor (seat->cursor);
+
+      if (seat->shape_cursor != None)
+        {
+          XFreeCursor (compositor.display, seat->shape_cursor);
+          seat->shape_cursor = None;
+        }
+
+      Window window = XLWindowFromSurface (seen);
+      if (!(seat->flags & IsInert) && window != None)
+        {
+          if (compositor.use_wayland_cursor)
+            XIDefineCursor (compositor.display, seat->master_pointer, window, InitDefaultCursor ());
+          else
+            XIDefineCursor (compositor.display, seat->master_pointer, window, None);
+        }
 
       return;
     }
@@ -1487,6 +1513,12 @@ SetCursor (struct wl_client *client, struct wl_resource *resource,
   /* Free any cursor that already exists.  */
   if (seat->cursor)
     FreeCursor (seat->cursor);
+
+  if (seat->shape_cursor != None)
+    {
+      XFreeCursor(compositor.display, seat->shape_cursor);
+      seat->shape_cursor = None;
+    }
 
   MakeCurrentCursor (seat, surface, hotspot_x, hotspot_y);
 }
@@ -3524,6 +3556,12 @@ EnteredSurface (Seat *seat, Surface *surface, Time time,
 	     clear the cursor.  */
 	  if (seat->cursor && !preserve_cursor)
 	    FreeCursor (seat->cursor);
+
+    if (seat->shape_cursor != None && !preserve_cursor)
+        {
+          XFreeCursor (compositor.display, seat->shape_cursor);
+          seat->shape_cursor = None;
+        }
 	}
 
       /* Cancel any pointer confinement.  */
@@ -6440,6 +6478,83 @@ XLKeysymToKeycode (KeySym keysym, XEvent *event)
     }
 
   return 0;
+}
+
+static const char *const shape_names[] = {
+  NULL, /* 0 */
+  "default", /* 1 */
+  "context-menu",
+  "help",
+  "pointer",
+  "progress",
+  "wait",
+  "cell",
+  "crosshair",
+  "text",
+  "vertical-text",
+  "alias",
+  "copy",
+  "move",
+  "no-drop",
+  "not-allowed",
+  "grab",
+  "grabbing",
+  "e-resize",
+  "n-resize",
+  "ne-resize",
+  "nw-resize",
+  "s-resize",
+  "se-resize",
+  "sw-resize",
+  "w-resize",
+  "ew-resize",
+  "ns-resize",
+  "nesw-resize",
+  "nwse-resize",
+  "col-resize",
+  "row-resize",
+  "all-scroll",
+  "zoom-in",
+  "zoom-out"
+};
+
+void
+XLPointerSetCursorShape (Pointer *pointer, uint32_t serial, uint32_t shape)
+{
+  Seat *seat = pointer->seat;
+  if (serial < pointer->info->last_enter_serial)
+    return;
+
+  if (seat->cursor)
+    FreeCursor(seat->cursor);
+
+  if (seat->shape_cursor != None)
+    XFreeCursor(compositor.display, seat->shape_cursor);
+
+  seat->shape_cursor = None;
+
+  if (shape > 0 && shape < ArrayElements(shape_names))
+    {
+      const char *shape_name = shape_names[shape];
+      if (shape_name)
+        seat->shape_cursor = XcursorLibraryLoadCursor(compositor.display, shape_name);
+    }
+
+  Window window = None;
+  if (seat->flags & IsDragging)
+    window = seat->grab_window;
+  else if (seat->last_seen_surface)
+    window = XLWindowFromSurface(seat->last_seen_surface);
+
+  if (!(seat->flags & IsInert) && window != None)
+    {
+      if (seat->shape_cursor != None)
+        XIDefineCursor(compositor.display, seat->master_pointer, window, seat->shape_cursor);
+      else if (compositor.use_wayland_cursor)
+        XIDefineCursor(compositor.display, seat->master_pointer, window, InitDefaultCursor());
+      else
+        XIDefineCursor(compositor.display, seat->master_pointer, window, None);
+    }
 }
 
 Bool
