@@ -912,10 +912,22 @@ HandleWindowGeometryChange (XdgToplevel *toplevel)
 			 &width, &height);
   TruncateSurfaceToWindow (toplevel->role->surface, x, y, &x, &y);
 
-  dx = SubcompositorWidth (subcompositor) - width;
-  dy = SubcompositorHeight (subcompositor) - height;
+  if (XLXdgRoleClippedToWindowGeometry (toplevel->role))
+    {
+      /* The window is clipped to the window geometry, so there are
+	 no margins between the window and the geometry.  */
+      dx = 0;
+      dy = 0;
 
-  ApplyGtkFrameExtents (toplevel, x, y, dx - x, dy - y);
+      ApplyGtkFrameExtents (toplevel, 0, 0, 0, 0);
+    }
+  else
+    {
+      dx = SubcompositorWidth (subcompositor) - width;
+      dy = SubcompositorHeight (subcompositor) - height;
+
+      ApplyGtkFrameExtents (toplevel, x, y, dx - x, dy - y);
+    }
 
   hints = &toplevel->size_hints;
 
@@ -1713,18 +1725,25 @@ NoteWindowPreResize (Role *role, XdgRoleImplementation *impl,
   /* Set the GTK frame immediately before a resize.  This prevents the
      window manager from constraining us by the old values.  */
 
-  XLXdgRoleGetCurrentGeometry (toplevel->role, &x, &y,
-			       &gwidth, &gheight);
+  if (XLXdgRoleClippedToWindowGeometry (toplevel->role))
+    /* The window is clipped to the window geometry, so there are no
+       margins between the window and the geometry.  */
+    ApplyGtkFrameExtents (toplevel, 0, 0, 0, 0);
+  else
+    {
+      XLXdgRoleGetCurrentGeometry (toplevel->role, &x, &y,
+				   &gwidth, &gheight);
 
-  /* Scale the window geometry to window dimensions.  */
-  TruncateScaleToWindow (toplevel->role->surface, gwidth, gheight,
-			 &gwidth, &gheight);
-  TruncateSurfaceToWindow (toplevel->role->surface, x, y, &x, &y);
+      /* Scale the window geometry to window dimensions.  */
+      TruncateScaleToWindow (toplevel->role->surface, gwidth, gheight,
+			     &gwidth, &gheight);
+      TruncateSurfaceToWindow (toplevel->role->surface, x, y, &x, &y);
 
-  dx = width - gwidth;
-  dy = height - gheight;
+      dx = width - gwidth;
+      dy = height - gheight;
 
-  ApplyGtkFrameExtents (toplevel, x, y, dx - x, dy - y);
+      ApplyGtkFrameExtents (toplevel, x, y, dx - x, dy - y);
+    }
 }
 
 static void

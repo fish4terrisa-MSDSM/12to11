@@ -831,6 +831,8 @@ extern void SubcompositorSetNoteFrameCallback (Subcompositor *,
 					       void *);
 extern void SubcompositorBounds (Subcompositor *, int *, int *, int *, int *);
 extern void SubcompositorSetProjectiveTransform (Subcompositor *, int, int);
+extern void SubcompositorSetTargetSize (Subcompositor *, int, int);
+extern void SubcompositorForceFullRedraw (Subcompositor *, int);
 
 extern void SubcompositorUpdate (Subcompositor *);
 extern void SubcompositorExpose (Subcompositor *, XEvent *);
@@ -1406,6 +1408,7 @@ extern void XLXdgRoleAttachImplementation (Role *, XdgRoleImplementation *);
 extern void XLXdgRoleDetachImplementation (Role *, XdgRoleImplementation *);
 extern void XLXdgRoleSendConfigure (Role *, uint32_t);
 extern void XLXdgRoleCalcNewWindowSize (Role *, int, int, int *, int *);
+extern Bool XLXdgRoleClippedToWindowGeometry (Role *);
 extern int XLXdgRoleGetWidth (Role *);
 extern int XLXdgRoleGetHeight (Role *);
 extern void XLXdgRoleSetBoundsSize (Role *, int, int);
