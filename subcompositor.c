@@ -374,6 +374,16 @@ struct _Subcompositor
   /* An additional offset to apply when drawing to the target.  */
   int tx, ty;
 
+  /* The size of the target to report to the renderer.  If zero, the
+     size of the subcompositor bounds is used instead.  */
+  int target_width, target_height;
+
+  /* The number of frames for which the entire subcompositor must be
+     redrawn, regardless of damage.  Used when the drawing offset
+     changes, as contents of any renderer back buffers become
+     stale.  */
+  int force_redraw_frames;
+
   /* Various flags describing the state of this subcompositor.  */
   int state;
 };
@@ -2466,8 +2476,11 @@ DrawBackground (Subcompositor *subcompositor, pixman_region32_t *damage)
 
   if (nboxes)
     RenderFillBoxesWithTransparency (subcompositor->target, boxes,
-				     nboxes, subcompositor->min_x,
-				     subcompositor->min_y);
+				     nboxes,
+				     subcompositor->min_x
+				     - subcompositor->tx,
+				     subcompositor->min_y
+				     - subcompositor->ty);
 }
 
 static void
@@ -2538,6 +2551,10 @@ TryPresent (View *view, pixman_region32_t *damage, DrawParams *transform)
 			  - view->subcompositor->min_y
 			  + 1)
       && view->subcompositor->note_frame
+      /* Presentation cannot be used if the view contents are to be
+	 drawn at an offset from the window origin.  */
+      && !view->subcompositor->tx
+      && !view->subcompositor->ty
       && !transform->flags)
     {
       buffer = XLRenderBufferFromBuffer (view->buffer);
@@ -2806,8 +2823,11 @@ SubcompositorComposite1 (Subcompositor *subcompositor,
 	RenderCancelPresentationCallback (subcompositor->present_key);
       subcompositor->present_key = NULL;
 
-      pixman_region32_translate (damage, -subcompositor->min_x,
-				 -subcompositor->min_y);
+      /* Translate the damage into window coordinates.  */
+      pixman_region32_translate (&copy, subcompositor->tx
+				 - subcompositor->min_x,
+				 subcompositor->ty
+				 - subcompositor->min_y);
       key = RenderFinishRender (subcompositor->target, &copy,
 				RenderCompletedCallback, subcompositor);
       pixman_region32_fini (&copy);
@@ -2831,8 +2851,10 @@ SubcompositorComposite1 (Subcompositor *subcompositor,
       /* This goes down the XCopyArea code path, unless presentation
 	 happened, in which case it does nothing.  No key must be
 	 returned, as the given callback is NULL.  */
-      pixman_region32_translate (damage, -subcompositor->min_x,
-				 -subcompositor->min_y);
+      pixman_region32_translate (&copy, subcompositor->tx
+				 - subcompositor->min_x,
+				 subcompositor->ty
+				 - subcompositor->min_y);
       RenderFinishRender (subcompositor->target, &copy, NULL, NULL);
       pixman_region32_fini (&copy);
     }
@@ -3052,10 +3074,15 @@ SubcompositorUpdate (Subcompositor *subcompositor)
   subcompositor->last_update_max_y = subcompositor->max_y;
 
   RenderNoteTargetSize (subcompositor->target,
-			SubcompositorWidth (subcompositor),
-			SubcompositorHeight (subcompositor));
+			(subcompositor->target_width
+			 ? subcompositor->target_width
+			 : SubcompositorWidth (subcompositor)),
+			(subcompositor->target_height
+			 ? subcompositor->target_height
+			 : SubcompositorHeight (subcompositor)));
 
-  if (IsGarbaged (subcompositor))
+  if (IsGarbaged (subcompositor)
+      || subcompositor->force_redraw_frames)
     {
       BeginFrame (subcompositor);
 
@@ -3066,6 +3093,11 @@ SubcompositorUpdate (Subcompositor *subcompositor)
       SubcompositorRedraw (subcompositor);
 
       EndFrame (subcompositor);
+
+      /* Decrement the number of frames for which everything must be
+	 redrawn.  */
+      if (subcompositor->force_redraw_frames > 0)
+	subcompositor->force_redraw_frames--;
 
       /* Clear the garbaged flag, unless for debugging purposes the
 	 subcompositor is always garbaged.  */
@@ -3108,6 +3140,12 @@ SubcompositorExpose (Subcompositor *subcompositor, XEvent *event)
 			       event->xgraphicsexpose.y,
 			       event->xgraphicsexpose.width,
 			       event->xgraphicsexpose.height);
+
+  /* Translate the damage from window coordinates to the
+     subcompositor coordinate space.  */
+  pixman_region32_translate (&damage, -subcompositor->tx,
+			     -subcompositor->ty);
+
   SubcompositorComposite1 (subcompositor, &damage, False);
   pixman_region32_fini (&damage);
 }
@@ -3116,6 +3154,22 @@ void
 SubcompositorGarbage (Subcompositor *subcompositor)
 {
   SetGarbaged (subcompositor);
+}
+
+void
+SubcompositorSetTargetSize (Subcompositor *subcompositor,
+			    int width, int height)
+{
+  subcompositor->target_width = width;
+  subcompositor->target_height = height;
+}
+
+void
+SubcompositorForceFullRedraw (Subcompositor *subcompositor,
+			      int frames)
+{
+  if (frames > subcompositor->force_redraw_frames)
+    subcompositor->force_redraw_frames = frames;
 }
 
 void
@@ -3179,8 +3233,8 @@ SubcompositorLookupView (Subcompositor *subcompositor, int x, int y,
   int temp_x, temp_y;
   pixman_box32_t box;
 
-  x += subcompositor->min_x;
-  y += subcompositor->min_y;
+  x += subcompositor->min_x - subcompositor->tx;
+  y += subcompositor->min_y - subcompositor->ty;
 
   for (list = subcompositor->inferiors->last;
        list != subcompositor->inferiors;
@@ -3214,8 +3268,10 @@ SubcompositorLookupView (Subcompositor *subcompositor, int x, int y,
       if (pixman_region32_contains_point (&list->view->input, temp_x,
 					  temp_y, &box))
 	{
-	  *view_x = list->view->abs_x - subcompositor->min_x;
-	  *view_y = list->view->abs_y - subcompositor->min_y;
+	*view_x = (list->view->abs_x - subcompositor->min_x
+		   + subcompositor->tx);
+	*view_y = (list->view->abs_y - subcompositor->min_y
+		   + subcompositor->ty);
 
 	  return list->view;
 	}
@@ -3249,8 +3305,8 @@ ViewTranslate (View *view, int x, int y, int *x_out, int *y_out)
     {
       /* X and Y are assumed to be in the "virtual" coordinate
 	 space.  */
-      x += view->subcompositor->min_x;
-      y += view->subcompositor->min_y;
+      x += view->subcompositor->min_x - view->subcompositor->tx;
+      y += view->subcompositor->min_y - view->subcompositor->ty;
     }
 
   *x_out = x - view->abs_x;

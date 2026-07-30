@@ -145,6 +145,16 @@ struct _XdgRole
   /* The bounds width and bounds height of the subcompositor.  */
   int bounds_width, bounds_height;
 
+  /* The offset of the window geometry origin from the origin of the
+     subcompositor, in window coordinates.  Toplevels which set a
+     window geometry are clipped to that geometry: the X window is
+     sized to the geometry (and not the subcompositor bounds), and
+     the surface contents are translated by the negative of this
+     offset, so that margins clients place around the window geometry
+     (e.g. CSD shadows and resize grips) don't become visible padding
+     inside the window.  */
+  int geometry_off_x, geometry_off_y;
+
   /* The pending root window position of the subcompositor.  */
   int pending_root_x, pending_root_y;
 
@@ -829,8 +839,8 @@ OpaqueRegionChanged (Subcompositor *subcompositor,
 
   for (i = 0; i < nrects; ++i)
     {
-      data[i * 4 + 0] = BoxStartX (boxes[i]);
-      data[i * 4 + 1] = BoxStartY (boxes[i]);
+      data[i * 4 + 0] = BoxStartX (boxes[i]) - role->geometry_off_x;
+      data[i * 4 + 1] = BoxStartY (boxes[i]) - role->geometry_off_y;
       data[i * 4 + 2] = BoxWidth (boxes[i]);
       data[i * 4 + 3] = BoxHeight (boxes[i]);
     }
@@ -870,8 +880,8 @@ InputRegionChanged (Subcompositor *subcompositor,
 
   for (i = 0; i < nrects; ++i)
     {
-      rects[i].x = BoxStartX (boxes[i]);
-      rects[i].y = BoxStartY (boxes[i]);
+      rects[i].x = BoxStartX (boxes[i]) - role->geometry_off_x;
+      rects[i].y = BoxStartY (boxes[i]) - role->geometry_off_y;
       rects[i].width = BoxWidth (boxes[i]);
       rects[i].height = BoxHeight (boxes[i]);
     }
@@ -937,12 +947,75 @@ CurrentRootPosition (XdgRole *role, int *root_x, int *root_y)
 			 0, 0, root_x, root_y, &child_return);
 }
 
+/* Return whether or not the contents of ROLE's window should be
+   clipped to the window geometry, i.e. whether the X window should
+   be sized to the window geometry instead of the subcompositor
+   bounds.  This is true for toplevels which have set a window
+   geometry, and makes margins around the window geometry (typically
+   client-side decorations such as shadows) invisible to window
+   managers that don't know about _GTK_FRAME_EXTENTS.  */
+
+static Bool
+ClipToWindowGeometry (XdgRole *role)
+{
+  return (role->type == TypeToplevel
+	  && role->current_state.window_geometry_width
+	  && role->role.surface);
+}
+
+/* Compute the size of ROLE's window along with the offset of the
+   window geometry origin from the subcompositor origin, both in
+   window coordinates.  min_x, min_y, max_x, and max_y are the
+   current subcompositor bounds.  If the window is not being clipped
+   to the window geometry, the offset is zero and the size is that of
+   the subcompositor bounds.  */
+
+static void
+ComputeWindowSizeAndOffset (XdgRole *role, int min_x, int min_y,
+			    int max_x, int max_y, int *width_out,
+			    int *height_out, int *off_x_out,
+			    int *off_y_out)
+{
+  int geometry_x, geometry_y, geometry_width, geometry_height;
+  int off_x, off_y;
+
+  *width_out = max_x - min_x + 1;
+  *height_out = max_y - min_y + 1;
+  *off_x_out = 0;
+  *off_y_out = 0;
+
+  if (!ClipToWindowGeometry (role))
+    return;
+
+  XLXdgRoleGetCurrentGeometry (&role->role, &geometry_x,
+			       &geometry_y, &geometry_width,
+			       &geometry_height);
+
+  /* Scale the window geometry and its origin to window
+     dimensions.  */
+  TruncateScaleToWindow (role->role.surface, geometry_width,
+			 geometry_height, width_out, height_out);
+  TruncateSurfaceToWindow (role->role.surface, geometry_x,
+			   geometry_y, &geometry_x, &geometry_y);
+
+  off_x = geometry_x - min_x;
+  off_y = geometry_y - min_y;
+
+  /* The window geometry should be clamped to the subcompositor
+     bounds by XLXdgRoleGetCurrentGeometry, but the scale factor
+     might make that imprecise.  */
+  *off_x_out = MAX (off_x, 0);
+  *off_y_out = MAX (off_y, 0);
+}
+
 static void
 NoteBounds (void *data, int min_x, int min_y,
 	    int max_x, int max_y)
 {
   XdgRole *role;
   int bounds_width, bounds_height, root_x, root_y;
+  int off_x, off_y, origin_x, origin_y;
+  int old_origin_x, old_origin_y;
   Bool run_reconstrain_callbacks, root_position_initialized;
 
   role = data;
@@ -960,10 +1033,52 @@ NoteBounds (void *data, int min_x, int min_y,
     return;
 
   /* Avoid resizing the window should its actual size not have
-     changed.  */
+      changed.  */
 
-  bounds_width = max_x - min_x + 1;
-  bounds_height = max_y - min_y + 1;
+  ComputeWindowSizeAndOffset (role, min_x, min_y, max_x, max_y,
+			      &bounds_width, &bounds_height,
+			      &off_x, &off_y);
+
+  /* If the window geometry offset changed, translate the contents of
+     the window so that the window geometry origin coincides with the
+     window origin, and make sure everything is redrawn at the new
+     offset.  */
+
+  if (off_x != role->geometry_off_x
+      || off_y != role->geometry_off_y)
+    {
+      SubcompositorSetProjectiveTransform (role->subcompositor,
+					   -off_x, -off_y);
+      SubcompositorGarbage (role->subcompositor);
+
+      /* The contents of any renderer back buffers are now stale, as
+	 they were drawn with the previous offset.  Force everything
+	 to be redrawn for the next few frames, so that all back
+	 buffers are refreshed.  */
+      SubcompositorForceFullRedraw (role->subcompositor, 4);
+    }
+
+  /* Report the size of the window to the renderer; it may differ
+     from the size of the subcompositor bounds when the window is
+     clipped to the window geometry.  */
+
+  if (off_x || off_y || ClipToWindowGeometry (role))
+    SubcompositorSetTargetSize (role->subcompositor,
+				bounds_width, bounds_height);
+  else
+    SubcompositorSetTargetSize (role->subcompositor, 0, 0);
+
+  /* The origin of the window contents in the subcompositor
+     coordinate space.  This is used to keep the window contents in
+     place as the bounds and the window geometry offset change.  */
+
+  origin_x = min_x + off_x;
+  origin_y = min_y + off_y;
+  old_origin_x = role->min_x + role->geometry_off_x;
+  old_origin_y = role->min_y + role->geometry_off_y;
+
+  role->geometry_off_x = off_x;
+  role->geometry_off_y = off_y;
 
   if (role->bounds_width != bounds_width
       || role->bounds_height != bounds_height)
@@ -1015,25 +1130,40 @@ NoteBounds (void *data, int min_x, int min_y,
   /* Now, make sure the window stays at the same position relative to
      the origin of the view.  */
 
-  if (min_x != role->min_x || min_y != role->min_y)
+  if (origin_x != old_origin_x || origin_y != old_origin_y)
     {
-      /* Move the window by the opposite of the amount the min_x and
-	 min_y changed.  */
-
       if (!root_position_initialized)
 	CurrentRootPosition (role, &root_x, &root_y);
 
-      XMoveWindow (compositor.display, role->window,
-		   root_x + min_x + role->min_x,
-		   root_y + min_y + role->min_y);
+      if (ClipToWindowGeometry (role))
+	{
+	  /* Keep the window contents in place: they are drawn
+	     relative to the window origin, which used to be at
+	     old_origin in subcompositor coordinates.  Move the window
+	     by the amount the origin changed.  */
+	  XMoveWindow (compositor.display, role->window,
+		       root_x + old_origin_x - origin_x,
+		       root_y + old_origin_y - origin_y);
+	  role->pending_root_x = root_x + old_origin_x - origin_x;
+	  role->pending_root_y = root_y + old_origin_y - origin_y;
+	}
+      else
+	{
+	  /* Move the window by the opposite of the amount the min_x
+	     and min_y changed.  */
+	  XMoveWindow (compositor.display, role->window,
+		       root_x + min_x + role->min_x,
+		       root_y + min_y + role->min_y);
+	  role->pending_root_x = root_x + min_x + role->min_x;
+	  role->pending_root_y = root_y + min_y + role->min_y;
+	}
+
       run_reconstrain_callbacks = True;
 
       /* Set pending root window positions.  These positions will be
 	 used until the movement really happens, to avoid outdated
 	 positions being used after the minimum positions change in
 	 quick succession.  */
-      role->pending_root_x = root_x + min_x + role->min_x;
-      role->pending_root_y = root_y + min_y + role->min_y;
       role->pending_synth_configure++;
     }
 
@@ -1051,8 +1181,8 @@ NoteBounds (void *data, int min_x, int min_y,
 
   if (role->impl && role->impl->funcs.note_size)
     role->impl->funcs.note_size (&role->role, role->impl,
-				 max_x - min_x + 1,
-				 max_y - min_y + 1);
+				 bounds_width,
+				 bounds_height);
 
   /* Run reconstrain callbacks if a resize happened.  */
   if (run_reconstrain_callbacks)
@@ -1076,6 +1206,7 @@ static void
 ResizeForMap (XdgRole *role)
 {
   int min_x, min_y, max_x, max_y;
+  int width, height, off_x, off_y;
 
   SubcompositorBounds (role->subcompositor, &min_x,
 		       &min_y, &max_x, &max_y);
@@ -1083,6 +1214,23 @@ ResizeForMap (XdgRole *role)
   /* At this point, we are probably still waiting for ack_commit; as a
      result, NoteBounds will not really resize the window.  */
   NoteBounds (role, min_x, min_y, max_x, max_y);
+
+  /* NoteBounds might have returned without doing anything, so
+     compute the size of the window and the window geometry offset
+     here as well.  */
+  ComputeWindowSizeAndOffset (role, min_x, min_y, max_x, max_y,
+			      &width, &height, &off_x, &off_y);
+
+  SubcompositorSetProjectiveTransform (role->subcompositor,
+				       -off_x, -off_y);
+  role->geometry_off_x = off_x;
+  role->geometry_off_y = off_y;
+
+  if (off_x || off_y || ClipToWindowGeometry (role))
+    SubcompositorSetTargetSize (role->subcompositor,
+				width, height);
+  else
+    SubcompositorSetTargetSize (role->subcompositor, 0, 0);
 
 #ifdef DEBUG_GEOMETRY_CALCULATION
   fprintf (stderr, "ResizeForMap: %d %d\n",
@@ -1104,13 +1252,13 @@ ResizeForMap (XdgRole *role)
   /* Resize the window pre-map.  This should generate a
      ConfigureNotify event once the resize completes.  */
   XResizeWindow (compositor.display, role->window,
-		 max_x - min_x + 1, max_y - min_y + 1);
+		 width, height);
 
   if (role->impl->funcs.note_window_resized)
     role->impl->funcs.note_window_resized (&role->role,
 					   role->impl,
-					   max_x - min_x + 1,
-					   max_y - min_y + 1);
+					   width,
+					   height);
 }
 
 static void
@@ -1491,7 +1639,11 @@ XLXdgRoleCalcNewWindowSize (Role *role, int width, int height,
   if (!xdg_role->current_state.window_geometry_width
       /* If no surface exists, we might as well return immediately,
 	 since the scale factor will not be obtainable.  */
-      || !role->surface)
+      || !role->surface
+      /* If the window is clipped to the window geometry, its size
+	 already describes the window geometry, so there is no
+	 difference to compensate for.  */
+      || ClipToWindowGeometry (xdg_role))
     {
       *new_width = width;
       *new_height = height;
@@ -1531,6 +1683,12 @@ XLXdgRoleCalcNewWindowSize (Role *role, int width, int height,
 	   "Generated width, height:       %d %d\n",
 	   width, height, *new_width, *new_height);
 #endif
+}
+
+Bool
+XLXdgRoleClippedToWindowGeometry (Role *role)
+{
+  return ClipToWindowGeometry (XdgRoleFromRole (role));
 }
 
 int
