@@ -960,7 +960,8 @@ ClipToWindowGeometry (XdgRole *role)
 {
   return (role->type == TypeToplevel
 	  && role->current_state.window_geometry_width
-	  && role->role.surface);
+	  && role->role.surface
+    && !XLWmSupportsHint (_GTK_FRAME_EXTENTS));
 }
 
 /* Compute the size of ROLE's window along with the offset of the
