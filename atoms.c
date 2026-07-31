@@ -113,6 +113,15 @@ static const char *names[] =
     "_NET_WM_PING",
     "libinput Scrolling Pixel Distance",
     "_NET_ACTIVE_WINDOW",
+    "_NET_WM_WINDOW_TYPE_DESKTOP",
+    "_NET_WM_WINDOW_TYPE_DOCK",
+    "_NET_WM_WINDOW_TYPE_NOTIFICATION",
+    "_NET_WM_WINDOW_TYPE_NORMAL",
+    "_NET_WM_STATE_ABOVE",
+    "_NET_WM_STATE_BELOW",
+    "_NET_WM_STATE_STICKY",
+    "_NET_WM_STATE_SKIP_TASKBAR",
+    "_NET_WM_STATE_SKIP_PAGER",
 
     /* These are automatically generated from mime.txt.  */
     DirectTransferAtomNames
@@ -135,6 +144,10 @@ Atom _NET_WM_OPAQUE_REGION, _XL_BUFFER_RELEASE, _NET_WM_SYNC_REQUEST_COUNTER,
   XdndEnter, XdndPosition, XdndStatus, XdndLeave, XdndDrop, XdndFinished,
   _NET_WM_FRAME_TIMINGS, _NET_WM_BYPASS_COMPOSITOR, WM_STATE,
   _NET_WM_WINDOW_TYPE, _NET_WM_WINDOW_TYPE_MENU, _NET_WM_WINDOW_TYPE_DND,
+  _NET_WM_WINDOW_TYPE_DESKTOP, _NET_WM_WINDOW_TYPE_DOCK,
+  _NET_WM_WINDOW_TYPE_NOTIFICATION, _NET_WM_WINDOW_TYPE_NORMAL,
+  _NET_WM_STATE_ABOVE, _NET_WM_STATE_BELOW, _NET_WM_STATE_STICKY,
+  _NET_WM_STATE_SKIP_TASKBAR, _NET_WM_STATE_SKIP_PAGER,
   CONNECTOR_ID, _NET_WM_PID, _NET_WM_PING, libinput_Scrolling_Pixel_Distance,
   _NET_ACTIVE_WINDOW;
 
@@ -295,9 +308,18 @@ XLInitAtoms (void)
   _NET_WM_PING = atoms[63];
   libinput_Scrolling_Pixel_Distance = atoms[64];
   _NET_ACTIVE_WINDOW = atoms[65];
+  _NET_WM_WINDOW_TYPE_DESKTOP = atoms[66];
+  _NET_WM_WINDOW_TYPE_DOCK = atoms[67];
+  _NET_WM_WINDOW_TYPE_NOTIFICATION = atoms[68];
+  _NET_WM_WINDOW_TYPE_NORMAL = atoms[69];
+  _NET_WM_STATE_ABOVE = atoms[70];
+  _NET_WM_STATE_BELOW = atoms[71];
+  _NET_WM_STATE_STICKY = atoms[72];
+  _NET_WM_STATE_SKIP_TASKBAR = atoms[73];
+  _NET_WM_STATE_SKIP_PAGER = atoms[74];
 
   /* This is automatically generated.  */
-  DirectTransferAtomInit (atoms, 66);
+  DirectTransferAtomInit (atoms, 75);
 
   /* Now, initialize quarks.  */
   resource_quark = XrmPermStringToQuark (compositor.resource_name);

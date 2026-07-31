@@ -783,6 +783,8 @@ extern void ExtBufferDestroy (ExtBuffer *);
 extern int render_first_error;
 
 extern void XLInitShm (void);
+extern Bool XLShmBufferDescribe (ExtBuffer *, int *, size_t *, uint32_t *,
+				 int *, int *, unsigned int *, unsigned int *);
 
 /* Defined in subcompositor.c.  */
 
@@ -923,6 +925,7 @@ enum _RoleType
     CursorType,
     DndIconType,
     TestSurfaceType,
+    LayerType,
   };
 
 #define RotatesDimensions(transform)		\
@@ -1261,6 +1264,8 @@ extern void XLInitRROutputs (void);
 extern Bool XLHandleOneXEventForOutputs (XEvent *);
 extern void XLOutputGetMinRefresh (struct timespec *);
 extern Bool XLGetOutputRectAt (int, int, int *, int *, int *, int *);
+extern Bool XLGetOutputRectFromResource (struct wl_resource *, int *,
+					 int *, int *, int *);
 extern void *XLAddScaleChangeCallback (void *, void (*) (void *, int));
 extern void XLRemoveScaleChangeCallback (void *);
 extern void XLClearOutputs (Surface *);
@@ -1286,6 +1291,10 @@ extern Atom _NET_WM_OPAQUE_REGION, _XL_BUFFER_RELEASE,
   XdndProxy, XdndEnter, XdndPosition, XdndStatus, XdndLeave, XdndDrop,
   XdndFinished, _NET_WM_FRAME_TIMINGS, _NET_WM_BYPASS_COMPOSITOR, WM_STATE,
   _NET_WM_WINDOW_TYPE, _NET_WM_WINDOW_TYPE_MENU, _NET_WM_WINDOW_TYPE_DND,
+  _NET_WM_WINDOW_TYPE_DESKTOP, _NET_WM_WINDOW_TYPE_DOCK,
+  _NET_WM_WINDOW_TYPE_NOTIFICATION, _NET_WM_WINDOW_TYPE_NORMAL,
+  _NET_WM_STATE_ABOVE, _NET_WM_STATE_BELOW, _NET_WM_STATE_STICKY,
+  _NET_WM_STATE_SKIP_TASKBAR, _NET_WM_STATE_SKIP_PAGER,
   CONNECTOR_ID, _NET_WM_PID, _NET_WM_PING, libinput_Scrolling_Pixel_Distance,
   _NET_ACTIVE_WINDOW;
 
@@ -1937,6 +1946,15 @@ extern void XLInitTearingControl (void);
 /* Defined in cursor_shape.c.  */
 
 extern void XLInitCursorShape (void);
+
+/* Defined in layer_shell.c.  */
+
+extern void XLInitLayerShell (void);
+extern Bool XLHandleOneXEventForLayerShell (XEvent *);
+
+/* Defined in image_copy_capture.c.  */
+
+extern void XLInitImageCopyCapture (void);
 
 /* Defined in sync_source.h.  */
 
