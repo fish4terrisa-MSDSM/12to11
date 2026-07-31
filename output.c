@@ -956,6 +956,36 @@ XLGetOutputRectAt (int x, int y, int *x_out, int *y_out,
 }
 
 Bool
+XLGetOutputRectFromResource (struct wl_resource *resource, int *x_out,
+			     int *y_out, int *width_out, int *height_out)
+{
+  Output *output;
+
+  /* NULL resource means the client did not specify an output.  */
+  if (!resource)
+    return False;
+
+  output = wl_resource_get_user_data (resource);
+
+  if (!output)
+    return False;
+
+  if (x_out)
+    *x_out = output->x;
+
+  if (y_out)
+    *y_out = output->y;
+
+  if (width_out)
+    *width_out = output->width;
+
+  if (height_out)
+    *height_out = output->height;
+
+  return True;
+}
+
+Bool
 XLHandleOneXEventForOutputs (XEvent *event)
 {
   XRRNotifyEvent *notify;

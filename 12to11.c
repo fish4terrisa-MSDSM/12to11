@@ -257,6 +257,8 @@ XLMain (int argc, char **argv)
   XLInitXdgActivation ();
   XLInitTearingControl ();
   XLInitCursorShape ();
+  XLInitLayerShell ();
+  XLInitImageCopyCapture ();
   XLInitTest ();
 
   /* This has to come after the rest of the initialization.  */

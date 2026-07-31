@@ -22,6 +22,7 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <unistd.h>
 
 #include <sys/mman.h>
 
@@ -63,6 +64,10 @@ typedef struct _Buffer
 
   /* The width and height of this buffer.  */
   unsigned int width, height;
+
+  /* The format, offset and stride of this buffer, for readback.  */
+  uint32_t format;
+  int offset, stride;
 
   /* The wl_resource corresponding to this buffer.  */
   struct wl_resource *resource;
@@ -308,6 +313,9 @@ CreateBuffer (struct wl_client *client, struct wl_resource *resource,
   buffer->render_buffer = render_buffer;
   buffer->width = width;
   buffer->height = height;
+  buffer->format = format;
+  buffer->offset = offset;
+  buffer->stride = stride;
   buffer->pool = pool;
   buffer->refcount = 1;
 
@@ -582,4 +590,54 @@ XLInitShm (void)
   global_shm = wl_global_create (compositor.wl_display,
 				 &wl_shm_interface, 1,
 				 NULL, HandleBind);
+}
+
+/* Describe the shared memory backing of an ExtBuffer.  Returns True if
+   the buffer is backed by shared memory, in which case the out
+   parameters are filled in.  FD is duplicated and must be closed by
+   the caller.  */
+
+Bool
+XLShmBufferDescribe (ExtBuffer *buffer, int *fd, size_t *pool_size,
+		     uint32_t *format, int *offset, int *stride,
+		     unsigned int *width, unsigned int *height)
+{
+  Buffer *b;
+
+  /* Verify that this buffer really is a shared memory buffer by
+     comparing its dereference function pointer with the shared memory
+     dereference function.  */
+
+  if (buffer->funcs.dereference != DereferenceBufferFunc)
+    return False;
+
+  b = (Buffer *) buffer;
+
+  if (fd)
+    {
+      *fd = dup (b->pool->fd);
+
+      if (*fd < 0)
+	return False;
+    }
+
+  if (pool_size)
+    *pool_size = b->pool->size;
+
+  if (format)
+    *format = b->format;
+
+  if (offset)
+    *offset = b->offset;
+
+  if (stride)
+    *stride = b->stride;
+
+  if (width)
+    *width = b->width;
+
+  if (height)
+    *height = b->height;
+
+  return True;
 }

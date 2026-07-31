@@ -168,6 +168,9 @@ HandleOneXEvent (XEvent *event)
 
   if (XLHandleOneXEventForTest (event))
     return;
+
+  if (XLHandleOneXEventForLayerShell (event))
+    return;
 }
 
 static void
