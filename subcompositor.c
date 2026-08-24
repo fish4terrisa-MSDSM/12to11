@@ -22,6 +22,10 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <stdlib.h>
 #include <alloca.h>
 
+#include <inttypes.h>
+#include <float.h>
+#include <math.h>
+
 #include "compositor.h"
 
 /* This module implements a "subcompositor" that composites together
@@ -689,7 +693,7 @@ SubcompositorUpdateBounds (Subcompositor *subcompositor, int doflags)
 	  if ((doflags & DoMinX) && min_x > list->view->abs_x)
 	    min_x = list->view->abs_x;
 
-	  if ((doflags & DoMinY) && min_x > list->view->abs_y)
+	  if ((doflags & DoMinY) && min_y > list->view->abs_y)
 	    min_y = list->view->abs_y;
 
 	  if ((doflags & DoMaxX) && max_x < ViewMaxX (list->view))
@@ -1019,7 +1023,7 @@ ViewRecomputeChildren (View *view, int *doflags)
 		    *doflags &= ~DoMinX;
 		}
 
-	      if (child->abs_x < view->subcompositor->min_y)
+	      if (child->abs_y < view->subcompositor->min_y)
 		{
 		  view->subcompositor->min_y = child->abs_y;
 
@@ -1490,7 +1494,7 @@ ViewMove (View *view, int x, int y)
 	      SetGarbaged (view->subcompositor);
 	    }
 
-	  if (view->abs_y < view->subcompositor->min_x)
+	  if (view->abs_y < view->subcompositor->min_y)
 	    {
 	      view->subcompositor->min_y = view->abs_y;
 
@@ -1860,7 +1864,7 @@ ViewWidth (View *view)
   if (view->scale < 0)
     return ceil (width * (abs (view->scale) + 1));
   else
-    return ceil (width / (view->scale + 1));
+    return ceil ((double) width / (view->scale + 1));
 }
 
 int
@@ -1883,7 +1887,7 @@ ViewHeight (View *view)
   if (view->scale < 0)
     return ceil (height * (abs (view->scale) + 1));
   else
-    return ceil (height / (view->scale + 1));
+    return ceil ((double) height / (view->scale + 1));
 }
 
 void

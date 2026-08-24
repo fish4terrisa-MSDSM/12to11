@@ -317,7 +317,7 @@ RenderFreeDmabufBuffer (RenderBuffer buffer)
 void
 RenderFreeSinglePixelBuffer (RenderBuffer buffer)
 {
-  return buffer_funcs.free_dmabuf_buffer (buffer);
+  return buffer_funcs.free_single_pixel_buffer (buffer);
 }
 
 void

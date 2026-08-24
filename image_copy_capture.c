@@ -84,8 +84,14 @@ struct _CaptureFrame
   /* The buffer attached by the client.  */
   struct wl_resource *buffer;
 
+  /* Destroy listener for the attached buffer.  */
+  struct wl_listener buffer_destroy_listener;
+
   /* Whether capture has been requested.  */
   Bool captured;
+
+  /* The timer used to delay capture.  */
+  Timer *timer;
 };
 
 /* The two globals.  */
@@ -124,10 +130,12 @@ ComputeRect (struct wl_resource *output_resource, int *ox, int *oy,
 static void
 SendConstraints (CaptureSession *session)
 {
+  int scale = global_scale_factor;
+
   /* Tell the client the buffer dimensions.  */
   ext_image_copy_capture_session_v1_send_buffer_size (session->resource,
-						       session->ow,
-						       session->oh);
+						       session->ow / scale,
+						       session->oh / scale);
 
   /* Advertise the shared memory formats we can produce by direct
      copy.  The X server provides 32-bit XRGB/ARGB data, little
@@ -175,6 +183,13 @@ FrameDestroy (struct wl_client *client, struct wl_resource *resource)
 }
 
 static void
+HandleBufferDestroy (struct wl_listener *listener, void *data)
+{
+  CaptureFrame *frame = wl_container_of (listener, frame, buffer_destroy_listener);
+  frame->buffer = NULL;
+}
+
+static void
 FrameAttachBuffer (struct wl_client *client, struct wl_resource *resource,
 		   struct wl_resource *buffer)
 {
@@ -190,7 +205,16 @@ FrameAttachBuffer (struct wl_client *client, struct wl_resource *resource,
       return;
     }
 
+  if (frame->buffer)
+    wl_list_remove (&frame->buffer_destroy_listener.link);
+
   frame->buffer = buffer;
+
+  if (buffer)
+    {
+      frame->buffer_destroy_listener.notify = HandleBufferDestroy;
+      wl_resource_add_destroy_listener (buffer, &frame->buffer_destroy_listener);
+    }
 }
 
 static void
@@ -222,18 +246,141 @@ FrameDamageBuffer (struct wl_client *client, struct wl_resource *resource,
 }
 
 static void
+CaptureTimerCallback (Timer *timer, void *data, struct timespec time)
+{
+  CaptureFrame *frame = data;
+  CaptureSession *session;
+  ExtBuffer *eb;
+  int fd, offset, stride, y, x;
+  unsigned int bw, bh;
+  size_t pool_size;
+  uint32_t format;
+  void *ptr;
+  XImage *image;
+  uint8_t *dst, *src;
+
+  /* Remove the repeating timer so it only executes once.  */
+  RemoveTimer (timer);
+  frame->timer = NULL;
+
+  session = frame->session;
+
+  if (!session || session->cursor || !frame->buffer || !frame->resource)
+    {
+      FailFrame (frame,
+		 EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED);
+      return;
+    }
+
+  /* Describe the attached shared memory buffer.  */
+  eb = wl_resource_get_user_data (frame->buffer);
+
+  if (!eb || !XLShmBufferDescribe (eb, &fd, &pool_size, &format, &offset,
+				   &stride, &bw, &bh))
+    {
+      FailFrame (frame,
+		 EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_BUFFER_CONSTRAINTS);
+      return;
+    }
+
+  int scale = global_scale_factor;
+  if (scale < 1)
+    scale = 1;
+  int logical_w = session->ow / scale;
+  int logical_h = session->oh / scale;
+
+  /* The buffer must match the advertised dimensions.  */
+  if ((int) bw != logical_w || (int) bh != logical_h)
+    {
+      close (fd);
+      FailFrame (frame,
+		 EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_BUFFER_CONSTRAINTS);
+      return;
+    }
+
+  /* Only 32-bit XRGB/ARGB can be produced by direct copy.  */
+  if (format != WL_SHM_FORMAT_XRGB8888
+      && format != WL_SHM_FORMAT_ARGB8888)
+    {
+      close (fd);
+      FailFrame (frame,
+		 EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_BUFFER_CONSTRAINTS);
+      return;
+    }
+
+  /* Map the pool writable.  */
+  ptr = mmap (NULL, pool_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+	       fd, 0);
+  close (fd);
+
+  if (ptr == MAP_FAILED)
+    {
+      FailFrame (frame,
+		 EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
+      return;
+    }
+
+  /* Read back the output rectangle from the root window.  */
+  image = XGetImage (compositor.display,
+		     DefaultRootWindow (compositor.display),
+		     session->ox, session->oy,
+		     session->ow, session->oh,
+		     AllPlanes, ZPixmap);
+
+  if (!image)
+    {
+      munmap (ptr, pool_size);
+      FailFrame (frame,
+		 EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
+      return;
+    }
+
+  /* The X server is expected to provide 32 bits per pixel, little
+     endian, matching the shared memory formats above.  */
+  if (image->bits_per_pixel != 32
+      || image->byte_order != LSBFirst)
+    {
+      XDestroyImage (image);
+      munmap (ptr, pool_size);
+      FailFrame (frame,
+		 EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
+      return;
+    }
+
+  /* Copy each scanline into the client buffer, accounting for
+     differing strides and scaling.  */
+  dst = (uint8_t *) ptr + offset;
+  src = (uint8_t *) image->data;
+
+  for (y = 0; y < logical_h; ++y)
+    {
+      uint32_t *d = (uint32_t *)(dst + y * stride);
+      for (x = 0; x < logical_w; ++x)
+        {
+          uint32_t *s = (uint32_t *)(src + (y * scale) * image->bytes_per_line + (x * scale) * 4);
+          d[x] = *s;
+        }
+    }
+
+  msync (ptr, pool_size, MS_SYNC);
+  munmap (ptr, pool_size);
+  XDestroyImage (image);
+
+  /* Emit the frame metadata followed by ready.  */
+  uint32_t transform = XLGetOutputTransformFromResource (session->output_resource);
+  ext_image_copy_capture_frame_v1_send_transform
+    (frame->resource, transform);
+  ext_image_copy_capture_frame_v1_send_damage (frame->resource, 0, 0,
+					       logical_w, logical_h);
+  SendPresentationTime (frame->resource);
+  ext_image_copy_capture_frame_v1_send_ready (frame->resource);
+}
+
+static void
 FrameCapture (struct wl_client *client, struct wl_resource *resource)
 {
   CaptureFrame *frame;
   CaptureSession *session;
-  ExtBuffer *eb;
-  int fd, offset, stride, y;
-  unsigned int bw, bh;
-  size_t pool_size;
-  uint32_t format;
-  void *data;
-  XImage *image;
-  uint8_t *dst, *src;
 
   frame = wl_resource_get_user_data (resource);
 
@@ -254,7 +401,6 @@ FrameCapture (struct wl_client *client, struct wl_resource *resource)
     }
 
   frame->captured = True;
-
   session = frame->session;
 
   if (!session || session->cursor)
@@ -264,95 +410,11 @@ FrameCapture (struct wl_client *client, struct wl_resource *resource)
       return;
     }
 
-  /* Describe the attached shared memory buffer.  */
-  eb = wl_resource_get_user_data (frame->buffer);
+  /* Sync X server to make sure any unmaps are processed */
+  XSync(compositor.display, False);
 
-  if (!XLShmBufferDescribe (eb, &fd, &pool_size, &format, &offset,
-			    &stride, &bw, &bh))
-    {
-      FailFrame (frame,
-		 EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_BUFFER_CONSTRAINTS);
-      return;
-    }
-
-  /* The buffer must match the advertised dimensions.  */
-  if ((int) bw != session->ow || (int) bh != session->oh)
-    {
-      close (fd);
-      FailFrame (frame,
-		 EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_BUFFER_CONSTRAINTS);
-      return;
-    }
-
-  /* Only 32-bit XRGB/ARGB can be produced by direct copy.  */
-  if (format != WL_SHM_FORMAT_XRGB8888
-      && format != WL_SHM_FORMAT_ARGB8888)
-    {
-      close (fd);
-      FailFrame (frame,
-		 EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_BUFFER_CONSTRAINTS);
-      return;
-    }
-
-  /* Map the pool writable.  */
-  data = mmap (NULL, pool_size, PROT_READ | PROT_WRITE, MAP_SHARED,
-	       fd, 0);
-  close (fd);
-
-  if (data == MAP_FAILED)
-    {
-      FailFrame (frame,
-		 EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
-      return;
-    }
-
-  /* Read back the output rectangle from the root window.  */
-  image = XGetImage (compositor.display,
-		     DefaultRootWindow (compositor.display),
-		     session->ox, session->oy,
-		     session->ow, session->oh,
-		     AllPlanes, ZPixmap);
-
-  if (!image)
-    {
-      munmap (data, pool_size);
-      FailFrame (frame,
-		 EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
-      return;
-    }
-
-  /* The X server is expected to provide 32 bits per pixel, little
-     endian, matching the shared memory formats above.  */
-  if (image->bits_per_pixel != 32
-      || image->byte_order != LSBFirst)
-    {
-      XDestroyImage (image);
-      munmap (data, pool_size);
-      FailFrame (frame,
-		 EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
-      return;
-    }
-
-  /* Copy each scanline into the client buffer, accounting for
-     differing strides.  */
-  dst = (uint8_t *) data + offset;
-  src = (uint8_t *) image->data;
-
-  for (y = 0; y < session->oh; ++y)
-    memcpy (dst + y * stride, src + y * image->bytes_per_line,
-	    session->ow * 4);
-
-  msync (data, pool_size, MS_SYNC);
-  munmap (data, pool_size);
-  XDestroyImage (image);
-
-  /* Emit the frame metadata followed by ready.  */
-  ext_image_copy_capture_frame_v1_send_transform
-    (resource, WL_OUTPUT_TRANSFORM_NORMAL);
-  ext_image_copy_capture_frame_v1_send_damage (resource, 0, 0,
-					       session->ow, session->oh);
-  SendPresentationTime (resource);
-  ext_image_copy_capture_frame_v1_send_ready (resource);
+  /* Delay capture to allow X11 compositor to render the screen without the dim layer */
+  frame->timer = AddTimer(CaptureTimerCallback, frame, MakeTimespec(0, 50000000));
 }
 
 static const struct ext_image_copy_capture_frame_v1_interface frame_impl =
@@ -369,6 +431,18 @@ HandleFrameResourceDestroy (struct wl_resource *resource)
   CaptureFrame *frame;
 
   frame = wl_resource_get_user_data (resource);
+
+  if (frame->timer)
+    {
+      RemoveTimer (frame->timer);
+      frame->timer = NULL;
+    }
+
+  if (frame->buffer)
+    {
+      wl_list_remove (&frame->buffer_destroy_listener.link);
+      frame->buffer = NULL;
+    }
 
   /* Detach the frame from its session.  */
   if (frame->session)
@@ -417,6 +491,7 @@ SessionCreateFrame (struct wl_client *client, struct wl_resource *resource,
     }
 
   memset (frame, 0, sizeof *frame);
+  wl_list_init (&frame->buffer_destroy_listener.link);
 
   frame->resource
     = wl_resource_create (client,

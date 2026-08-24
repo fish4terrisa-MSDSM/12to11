@@ -23,6 +23,7 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <inttypes.h>
 #include <float.h>
+#include <math.h>
 
 #include "compositor.h"
 
@@ -373,6 +374,8 @@ Damage (struct wl_client *client, struct wl_resource *resource,
   Surface *surface;
 
   surface = wl_resource_get_user_data (resource);
+
+  if (width <= 0 || height <= 0) return;
 
   /* Prevent integer overflow during later processing, since some
      clients really set the damage region to INT_MAX.  */
@@ -1306,6 +1309,8 @@ DamageBuffer (struct wl_client *client, struct wl_resource *resource,
 
   surface = wl_resource_get_user_data (resource);
 
+  if (width <= 0 || height <= 0) return;
+
   /* Prevent integer overflow during later processing, since some
      clients really set the damage region to INT_MAX.  */
 
@@ -1920,30 +1925,30 @@ void
 TruncateSurfaceToWindow (Surface *surface, int x, int y,
 			   int *x_out, int *y_out)
 {
-  *x_out = x * surface->factor + surface->input_delta_x;
-  *y_out = y * surface->factor + surface->input_delta_y;
+  *x_out = floor (x * surface->factor + surface->input_delta_x);
+  *y_out = floor (y * surface->factor + surface->input_delta_y);
 }
 
 void
 TruncateScaleToWindow (Surface *surface, int width, int height,
 		       int *width_out, int *height_out)
 {
-  *width_out = width * surface->factor;
-  *height_out = height * surface->factor;
+  *width_out = ceil (width * surface->factor);
+  *height_out = ceil (height * surface->factor);
 }
 
 void
 TruncateWindowToSurface (Surface *surface, int x, int y,
 			 int *x_out, int *y_out)
 {
-  *x_out = x / surface->factor - surface->input_delta_x;
-  *y_out = y / surface->factor - surface->input_delta_y;
+  *x_out = floor (x / surface->factor - surface->input_delta_x);
+  *y_out = floor (y / surface->factor - surface->input_delta_y);
 }
 
 void
 TruncateScaleToSurface (Surface *surface, int width, int height,
 			int *width_out, int *height_out)
 {
-  *width_out = width / surface->factor;
-  *height_out = height / surface->factor;
+  *width_out = ceil (width / surface->factor);
+  *height_out = ceil (height / surface->factor);
 }

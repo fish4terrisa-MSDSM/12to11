@@ -343,7 +343,7 @@ XLScaleRegion (pixman_region32_t *dst, pixman_region32_t *src,
 {
   int nrects, i;
   pixman_box32_t *src_rects;
-  pixman_box32_t *dst_rects;
+  pixman_region32_t temp;
 
   if (scale_x == 1.0f && scale_y == 1.0f)
     {
@@ -353,24 +353,20 @@ XLScaleRegion (pixman_region32_t *dst, pixman_region32_t *src,
 
   src_rects = pixman_region32_rectangles (src, &nrects);
 
-  if (nrects < 128)
-    dst_rects = alloca (nrects * sizeof *dst_rects);
-  else
-    dst_rects = XLMalloc (nrects * sizeof *dst_rects);
+  pixman_region32_init (&temp);
 
   for (i = 0; i < nrects; ++i)
     {
-      dst_rects[i].x1 = floor (src_rects[i].x1 * scale_x);
-      dst_rects[i].x2 = ceil (src_rects[i].x2 * scale_x);
-      dst_rects[i].y1 = floor (src_rects[i].y1 * scale_y);
-      dst_rects[i].y2 = ceil (src_rects[i].y2 * scale_y);
+      int x1 = floor (src_rects[i].x1 * scale_x);
+      int x2 = ceil (src_rects[i].x2 * scale_x);
+      int y1 = floor (src_rects[i].y1 * scale_y);
+      int y2 = ceil (src_rects[i].y2 * scale_y);
+
+      pixman_region32_union_rect (&temp, &temp, x1, y1, x2 - x1, y2 - y1);
     }
 
   pixman_region32_fini (dst);
-  pixman_region32_init_rects (dst, dst_rects, nrects);
-
-  if (nrects >= 128)
-    XLFree (dst_rects);
+  *dst = temp;
 }
 
 void
@@ -379,28 +375,24 @@ XLExtendRegion (pixman_region32_t *dst, pixman_region32_t *src,
 {
   int nrects, i;
   pixman_box32_t *src_rects;
-  pixman_box32_t *dst_rects;
+  pixman_region32_t temp;
 
   src_rects = pixman_region32_rectangles (src, &nrects);
 
-  if (nrects < 128)
-    dst_rects = alloca (nrects * sizeof *dst_rects);
-  else
-    dst_rects = XLMalloc (nrects * sizeof *dst_rects);
+  pixman_region32_init (&temp);
 
   for (i = 0; i < nrects; ++i)
     {
-      dst_rects[i].x1 = src_rects[i].x1;
-      dst_rects[i].x2 = src_rects[i].x2 + extend_x;
-      dst_rects[i].y1 = src_rects[i].y1;
-      dst_rects[i].y2 = src_rects[i].y2 + extend_y;
+      int x1 = src_rects[i].x1;
+      int x2 = src_rects[i].x2 + extend_x;
+      int y1 = src_rects[i].y1;
+      int y2 = src_rects[i].y2 + extend_y;
+
+      pixman_region32_union_rect (&temp, &temp, x1, y1, x2 - x1, y2 - y1);
     }
 
   pixman_region32_fini (dst);
-  pixman_region32_init_rects (dst, dst_rects, nrects);
-
-  if (nrects >= 128)
-    XLFree (dst_rects);
+  *dst = temp;
 }
 
 void
@@ -409,28 +401,26 @@ XLTransformRegion (pixman_region32_t *dst, pixman_region32_t *src,
 {
   int nrects, i;
   pixman_box32_t *src_rects;
-  pixman_box32_t *dst_rects;
+  pixman_box32_t box;
+  pixman_region32_t temp;
 
   src_rects = pixman_region32_rectangles (src, &nrects);
 
-  if (nrects < 128)
-    dst_rects = alloca (nrects * sizeof *dst_rects);
-  else
-    dst_rects = XLMalloc (nrects * sizeof *dst_rects);
+  pixman_region32_init (&temp);
 
   for (i = 0; i < nrects; ++i)
     {
-      dst_rects[i] = src_rects[i];
+      box = src_rects[i];
 
       /* width and height should be in the transformed space! */
-      TransformBox (&dst_rects[i], transform, width, height);
+      TransformBox (&box, transform, width, height);
+
+      pixman_region32_union_rect (&temp, &temp, box.x1, box.y1,
+                                  box.x2 - box.x1, box.y2 - box.y1);
     }
 
   pixman_region32_fini (dst);
-  pixman_region32_init_rects (dst, dst_rects, nrects);
-
-  if (nrects >= 128)
-    XLFree (dst_rects);
+  *dst = temp;
 }
 
 int

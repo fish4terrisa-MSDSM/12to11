@@ -20,6 +20,7 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <string.h>
 
 #include <X11/extensions/XInput2.h>
+#include <X11/extensions/shape.h>
 
 #include "compositor.h"
 #include "wlr-layer-shell-unstable-v1.h"
@@ -133,8 +134,74 @@ static void ApplyKeyboardInteractivity (LayerSurface *);
 static void DestroyBacking (LayerSurface *);
 static void RunFrameCallbacksConditionally (LayerSurface *);
 
+static void
+OpaqueRegionChanged (Subcompositor *subcompositor,
+		     void *client_data,
+		     pixman_region32_t *opaque_region)
+{
+  LayerSurface *role = client_data;
+  long *data;
+  int nrects, i;
+  pixman_box32_t *boxes;
 
-
+  boxes = pixman_region32_rectangles (opaque_region, &nrects);
+
+  if (nrects < 64)
+    data = alloca (4 * sizeof *data * nrects);
+  else
+    data = XLMalloc (4 * sizeof *data * nrects);
+
+  for (i = 0; i < nrects; ++i)
+    {
+      data[i * 4 + 0] = BoxStartX (boxes[i]);
+      data[i * 4 + 1] = BoxStartY (boxes[i]);
+      data[i * 4 + 2] = BoxWidth (boxes[i]);
+      data[i * 4 + 3] = BoxHeight (boxes[i]);
+    }
+
+  XChangeProperty (compositor.display, role->window,
+		   _NET_WM_OPAQUE_REGION, XA_CARDINAL,
+		   32, PropModeReplace,
+		   (unsigned char *) data, nrects * 4);
+
+  if (nrects >= 64)
+    XLFree (data);
+}
+
+static void
+InputRegionChanged (Subcompositor *subcompositor,
+		    void *data,
+		    pixman_region32_t *input_region)
+{
+  LayerSurface *role = data;
+  int nrects, i;
+  pixman_box32_t *boxes;
+  XRectangle *rects;
+
+  boxes = pixman_region32_rectangles (input_region, &nrects);
+
+  if (nrects < 256)
+    rects = alloca (sizeof *rects * nrects);
+  else
+    rects = XLMalloc (sizeof *rects * nrects);
+
+  for (i = 0; i < nrects; ++i)
+    {
+      rects[i].x = BoxStartX (boxes[i]);
+      rects[i].y = BoxStartY (boxes[i]);
+      rects[i].width = BoxWidth (boxes[i]);
+      rects[i].height = BoxHeight (boxes[i]);
+    }
+
+  XShapeCombineRectangles (compositor.display,
+			   role->window, ShapeInput,
+			   0, 0, rects, nrects,
+			   ShapeSet, YXBanded);
+
+  if (nrects >= 256)
+    XLFree (rects);
+}
+
 /* Geometry and state computation.  */
 
 static void
@@ -175,6 +242,16 @@ ComputeGeometry (LayerSurface *ls, int ox, int oy, int ow, int oh,
 {
   Bool left, right, top, bottom;
   int x, y, w, h;
+  int phys_width, phys_height;
+  int phys_margin_top, phys_margin_bottom, phys_margin_left, phys_margin_right;
+
+  /* Scale logical Wayland sizes into physical X11 ones */
+  TruncateScaleToWindow (ls->role.surface, ls->current_width, ls->current_height,
+			 &phys_width, &phys_height);
+  TruncateScaleToWindow (ls->role.surface, ls->current_margin_left, ls->current_margin_right,
+			 &phys_margin_left, &phys_margin_right);
+  TruncateScaleToWindow (ls->role.surface, ls->current_margin_top, ls->current_margin_bottom,
+			 &phys_margin_top, &phys_margin_bottom);
 
   left = ls->current_anchor & AnchorLeft;
   right = ls->current_anchor & AnchorRight;
@@ -184,20 +261,20 @@ ComputeGeometry (LayerSurface *ls, int ox, int oy, int ow, int oh,
   /* Horizontal axis.  */
   if (left && right)
     {
-      w = ow - ls->current_margin_left - ls->current_margin_right;
-      x = ox + ls->current_margin_left;
+      w = ow - phys_margin_left - phys_margin_right;
+      x = ox + phys_margin_left;
     }
   else
     {
-      w = ls->current_width ? ls->current_width : ow;
+      w = phys_width ? phys_width : ow;
 
       if (w < 1)
 	w = 1;
 
       if (left)
-	x = ox + ls->current_margin_left;
+	x = ox + phys_margin_left;
       else if (right)
-	x = ox + ow - w - ls->current_margin_right;
+	x = ox + ow - w - phys_margin_right;
       else
 	x = ox + (ow - w) / 2;
     }
@@ -205,20 +282,20 @@ ComputeGeometry (LayerSurface *ls, int ox, int oy, int ow, int oh,
   /* Vertical axis.  */
   if (top && bottom)
     {
-      h = oh - ls->current_margin_top - ls->current_margin_bottom;
-      y = oy + ls->current_margin_top;
+      h = oh - phys_margin_top - phys_margin_bottom;
+      y = oy + phys_margin_top;
     }
   else
     {
-      h = ls->current_height ? ls->current_height : oh;
+      h = phys_height ? phys_height : oh;
 
       if (h < 1)
 	h = 1;
 
       if (top)
-	y = oy + ls->current_margin_top;
+	y = oy + phys_margin_top;
       else if (bottom)
-	y = oy + oh - h - ls->current_margin_bottom;
+	y = oy + oh - h - phys_margin_bottom;
       else
 	y = oy + (oh - h) / 2;
     }
@@ -491,6 +568,7 @@ Teardown (Surface *surface, Role *role)
       ReleaseKeyboardGrab (ls);
       ls->flags &= ~KeyboardGrabbed;
     }
+  XLClearOutputs (surface);
 
   ViewUnparent (surface->view);
   ViewUnparent (surface->under);
@@ -506,6 +584,7 @@ Commit (Surface *surface, Role *role)
 {
   LayerSurface *ls;
   int ox, oy, ow, oh, x, y, w, h;
+  int logical_w, logical_h;
   struct timespec time;
 
   ls = LayerSurfaceFromRole (role);
@@ -524,12 +603,18 @@ Commit (Surface *surface, Role *role)
   GetOutputRect (ls, &ox, &oy, &ow, &oh);
   ComputeGeometry (ls, ox, oy, ow, oh, &x, &y, &w, &h);
 
+  /* Truncate the resulting physical sizes back into logical coordinates for the Wayland Client */
+  TruncateScaleToSurface (surface, w, h, &logical_w, &logical_h);
+
   /* Send a configure event if the size has changed or no configure
      has yet been sent.  */
   if (!(ls->flags & IsConfigured)
-      || w != ls->configured_width
-      || h != ls->configured_height)
-    SendConfigure (ls, w, h);
+      || logical_w != ls->configured_width
+      || logical_h != ls->configured_height)
+    SendConfigure (ls, logical_w, logical_h);
+
+  /* Notify the surface of output overlap so the client receives wl_surface.enter */
+  XLUpdateSurfaceOutputs (surface, x, y, w, h);
 
   /* Map or unmap the surface depending on whether a buffer has been
      attached and a configure has been acknowledged.  */
@@ -552,6 +637,8 @@ Commit (Surface *surface, Role *role)
 	  ls->flags |= IsMapped;
 	}
 
+      SubcompositorSetTargetSize (ls->subcompositor, w, h);
+
       SubcompositorUpdate (ls->subcompositor);
     }
   else
@@ -561,6 +648,8 @@ Commit (Surface *surface, Role *role)
 	  XUnmapWindow (compositor.display, ls->window);
 	  ls->flags &= ~IsMapped;
 	}
+
+      XLClearOutputs (surface);
 
       /* Run frame callbacks even when unmapping.  */
       clock_gettime (CLOCK_MONOTONIC, &time);
@@ -761,6 +850,23 @@ SetExclusiveEdge (struct wl_client *client, struct wl_resource *resource,
   ls->pending_edge = edge;
 }
 
+static void
+Rescale (Surface *surface, Role *role)
+{
+  LayerSurface *ls;
+  int ox, oy, ow, oh, x, y, w, h;
+  int logical_w, logical_h;
+
+  ls = LayerSurfaceFromRole (role);
+  if (!ls->role.resource)
+    return;
+
+  GetOutputRect (ls, &ox, &oy, &ow, &oh);
+  ComputeGeometry (ls, ox, oy, ow, oh, &x, &y, &w, &h);
+  TruncateScaleToSurface (surface, w, h, &logical_w, &logical_h);
+  SendConfigure (ls, logical_w, logical_h);
+}
+
 static const struct zwlr_layer_surface_v1_interface layer_surface_impl =
   {
     .set_size = SetSize,
@@ -876,6 +982,11 @@ GetLayerSurface (struct wl_client *client, struct wl_resource *resource,
 
   SubcompositorSetTarget (ls->subcompositor, &ls->target);
 
+  SubcompositorSetInputCallback (ls->subcompositor,
+				 InputRegionChanged, ls);
+  SubcompositorSetOpaqueCallback (ls->subcompositor,
+				  OpaqueRegionChanged, ls);
+
   /* Run frame callbacks whenever a frame is presented, so that the
      client can keep updating its contents (e.g. a region-selection
      rectangle).  */
@@ -897,6 +1008,7 @@ GetLayerSurface (struct wl_client *client, struct wl_resource *resource,
   ls->role.funcs.release_buffer = ReleaseBuffer;
   ls->role.funcs.subsurface_update = SubsurfaceUpdate;
   ls->role.funcs.get_window = GetWindow;
+  ls->role.funcs.rescale = Rescale;
 
   wl_resource_set_implementation (ls->role.resource,
 				  &layer_surface_impl, ls,

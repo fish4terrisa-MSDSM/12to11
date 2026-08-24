@@ -1266,6 +1266,7 @@ extern void XLOutputGetMinRefresh (struct timespec *);
 extern Bool XLGetOutputRectAt (int, int, int *, int *, int *, int *);
 extern Bool XLGetOutputRectFromResource (struct wl_resource *, int *,
 					 int *, int *, int *);
+extern uint32_t XLGetOutputTransformFromResource (struct wl_resource *);
 extern void *XLAddScaleChangeCallback (void *, void (*) (void *, int));
 extern void XLRemoveScaleChangeCallback (void *);
 extern void XLClearOutputs (Surface *);

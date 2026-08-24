@@ -930,8 +930,8 @@ SwapBackBuffersWithCopy (PictureTarget *target, pixman_region32_t *damage)
   other = (target->current_back_buffer ? 0 : 1);
   back_buffer->age = 1;
 
-  if (target->back_buffers[other])
-    target->back_buffers[other]++;
+   if (target->back_buffers[other])
+    target->back_buffers[other]->age++;
 }
 
 static void

@@ -187,7 +187,12 @@ static const struct wl_output_interface wl_output_impl =
 static void
 SendGeometry (Output *output, struct wl_resource *resource)
 {
-  wl_output_send_geometry (resource, output->x, output->y,
+  int x, y;
+
+  x = output->scale > 1 ? output->x / output->scale : output->x;
+  y = output->scale > 1 ? output->y / output->scale : output->y;
+
+  wl_output_send_geometry (resource, x, y,
 			   output->mm_width, output->mm_height,
 			   output->subpixel,
 			   ServerVendor (compositor.display),
@@ -983,6 +988,22 @@ XLGetOutputRectFromResource (struct wl_resource *resource, int *x_out,
     *height_out = output->height;
 
   return True;
+}
+
+uint32_t
+XLGetOutputTransformFromResource (struct wl_resource *resource)
+{
+  Output *output;
+
+  if (!resource)
+    return WL_OUTPUT_TRANSFORM_NORMAL;
+
+  output = wl_resource_get_user_data (resource);
+
+  if (!output)
+    return WL_OUTPUT_TRANSFORM_NORMAL;
+
+  return output->transform;
 }
 
 Bool

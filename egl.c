@@ -2349,12 +2349,15 @@ ReverseTransformToBox (DrawParams *params, pixman_box32_t *box)
   /* Apply the inverse of PARAMS to BOX, for use in damage
      tracking.  */
 
-  if (params->flags & ScaleSet)
+  if (params->flags & StretchSet)
     {
-      box->x1 = floor (box->x1 / params->scale);
-      box->y1 = floor (box->y1 / params->scale);
-      box->x2 = ceil (box->x2 / params->scale);
-      box->y2 = ceil (box->y2 / params->scale);
+      x_factor = params->crop_width / params->stretch_width;
+      y_factor = params->crop_height / params->stretch_height;
+
+      box->x1 = floor (box->x1 * x_factor);
+      box->y1 = floor (box->y1 * y_factor);
+      box->x2 = ceil (box->x2 * x_factor);
+      box->y2 = ceil (box->y2 * y_factor);
     }
 
   if (params->flags & OffsetSet)
@@ -2367,15 +2370,12 @@ ReverseTransformToBox (DrawParams *params, pixman_box32_t *box)
       box->y2 = ceil (box->y2 + params->off_y);
     }
 
-  if (params->flags & StretchSet)
+  if (params->flags & ScaleSet)
     {
-      x_factor = params->crop_width / params->stretch_width;
-      y_factor = params->crop_height / params->stretch_height;
-
-      box->x1 = floor (box->x1 * x_factor);
-      box->y1 = floor (box->y1 * y_factor);
-      box->x2 = ceil (box->x2 * x_factor);
-      box->y2 = ceil (box->y2 * y_factor);
+      box->x1 = floor (box->x1 / params->scale);
+      box->y1 = floor (box->y1 / params->scale);
+      box->x2 = ceil (box->x2 / params->scale);
+      box->y2 = ceil (box->y2 / params->scale);
     }
 }
 
@@ -2416,8 +2416,8 @@ UpdateShmBufferIncrementally (EglBuffer *buffer, pixman_region32_t *damage,
       ReverseTransformToBox (params, &box);
 
       /* Clip the box X and Y to 0, 0.  */
-      box.x1 = MIN (box.y1, 0);
-      box.y1 = MIN (box.y1, 0);
+      box.x1 = MAX (box.x1, 0);
+      box.y1 = MAX (box.y1, 0);
 
       /* These computations are correct, since box->x2/box->y2 are
 	 actually 1 pixel outside the last pixel in the box.  */
