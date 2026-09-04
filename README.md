@@ -166,4 +166,4 @@ The source code directory is organized as follows:
 ```
 
 ## License
-[GPLv3](./LICENSE)
+[GPLv3](./COPYING)
