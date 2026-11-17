@@ -52,6 +52,19 @@ GetFence (void)
 
   /* Allocate a new fence.  */
   fence = XLCalloc (1, sizeof *fence);
+
+  /* DRI3 is required to import a fence fd into the X server.  Without it
+     the server cannot trigger our xshmfence, so hand out a fence that is
+     never waited on (and present without an idle fence).  */
+  if (!XLHaveDri3)
+    {
+      fence->fence = NULL;
+      fence->fence_id = None;
+      FenceRetain (fence);
+
+      return fence;
+    }
+
   fd = xshmfence_alloc_shm ();
 
   if (fd < 0)
@@ -89,6 +102,10 @@ GetFence (void)
 void
 FenceAwait (Fence *fence)
 {
+  if (!fence->fence)
+    /* Nothing will ever trigger this fence.  */
+    return;
+
   /* Wait for the fence to be triggered.  */
   xshmfence_await (fence->fence);
 
@@ -102,11 +119,14 @@ FenceRelease (Fence *fence)
   if (--fence->refcount)
     return;
 
-  /* Unmap the fence.  */
-  xshmfence_unmap_shm (fence->fence);
+  if (fence->fence)
+    {
+      /* Unmap the fence.  */
+      xshmfence_unmap_shm (fence->fence);
 
-  /* Destroy the fence.  */
-  XSyncDestroyFence (compositor.display, fence->fence_id);
+      /* Destroy the fence.  */
+      XSyncDestroyFence (compositor.display, fence->fence_id);
+    }
 
   /* Free the fence.  */
   XLFree (fence);

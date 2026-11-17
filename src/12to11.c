@@ -21,6 +21,10 @@ along with 12to11.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <stdlib.h>
 #include <string.h>
 
+#include <xcb/shape.h>
+#include <xcb/dri3.h>
+#include <xcb/randr.h>
+
 #include <time.h>
 #include <locale.h>
 
@@ -207,6 +211,22 @@ XLMain (int argc, char **argv)
 
   compositor.display = dpy;
   compositor.conn = XGetXCBConnection (dpy);
+
+  /* 12to11 issues Shape requests (dnd.c) through xcb but never queried the
+     Shape extension through xcb.  The first such request makes xcb lazily
+     QueryExtension from inside xcb_send_request; if that reply can't be
+     obtained, xcb shuts the connection down with
+     XCB_CONN_CLOSED_EXT_NOTSUPPORTED, which libX11 reports as a fatal IO
+     error.  Force the queries for every xcb extension used up front.  */
+  {
+    static xcb_extension_t *const extensions[] = {
+      &xcb_shape_id, &xcb_shm_id, &xcb_dri3_id, &xcb_randr_id,
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof extensions / sizeof extensions[0]; ++i)
+      xcb_get_extension_data (compositor.conn, extensions[i]);
+  }
   compositor.wl_display = wl_display;
   compositor.wl_socket = socket;
   compositor.wl_event_loop

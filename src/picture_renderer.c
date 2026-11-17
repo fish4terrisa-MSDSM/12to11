@@ -439,6 +439,10 @@ static Window round_trip_window;
 /* The opcode of the DRI3 extension.  */
 static int dri3_opcode;
 
+/* Whether the X server provides the DRI3 extension at all.  Fences can
+   only be created (via DRI3FenceFromFD) when it does.  */
+Bool XLHaveDri3;
+
 /* List of pixmap format values supported by the X server.  */
 static XPixmapFormatValues *x_formats;
 
@@ -2798,6 +2802,13 @@ PictFormatForFormat (uint32_t format)
     }
 }
 
+static int GetScanlinePad (int depth);
+
+/* Roundup rounds up NBYTES to PAD.  PAD is a value that can appear as
+   the scanline pad.  Macro borrowed from Xlib, as usual for everyone
+   working with such images.  */
+#define Roundup(nbytes, pad) ((((nbytes) + ((pad) - 1)) / (pad)) * ((pad) >> 3))
+
 static RenderBuffer
 BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
 {
@@ -2805,7 +2816,7 @@ BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
   xcb_shm_seg_t seg;
   Pixmap pixmap;
   Picture picture;
-  int fd, depth, format, bpp;
+  int fd, depth, format, bpp, pixmap_width;
   PictureBuffer *buffer;
   XRenderPictFormat *pict_format;
 
@@ -2838,9 +2849,27 @@ BufferFromShm (SharedMemoryAttributes *attributes, Bool *error)
 
   /* Create the segment and attach the pixmap to it.  */
   xcb_shm_attach_fd (compositor.conn, seg, fd, false);
+  /* The X server computes the stride of the shm pixmap from its width
+     and depth.  If the client's stride is larger than the packed one
+     (clients are allowed to align it), widen the pixmap so the server's
+     stride matches the client's.  Drawing still uses the logical
+     width/height recorded in the buffer, so the extra columns are never
+     sampled.  */
+  {
+    long packed_stride;
+
+    packed_stride = Roundup (attributes->width * (long) bpp,
+			     GetScanlinePad (depth));
+
+    if (attributes->stride > packed_stride)
+      pixmap_width = attributes->stride / (bpp / 8);
+    else
+      pixmap_width = attributes->width;
+  }
+
   xcb_shm_create_pixmap (compositor.conn, pixmap,
 			 DefaultRootWindow (compositor.display),
-			 attributes->width, attributes->height,
+			 pixmap_width, attributes->height,
 			 depth, seg, attributes->offset);
   xcb_shm_detach (compositor.conn, seg);
 
@@ -2895,11 +2924,6 @@ GetScanlinePad (int depth)
   return -1;
 }
 
-/* Roundup rounds up NBYTES to PAD.  PAD is a value that can appear as
-   the scanline pad.  Macro borrowed from Xlib, as usual for everyone
-   working with such images.  */
-#define Roundup(nbytes, pad) ((((nbytes) + ((pad) - 1)) / (pad)) * ((pad) >> 3))
-
 static Bool
 ValidateShmParams (uint32_t format, uint32_t width, uint32_t height,
 		   int32_t offset, int32_t stride, size_t pool_size)
@@ -2931,8 +2955,17 @@ ValidateShmParams (uint32_t format, uint32_t width, uint32_t height,
   if (IntAddWrapv (offset, total_size, &total_size))
     return False;
 
-  /* Verify that the stride is correct and the image fits.  */
-  if (stride != wanted_stride || total_size > pool_size)
+  /* The client may use a stride larger than the packed one (for
+     alignment); BufferFromShm widens the pixmap to match, so only
+     require a whole number of pixels and that the buffer fits.  */
+  if (stride < wanted_stride || stride % (bpp / 8) != 0
+      || total_size > pool_size)
+    return False;
+
+  /* The widened pixmap width must not exceed the server's pixmap
+     dimension limit; otherwise ShmCreatePixmap fails with BadAlloc, or
+     the width is truncated through the 16-bit request field.  */
+  if (stride / (bpp / 8) > 32767)
     return False;
 
   return True;
@@ -3149,6 +3182,8 @@ InitBufferFuncs (void)
 
   if (ext && ext->present)
     {
+      XLHaveDri3 = True;
+
       cookie = xcb_dri3_query_version (compositor.conn, 1, 2);
       reply = xcb_dri3_query_version_reply (compositor.conn, cookie,
 					    NULL);

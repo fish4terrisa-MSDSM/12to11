@@ -1908,6 +1908,9 @@ extern void FenceAwait (Fence *);
 extern void FenceRelease (Fence *);
 extern XSyncFence FenceToXFence (Fence *);
 
+/* Set when the X server provides DRI3 (needed to import fence fds).  */
+extern Bool XLHaveDri3;
+
 /* Defined in pointer_gestures.c.  */
 
 extern void XLInitPointerGestures (void);
